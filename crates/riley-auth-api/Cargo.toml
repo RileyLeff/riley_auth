@@ -26,4 +26,5 @@ regex = "1"
 sha2 = "0.10"
 base64 = "0.22"
 rand.workspace = true
+hex = "0.4"
 url.workspace = true

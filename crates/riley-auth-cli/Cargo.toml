@@ -15,3 +15,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 sqlx.workspace = true
+rand.workspace = true
+hex = "0.4"

@@ -3,6 +3,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
 
+pub mod admin;
 pub mod auth;
 pub mod oauth_provider;
 
@@ -32,4 +33,5 @@ pub fn router() -> Router<AppState> {
         .route("/.well-known/jwks.json", get(jwks))
         .merge(auth::router())
         .merge(oauth_provider::router())
+        .merge(admin::router())
 }
