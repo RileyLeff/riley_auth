@@ -365,6 +365,8 @@ pub async fn find_oauth_links_by_user(
     Ok(links)
 }
 
+/// Create an OAuth link, atomically verifying the user is active (not soft-deleted).
+/// Uses INSERT ... SELECT to prevent creating orphaned links for deleted users.
 pub async fn create_oauth_link(
     pool: &PgPool,
     user_id: Uuid,
@@ -374,15 +376,17 @@ pub async fn create_oauth_link(
 ) -> Result<OAuthLink> {
     let link = sqlx::query_as::<_, OAuthLink>(
         "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email)
-         VALUES ($1, $2, $3, $4)
+         SELECT $1, $2, $3, $4
+         FROM users WHERE id = $1 AND deleted_at IS NULL
          RETURNING *"
     )
     .bind(user_id)
     .bind(provider)
     .bind(provider_id)
     .bind(email)
-    .fetch_one(pool)
-    .await?;
+    .fetch_optional(pool)
+    .await?
+    .ok_or(Error::UserNotFound)?;
     Ok(link)
 }
 

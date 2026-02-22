@@ -163,8 +163,8 @@ async fn auth_callback(
 
     // Clear temp cookies
     let jar = jar
-        .remove(Cookie::from(OAUTH_STATE_COOKIE))
-        .remove(Cookie::from(PKCE_COOKIE));
+        .remove(removal_cookie(OAUTH_STATE_COOKIE, "/", &state.config))
+        .remove(removal_cookie(PKCE_COOKIE, "/", &state.config));
 
     // Look up existing oauth link
     if let Some(link) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
@@ -245,7 +245,7 @@ async fn auth_setup(
     })?;
 
     // Issue tokens, clear setup cookie
-    let jar = jar.remove(Cookie::from(SETUP_TOKEN_COOKIE));
+    let jar = jar.remove(removal_cookie(SETUP_TOKEN_COOKIE, "/", &state.config));
     let jar = issue_tokens(&state, jar, &user).await?;
 
     Ok((jar, Json(user_to_me(&user))))
@@ -295,8 +295,8 @@ async fn auth_logout(
     }
 
     let jar = jar
-        .remove(Cookie::from(ACCESS_TOKEN_COOKIE))
-        .remove(Cookie::from(REFRESH_TOKEN_COOKIE));
+        .remove(removal_cookie(ACCESS_TOKEN_COOKIE, "/", &state.config))
+        .remove(removal_cookie(REFRESH_TOKEN_COOKIE, "/auth", &state.config));
 
     Ok((jar, StatusCode::OK))
 }
@@ -311,8 +311,8 @@ async fn auth_logout_all(
     db::delete_all_refresh_tokens(&state.db, user.sub_uuid()?).await?;
 
     let jar = jar
-        .remove(Cookie::from(ACCESS_TOKEN_COOKIE))
-        .remove(Cookie::from(REFRESH_TOKEN_COOKIE));
+        .remove(removal_cookie(ACCESS_TOKEN_COOKIE, "/", &state.config))
+        .remove(removal_cookie(REFRESH_TOKEN_COOKIE, "/auth", &state.config));
 
     Ok((jar, StatusCode::OK))
 }
@@ -440,8 +440,8 @@ async fn delete_account(
     }
 
     let jar = jar
-        .remove(Cookie::from(ACCESS_TOKEN_COOKIE))
-        .remove(Cookie::from(REFRESH_TOKEN_COOKIE));
+        .remove(removal_cookie(ACCESS_TOKEN_COOKIE, "/", &state.config))
+        .remove(removal_cookie(REFRESH_TOKEN_COOKIE, "/auth", &state.config));
 
     Ok((jar, StatusCode::OK))
 }
@@ -549,11 +549,6 @@ async fn link_callback(
 
     let profile = oauth::fetch_profile(provider, &provider_token).await?;
 
-    // Verify the user is still active (not soft-deleted since JWT was issued)
-    if db::find_user_by_id(&state.db, user_id).await?.is_none() {
-        return Err(Error::UserNotFound);
-    }
-
     // Check if this provider account is already linked to someone
     if db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await?.is_some() {
         return Err(Error::ProviderAlreadyLinked);
@@ -575,8 +570,8 @@ async fn link_callback(
     })?;
 
     let jar = jar
-        .remove(Cookie::from(OAUTH_STATE_COOKIE))
-        .remove(Cookie::from(PKCE_COOKIE));
+        .remove(removal_cookie(OAUTH_STATE_COOKIE, "/", &state.config))
+        .remove(removal_cookie(PKCE_COOKIE, "/", &state.config));
 
     let redirect_url = format!("{}/profile", state.config.server.frontend_url);
     Ok((jar, Redirect::temporary(&redirect_url)))
@@ -735,6 +730,16 @@ fn build_temp_cookie(name: &str, value: &str, config: &Config) -> Cookie<'static
         cookie.set_domain(domain.clone());
     }
     cookie.set_max_age(cookie::time::Duration::minutes(10));
+    cookie
+}
+
+/// Build a removal cookie with matching path/domain so browsers clear the original.
+fn removal_cookie(name: &str, path: &str, config: &Config) -> Cookie<'static> {
+    let mut cookie = Cookie::new(name.to_string(), "");
+    cookie.set_path(path.to_string());
+    if let Some(ref domain) = config.server.cookie_domain {
+        cookie.set_domain(domain.clone());
+    }
     cookie
 }
 
