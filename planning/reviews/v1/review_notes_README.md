@@ -24,3 +24,11 @@ This file records architectural tradeoffs flagged during review that are intenti
 ## Username cooldown TOCTOU
 **Flagged by**: Gemini R4 (minor)
 **Decision**: The cooldown check happens before the transaction, but this is not a security boundary — it's a UX/abuse-prevention measure. The actual username update is atomic (unique constraint enforced by the DB), and the cooldown is advisory. Moving the check inside the transaction would require refactoring for marginal benefit. The worst case is a user changing their username slightly faster than the cooldown period in a narrow race window.
+
+## Redundant UNIQUE constraint on username column
+**Flagged by**: Gemini R5 (minor)
+**Decision**: Keep for now. The column-level UNIQUE and the filtered functional index `idx_users_username_lower` overlap. The filtered index provides the real enforcement for active users (case-insensitive, soft-delete aware). The column-level UNIQUE is stricter (includes deleted users) but harmless since deleted usernames use the `deleted_{uuid}` pattern which can't collide. Removing it would be clean but low priority.
+
+## `case_sensitive` config option
+**Flagged by**: Gemini R5 (minor)
+**Decision**: The DB always enforces case-insensitive uniqueness via the `lower()` index. The config option controls application-layer behavior (e.g., whether the API treats "Admin" and "admin" as the same username for lookup). Could use a documentation note but not a bug.
