@@ -1,8 +1,8 @@
 # v1 Workflow State
 
 **Current Phase:** Exhaustive Review (Phases 1-7)
-**Current Step:** Review round 6 (need 2 consecutive clean passes; R5 had 1 major)
-**Status:** R5 found 1 major (deadlock in locking order), fixed in 5f8d69f. Launching R6.
+**Current Step:** Review round 7 (clean pass attempt #1 after R6 fixes)
+**Status:** R6 found 2 major (Codex-only: deleted-user link creation, multi-provider unlink bypass). Fixed in c5591bf. Launching R7.
 
 ## Progress
 
@@ -18,7 +18,8 @@
 | - | R3 review | 2 major concurrency races | Fixed (0151755) |
 | - | R4 review | 1 major (delete bypass) + 3 minor | Fixed (b20fc3d) |
 | - | R5 review | 1 major (deadlock) + 4 minor | Fixed (5f8d69f) |
-| - | R6 review | Parallel review (clean pass attempt #1) | In Progress |
+| - | R6 review | 2 major (Codex: link creation + unlink bypass) | Fixed (c5591bf) |
+| - | R7 review | Parallel review (clean pass attempt #1) | In Progress |
 | 8 | 8.1-8.5 | Docker, integration tests, Dockerfile, config, rate limiting | Pending |
 
 ## Blockers
@@ -27,6 +28,6 @@ None.
 
 ## Recent Activity
 
-- R4: 1 major — last-admin delete guard, PII cleanup, index fix (b20fc3d)
 - R5: 1 major — deadlock fix: consistent ORDER BY id in locking queries (5f8d69f)
-- R6: Parallel review launching
+- R6: 2 major — deleted-user link check + multi-provider unlink guard (c5591bf)
+- R7: Parallel review launching

@@ -32,3 +32,7 @@ This file records architectural tradeoffs flagged during review that are intenti
 ## `case_sensitive` config option
 **Flagged by**: Gemini R5 (minor)
 **Decision**: The DB always enforces case-insensitive uniqueness via the `lower()` index. The config option controls application-layer behavior (e.g., whether the API treats "Admin" and "admin" as the same username for lookup). Could use a documentation note but not a bug.
+
+## Token issuance TOCTOU (user deleted between fetch and token store)
+**Flagged by**: Codex R6 (major)
+**Decision**: Dismissed. If a user is soft-deleted between `find_user_by_id` and `store_refresh_token`, the orphaned refresh token can never be used — the next `auth_refresh` call checks `find_user_by_id` (which filters `deleted_at IS NULL`) and returns UserNotFound. The access token expires naturally within the short TTL. This is the standard JWT tradeoff — not a bug, not fixable without making JWTs stateful (defeating their purpose).
