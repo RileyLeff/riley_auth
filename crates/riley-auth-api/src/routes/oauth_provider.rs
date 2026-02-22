@@ -302,9 +302,9 @@ async fn revoke(
         return Err(Error::InvalidClient);
     }
 
-    // Revoke the token (RFC 7009 says always return 200 even if token doesn't exist)
+    // Revoke the token, scoped to this client (RFC 7009 says always return 200)
     let token_hash = jwt::hash_token(&body.token);
-    let _ = db::delete_refresh_token(&state.db, &token_hash).await;
+    let _ = db::delete_refresh_token_for_client(&state.db, &token_hash, client.id).await;
 
     Ok(StatusCode::OK)
 }

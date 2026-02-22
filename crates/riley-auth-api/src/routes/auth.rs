@@ -237,7 +237,12 @@ async fn auth_setup(
         &profile.provider_id,
         profile.email.as_deref(),
     )
-    .await?;
+    .await
+    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
+        Error::UsernameTaken
+    } else {
+        e
+    })?;
 
     // Issue tokens, clear setup cookie
     let jar = jar.remove(Cookie::from(SETUP_TOKEN_COOKIE));
@@ -333,6 +338,10 @@ async fn update_display_name(
     jar: CookieJar,
     Json(body): Json<UpdateDisplayNameRequest>,
 ) -> Result<Json<MeResponse>, Error> {
+    if body.display_name.len() > 200 {
+        return Err(Error::BadRequest("display name must be at most 200 characters".to_string()));
+    }
+
     let claims = extract_user(&state, &jar)?;
     let user = db::update_user_display_name(
         &state.db,
@@ -352,6 +361,10 @@ async fn update_username(
 ) -> Result<(CookieJar, Json<MeResponse>), Error> {
     let claims = extract_user(&state, &jar)?;
     let user_id = claims.sub_uuid()?;
+
+    if !state.config.usernames.allow_changes {
+        return Err(Error::BadRequest("username changes are disabled".to_string()));
+    }
 
     validate_username(&body.username, &state.config)?;
 
@@ -387,7 +400,12 @@ async fn update_username(
         &body.username,
         held_until,
     )
-    .await?;
+    .await
+    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
+        Error::UsernameTaken
+    } else {
+        e
+    })?;
 
     // Re-issue access token with new username
     let access_token = state.keys.sign_access_token(
@@ -411,7 +429,6 @@ async fn delete_account(
     let claims = extract_user(&state, &jar)?;
     let user_id = claims.sub_uuid()?;
 
-    db::delete_all_refresh_tokens(&state.db, user_id).await?;
     db::soft_delete_user(&state.db, user_id).await?;
 
     let jar = jar
@@ -529,7 +546,7 @@ async fn link_callback(
         return Err(Error::ProviderAlreadyLinked);
     }
 
-    // Create the link
+    // Create the link (catch unique violation from concurrent requests)
     db::create_oauth_link(
         &state.db,
         user_id,
@@ -537,7 +554,12 @@ async fn link_callback(
         &profile.provider_id,
         profile.email.as_deref(),
     )
-    .await?;
+    .await
+    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
+        Error::ProviderAlreadyLinked
+    } else {
+        e
+    })?;
 
     let jar = jar
         .remove(Cookie::from(OAUTH_STATE_COOKIE))
@@ -556,14 +578,15 @@ async fn unlink_provider(
     let claims = extract_user(&state, &jar)?;
     let user_id = claims.sub_uuid()?;
 
-    // Must keep at least one provider
-    let count = db::count_oauth_links(&state.db, user_id).await?;
-    if count <= 1 {
-        return Err(Error::LastProvider);
-    }
-
-    let deleted = db::delete_oauth_link(&state.db, user_id, &provider_name).await?;
+    // Atomically delete only if user has >1 provider (prevents TOCTOU race)
+    let deleted = db::delete_oauth_link_if_not_last(&state.db, user_id, &provider_name).await?;
     if !deleted {
+        // Either the link doesn't exist or it's the last one.
+        // Check which case: if the link exists, it must be the last provider.
+        let count = db::count_oauth_links(&state.db, user_id).await?;
+        if count > 0 {
+            return Err(Error::LastProvider);
+        }
         return Err(Error::NotFound);
     }
 

@@ -153,8 +153,16 @@ pub async fn update_user_avatar(
     Ok(user)
 }
 
-pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
+/// Soft-delete a user: revoke all refresh tokens, delete OAuth links, anonymize.
+/// All operations are atomic within a single transaction.
+pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<bool> {
     let mut tx = pool.begin().await?;
+
+    // Revoke all refresh tokens
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
 
     // Delete OAuth links so the provider identity can be re-used
     sqlx::query("DELETE FROM oauth_links WHERE user_id = $1")
@@ -163,7 +171,7 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
         .await?;
 
     // Anonymize: replace username with full UUID to avoid collisions, clear PII
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE users SET
             username = $2,
             display_name = 'Deleted User',
@@ -178,7 +186,7 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
     .await?;
 
     tx.commit().await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn update_user_role(
@@ -197,6 +205,15 @@ pub async fn update_user_role(
     .await?
     .ok_or(Error::UserNotFound)?;
     Ok(user)
+}
+
+pub async fn count_admins(pool: &PgPool) -> Result<i64> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND deleted_at IS NULL"
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
 }
 
 pub async fn list_users(
@@ -285,13 +302,18 @@ pub async fn create_oauth_link(
     Ok(link)
 }
 
-pub async fn delete_oauth_link(
+/// Delete an OAuth link only if the user has more than one.
+/// Returns Ok(true) if deleted, Ok(false) if not found, Err(LastProvider) if it would be the last.
+pub async fn delete_oauth_link_if_not_last(
     pool: &PgPool,
     user_id: Uuid,
     provider: &str,
 ) -> Result<bool> {
+    // Atomic: only delete if the user has at least 2 links
     let result = sqlx::query(
-        "DELETE FROM oauth_links WHERE user_id = $1 AND provider = $2"
+        "DELETE FROM oauth_links
+         WHERE user_id = $1 AND provider = $2
+           AND (SELECT COUNT(*) FROM oauth_links WHERE user_id = $1) > 1"
     )
     .bind(user_id)
     .bind(provider)
@@ -365,6 +387,20 @@ pub async fn consume_refresh_token(
 pub async fn delete_refresh_token(pool: &PgPool, token_hash: &str) -> Result<()> {
     sqlx::query("DELETE FROM refresh_tokens WHERE token_hash = $1")
         .bind(token_hash)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete a refresh token only if it belongs to the specified client.
+pub async fn delete_refresh_token_for_client(
+    pool: &PgPool,
+    token_hash: &str,
+    client_id: Uuid,
+) -> Result<()> {
+    sqlx::query("DELETE FROM refresh_tokens WHERE token_hash = $1 AND client_id = $2")
+        .bind(token_hash)
+        .bind(client_id)
         .execute(pool)
         .await?;
     Ok(())

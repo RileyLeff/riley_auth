@@ -207,4 +207,12 @@ impl IntoResponse for Error {
     }
 }
 
+/// Check if a sqlx error is a unique constraint violation (Postgres code 23505).
+pub fn is_unique_violation(err: &Error) -> bool {
+    if let Error::Database(sqlx::Error::Database(db_err)) = err {
+        return db_err.code().as_deref() == Some("23505");
+    }
+    false
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
