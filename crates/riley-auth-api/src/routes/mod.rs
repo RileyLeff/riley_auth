@@ -3,6 +3,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
 
+pub mod auth;
+
 use crate::server::AppState;
 
 #[derive(Serialize)]
@@ -27,4 +29,5 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/.well-known/jwks.json", get(jwks))
+        .merge(auth::router())
 }

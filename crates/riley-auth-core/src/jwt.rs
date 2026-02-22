@@ -106,6 +106,16 @@ impl Keys {
             .map_err(|_| Error::InvalidToken)
     }
 
+    /// Encoding key for signing (used by setup tokens etc.)
+    pub fn encoding_key(&self) -> &EncodingKey {
+        &self.encoding
+    }
+
+    /// Decoding key for verification.
+    pub fn decoding_key(&self) -> &DecodingKey {
+        &self.decoding
+    }
+
     /// JWKS response body.
     pub fn jwks(&self) -> serde_json::Value {
         serde_json::json!({
