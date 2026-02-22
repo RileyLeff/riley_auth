@@ -414,13 +414,13 @@ pub async fn delete_oauth_link_if_not_last(
     .await?;
 
     // Check if the target provider link exists
-    let has_target = links.iter().any(|(_, p)| p == provider);
-    if !has_target {
+    let same_provider_count = links.iter().filter(|(_, p)| p == provider).count();
+    if same_provider_count == 0 {
         return Ok(UnlinkResult::NotFound);
     }
 
-    // Check if it's the last provider
-    if links.len() <= 1 {
+    // Ensure at least one link remains after removing all links for this provider
+    if links.len() - same_provider_count < 1 {
         return Ok(UnlinkResult::LastProvider);
     }
 

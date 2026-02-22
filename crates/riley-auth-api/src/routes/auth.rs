@@ -549,6 +549,11 @@ async fn link_callback(
 
     let profile = oauth::fetch_profile(provider, &provider_token).await?;
 
+    // Verify the user is still active (not soft-deleted since JWT was issued)
+    if db::find_user_by_id(&state.db, user_id).await?.is_none() {
+        return Err(Error::UserNotFound);
+    }
+
     // Check if this provider account is already linked to someone
     if db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await?.is_some() {
         return Err(Error::ProviderAlreadyLinked);
