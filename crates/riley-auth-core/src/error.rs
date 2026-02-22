@@ -82,6 +82,9 @@ pub enum Error {
     #[error("invalid grant")]
     InvalidGrant,
 
+    #[error("consent required")]
+    ConsentRequired,
+
     // General
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -126,17 +129,19 @@ impl Error {
 
             Self::UserNotFound | Self::NotFound => StatusCode::NOT_FOUND,
 
-            Self::UsernameTaken
-            | Self::UsernameHeld { .. }
+            Self::InvalidClient => StatusCode::UNAUTHORIZED,
+
+            Self::UsernameTaken | Self::ProviderAlreadyLinked => StatusCode::CONFLICT,
+
+            Self::UsernameHeld { .. }
             | Self::UsernameChangeCooldown { .. }
             | Self::InvalidUsername { .. }
             | Self::ReservedUsername
             | Self::LastProvider
-            | Self::ProviderAlreadyLinked
-            | Self::InvalidClient
             | Self::InvalidRedirectUri
             | Self::InvalidAuthorizationCode
             | Self::InvalidGrant
+            | Self::ConsentRequired
             | Self::BadRequest(_) => StatusCode::BAD_REQUEST,
 
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -170,6 +175,7 @@ impl Error {
             Self::InvalidRedirectUri => "invalid_redirect_uri",
             Self::InvalidAuthorizationCode => "invalid_authorization_code",
             Self::InvalidGrant => "invalid_grant",
+            Self::ConsentRequired => "consent_required",
             Self::BadRequest(_) => "bad_request",
             Self::NotFound => "not_found",
             Self::PayloadTooLarge => "payload_too_large",

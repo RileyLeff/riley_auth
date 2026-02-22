@@ -71,7 +71,7 @@ struct RegisterClientResponse {
 
 // --- Admin middleware helper ---
 
-fn require_admin(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error> {
+async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error> {
     let token = jar
         .get(ACCESS_TOKEN_COOKIE)
         .map(|c| c.value().to_string())
@@ -79,7 +79,18 @@ fn require_admin(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error
 
     let data = state.keys.verify_access_token(&state.config.jwt, &token)?;
 
-    if data.claims.role != "admin" {
+    // Enforce audience: session cookies only
+    if data.claims.aud != state.config.jwt.issuer {
+        return Err(Error::InvalidToken);
+    }
+
+    // Check current role from DB (not just JWT claims) to handle demotion
+    let user_id: uuid::Uuid = data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
+    let current_role = db::get_user_role(&state.db, user_id)
+        .await?
+        .ok_or(Error::UserNotFound)?;
+
+    if current_role != "admin" {
         return Err(Error::Forbidden);
     }
 
@@ -93,7 +104,7 @@ async fn list_users(
     Query(query): Query<PaginationQuery>,
     jar: CookieJar,
 ) -> Result<Json<Vec<serde_json::Value>>, Error> {
-    require_admin(&state, &jar)?;
+    require_admin(&state, &jar).await?;
 
     let users = db::list_users(&state.db, query.limit, query.offset).await?;
     let response: Vec<serde_json::Value> = users.iter().map(|u| {
@@ -115,7 +126,7 @@ async fn get_user(
     Path(id): Path<Uuid>,
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>, Error> {
-    require_admin(&state, &jar)?;
+    require_admin(&state, &jar).await?;
 
     let user = db::find_user_by_id(&state.db, id)
         .await?
@@ -143,7 +154,7 @@ async fn update_role(
     jar: CookieJar,
     Json(body): Json<UpdateRoleRequest>,
 ) -> Result<StatusCode, Error> {
-    require_admin(&state, &jar)?;
+    require_admin(&state, &jar).await?;
 
     if body.role != "user" && body.role != "admin" {
         return Err(Error::BadRequest("role must be 'user' or 'admin'".to_string()));
@@ -158,7 +169,7 @@ async fn delete_user(
     Path(id): Path<Uuid>,
     jar: CookieJar,
 ) -> Result<StatusCode, Error> {
-    require_admin(&state, &jar)?;
+    require_admin(&state, &jar).await?;
 
     db::delete_all_refresh_tokens(&state.db, id).await?;
     db::soft_delete_user(&state.db, id).await?;
@@ -171,7 +182,7 @@ async fn list_clients(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<Vec<ClientResponse>>, Error> {
-    require_admin(&state, &jar)?;
+    require_admin(&state, &jar).await?;
 
     let clients = db::list_clients(&state.db).await?;
     let response: Vec<ClientResponse> = clients.into_iter().map(|c| ClientResponse {
@@ -191,7 +202,7 @@ async fn register_client(
     jar: CookieJar,
     Json(body): Json<RegisterClientRequest>,
 ) -> Result<(StatusCode, Json<RegisterClientResponse>), Error> {
-    require_admin(&state, &jar)?;
+    require_admin(&state, &jar).await?;
 
     if body.redirect_uris.is_empty() {
         return Err(Error::BadRequest("at least one redirect_uri required".to_string()));
@@ -232,7 +243,7 @@ async fn remove_client(
     Path(id): Path<Uuid>,
     jar: CookieJar,
 ) -> Result<StatusCode, Error> {
-    require_admin(&state, &jar)?;
+    require_admin(&state, &jar).await?;
 
     let deleted = db::delete_client(&state.db, id).await?;
     if !deleted {

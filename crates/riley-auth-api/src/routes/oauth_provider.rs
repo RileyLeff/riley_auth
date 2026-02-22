@@ -8,6 +8,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 use riley_auth_core::db;
 use riley_auth_core::error::Error;
@@ -72,6 +73,14 @@ async fn authorize(
         return Err(Error::BadRequest("response_type must be 'code'".to_string()));
     }
 
+    // PKCE is mandatory
+    let code_challenge = query.code_challenge.as_deref()
+        .ok_or_else(|| Error::BadRequest("code_challenge is required".to_string()))?;
+    let method = query.code_challenge_method.as_deref().unwrap_or("S256");
+    if method != "S256" {
+        return Err(Error::BadRequest("code_challenge_method must be 'S256'".to_string()));
+    }
+
     // Validate client
     let client = db::find_client_by_client_id(&state.db, &query.client_id)
         .await?
@@ -82,6 +91,11 @@ async fn authorize(
         return Err(Error::InvalidRedirectUri);
     }
 
+    // Enforce consent: non-auto-approve clients are not allowed (no consent UI yet)
+    if !client.auto_approve {
+        return Err(Error::ConsentRequired);
+    }
+
     // User must be authenticated (cookie-based)
     let access_token = jar
         .get(ACCESS_TOKEN_COOKIE)
@@ -89,11 +103,13 @@ async fn authorize(
         .ok_or(Error::Unauthenticated)?;
 
     let token_data = state.keys.verify_access_token(&state.config.jwt, &access_token)?;
-    let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
 
-    // For auto_approve clients (first-party), skip consent
-    // For others, we'd show a consent page — for v1, we just proceed
-    // (consent UI would be a frontend concern)
+    // Enforce audience: only session tokens (aud == issuer) can authorize
+    if token_data.claims.aud != state.config.jwt.issuer {
+        return Err(Error::InvalidToken);
+    }
+
+    let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
 
     // Generate authorization code
     let mut code_bytes = [0u8; 32];
@@ -111,8 +127,8 @@ async fn authorize(
         user_id,
         client.id,
         &query.redirect_uri,
-        query.code_challenge.as_deref(),
-        query.code_challenge_method.as_deref(),
+        Some(code_challenge),
+        Some(method),
         expires_at,
     )
     .await?;
@@ -143,7 +159,7 @@ async fn token(
         .ok_or(Error::InvalidClient)?;
 
     let secret_hash = jwt::hash_token(&body.client_secret);
-    if !constant_time_eq(secret_hash.as_bytes(), client.client_secret_hash.as_bytes()) {
+    if secret_hash.as_bytes().ct_eq(client.client_secret_hash.as_bytes()).unwrap_u8() == 0 {
         return Err(Error::InvalidClient);
     }
 
@@ -153,7 +169,9 @@ async fn token(
             let redirect_uri = body.redirect_uri.as_deref().ok_or(Error::InvalidGrant)?;
 
             let code_hash = jwt::hash_token(code);
-            let auth_code = db::find_authorization_code(&state.db, &code_hash)
+
+            // Atomically consume the authorization code (prevents TOCTOU race)
+            let auth_code = db::consume_authorization_code(&state.db, &code_hash)
                 .await?
                 .ok_or(Error::InvalidAuthorizationCode)?;
 
@@ -167,24 +185,21 @@ async fn token(
                 return Err(Error::InvalidGrant);
             }
 
-            // Verify PKCE
-            if let Some(ref challenge) = auth_code.code_challenge {
-                let verifier = body.code_verifier.as_deref()
-                    .ok_or(Error::InvalidGrant)?;
+            // Verify PKCE (mandatory — code_challenge should always be present)
+            let challenge = auth_code.code_challenge.as_deref()
+                .ok_or(Error::InvalidGrant)?;
+            let verifier = body.code_verifier.as_deref()
+                .ok_or(Error::InvalidGrant)?;
 
-                let computed = {
-                    let mut hasher = Sha256::new();
-                    hasher.update(verifier.as_bytes());
-                    URL_SAFE_NO_PAD.encode(hasher.finalize())
-                };
+            let computed = {
+                let mut hasher = Sha256::new();
+                hasher.update(verifier.as_bytes());
+                URL_SAFE_NO_PAD.encode(hasher.finalize())
+            };
 
-                if !constant_time_eq(computed.as_bytes(), challenge.as_bytes()) {
-                    return Err(Error::InvalidGrant);
-                }
+            if computed.as_bytes().ct_eq(challenge.as_bytes()).unwrap_u8() == 0 {
+                return Err(Error::InvalidGrant);
             }
-
-            // Mark code as used
-            db::mark_authorization_code_used(&state.db, &code_hash).await?;
 
             // Get user
             let user = db::find_user_by_id(&state.db, auth_code.user_id)
@@ -225,7 +240,9 @@ async fn token(
                 .ok_or(Error::InvalidGrant)?;
 
             let refresh_hash = jwt::hash_token(refresh_raw);
-            let token_row = db::find_refresh_token(&state.db, &refresh_hash)
+
+            // Atomically consume the refresh token (prevents TOCTOU race)
+            let token_row = db::consume_refresh_token(&state.db, &refresh_hash)
                 .await?
                 .ok_or(Error::InvalidGrant)?;
 
@@ -237,9 +254,6 @@ async fn token(
             let user = db::find_user_by_id(&state.db, token_row.user_id)
                 .await?
                 .ok_or(Error::UserNotFound)?;
-
-            // Rotate refresh token
-            db::delete_refresh_token(&state.db, &refresh_hash).await?;
 
             let access_token = state.keys.sign_access_token(
                 &state.config.jwt,
@@ -284,7 +298,7 @@ async fn revoke(
         .ok_or(Error::InvalidClient)?;
 
     let secret_hash = jwt::hash_token(&body.client_secret);
-    if !constant_time_eq(secret_hash.as_bytes(), client.client_secret_hash.as_bytes()) {
+    if secret_hash.as_bytes().ct_eq(client.client_secret_hash.as_bytes()).unwrap_u8() == 0 {
         return Err(Error::InvalidClient);
     }
 
@@ -293,12 +307,4 @@ async fn revoke(
     let _ = db::delete_refresh_token(&state.db, &token_hash).await;
 
     Ok(StatusCode::OK)
-}
-
-/// Constant-time string comparison.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

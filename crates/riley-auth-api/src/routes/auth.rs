@@ -185,13 +185,13 @@ async fn auth_callback(
             // Redirect to link-accounts page with a setup token.
             let setup_token = create_setup_token(&state.keys, &state.config, &profile)?;
             let jar = jar.add(build_temp_cookie(SETUP_TOKEN_COOKIE, &setup_token, &state.config));
-            let redirect_url = format!(
-                "{}/link-accounts?provider={}&email={}",
-                state.config.server.frontend_url,
-                profile.provider,
-                email
-            );
-            return Ok((jar, Redirect::temporary(&redirect_url)));
+            let mut redirect_url = url::Url::parse(&format!(
+                "{}/link-accounts", state.config.server.frontend_url
+            )).map_err(|_| Error::Config("invalid frontend_url".to_string()))?;
+            redirect_url.query_pairs_mut()
+                .append_pair("provider", &profile.provider)
+                .append_pair("email", email);
+            return Ok((jar, Redirect::temporary(redirect_url.as_str())));
         }
     }
 
@@ -227,19 +227,12 @@ async fn auth_setup(
         return Err(Error::UsernameTaken);
     }
 
-    // Create user
-    let user = db::create_user(
+    // Create user + OAuth link atomically
+    let user = db::create_user_with_link(
         &state.db,
         &body.username,
         profile.name.as_deref(),
         profile.avatar_url.as_deref(),
-    )
-    .await?;
-
-    // Create oauth link
-    db::create_oauth_link(
-        &state.db,
-        user.id,
         &profile.provider,
         &profile.provider_id,
         profile.email.as_deref(),
@@ -266,16 +259,21 @@ async fn auth_refresh(
         .ok_or(Error::Unauthenticated)?;
 
     let refresh_hash = jwt::hash_token(&refresh_raw);
-    let token_row = db::find_refresh_token(&state.db, &refresh_hash)
+
+    // Atomically consume the refresh token (prevents TOCTOU race)
+    let token_row = db::consume_refresh_token(&state.db, &refresh_hash)
         .await?
         .ok_or(Error::InvalidToken)?;
+
+    // Reject client-bound refresh tokens at the session endpoint
+    if token_row.client_id.is_some() {
+        return Err(Error::InvalidToken);
+    }
 
     let user = db::find_user_by_id(&state.db, token_row.user_id)
         .await?
         .ok_or(Error::UserNotFound)?;
 
-    // Rotate refresh token
-    db::delete_refresh_token(&state.db, &refresh_hash).await?;
     let jar = issue_tokens(&state, jar, &user).await?;
 
     Ok((jar, StatusCode::OK))
@@ -379,13 +377,17 @@ async fn update_username(
         .await?
         .ok_or(Error::UserNotFound)?;
 
-    // Record old username
+    // Record old username + update atomically
     let hold_days = state.config.usernames.old_name_hold_days as i64;
     let held_until = Utc::now() + Duration::days(hold_days);
-    db::record_username_change(&state.db, user_id, &current_user.username, held_until).await?;
-
-    // Update username
-    let user = db::update_username(&state.db, user_id, &body.username).await?;
+    let user = db::change_username(
+        &state.db,
+        user_id,
+        &current_user.username,
+        &body.username,
+        held_until,
+    )
+    .await?;
 
     // Re-issue access token with new username
     let access_token = state.keys.sign_access_token(
@@ -588,6 +590,13 @@ fn extract_user(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error>
         .ok_or(Error::Unauthenticated)?;
 
     let data = state.keys.verify_access_token(&state.config.jwt, &token)?;
+
+    // Enforce audience: session cookies must have aud == issuer.
+    // Tokens minted for OAuth clients (aud == client_id) must not be accepted here.
+    if data.claims.aud != state.config.jwt.issuer {
+        return Err(Error::InvalidToken);
+    }
+
     Ok(data.claims)
 }
 

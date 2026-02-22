@@ -237,6 +237,7 @@ fn parse_rsa_public_key_der(der: &[u8]) -> Option<(&[u8], &[u8])> {
     // BIT STRING containing RSAPublicKey
     let (_, bit_string_content) = parse_tlv(rest)?;
     // Skip the unused-bits byte
+    if bit_string_content.is_empty() { return None; }
     let rsa_pub_key_der = &bit_string_content[1..];
 
     // RSAPublicKey ::= SEQUENCE { modulus INTEGER, exponent INTEGER }

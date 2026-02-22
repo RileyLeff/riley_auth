@@ -50,6 +50,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
 fn build_cors(config: &Config) -> CorsLayer {
     let origins = &config.server.cors_origins;
     if origins.is_empty() {
+        tracing::warn!("no cors_origins configured — using permissive CORS (not safe for production)");
         CorsLayer::permissive()
     } else {
         let origins: Vec<_> = origins
@@ -67,6 +68,7 @@ fn build_cors(config: &Config) -> CorsLayer {
             .allow_headers([
                 axum::http::header::CONTENT_TYPE,
                 axum::http::header::AUTHORIZATION,
+                axum::http::HeaderName::from_static("x-requested-with"),
             ])
             .allow_credentials(true)
     }
@@ -74,12 +76,22 @@ fn build_cors(config: &Config) -> CorsLayer {
 
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler");
 
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("received CTRL+C"),
-        _ = sigterm.recv() => tracing::info!("received SIGTERM"),
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+
+        tokio::select! {
+            _ = ctrl_c => tracing::info!("received CTRL+C"),
+            _ = sigterm.recv() => tracing::info!("received SIGTERM"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+        tracing::info!("received CTRL+C");
     }
 }

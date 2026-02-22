@@ -154,8 +154,15 @@ pub async fn update_user_avatar(
 }
 
 pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
-    // Anonymize: replace username, clear PII, set deleted_at
-    let uuid_prefix = &user_id.to_string()[..8];
+    let mut tx = pool.begin().await?;
+
+    // Delete OAuth links so the provider identity can be re-used
+    sqlx::query("DELETE FROM oauth_links WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // Anonymize: replace username with full UUID to avoid collisions, clear PII
     sqlx::query(
         "UPDATE users SET
             username = $2,
@@ -166,9 +173,11 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
          WHERE id = $1 AND deleted_at IS NULL"
     )
     .bind(user_id)
-    .bind(format!("deleted_{uuid_prefix}"))
-    .execute(pool)
+    .bind(format!("deleted_{user_id}"))
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 
@@ -208,13 +217,16 @@ pub async fn list_users(
 
 // --- OAuth link queries ---
 
+/// Find an OAuth link, only for active (non-deleted) users.
 pub async fn find_oauth_link(
     pool: &PgPool,
     provider: &str,
     provider_id: &str,
 ) -> Result<Option<OAuthLink>> {
     let link = sqlx::query_as::<_, OAuthLink>(
-        "SELECT * FROM oauth_links WHERE provider = $1 AND provider_id = $2"
+        "SELECT ol.* FROM oauth_links ol
+         JOIN users u ON u.id = ol.user_id
+         WHERE ol.provider = $1 AND ol.provider_id = $2 AND u.deleted_at IS NULL"
     )
     .bind(provider)
     .bind(provider_id)
@@ -223,12 +235,15 @@ pub async fn find_oauth_link(
     Ok(link)
 }
 
+/// Find OAuth links by email, filtering to active (non-deleted) users only.
 pub async fn find_oauth_links_by_email(
     pool: &PgPool,
     email: &str,
 ) -> Result<Vec<OAuthLink>> {
     let links = sqlx::query_as::<_, OAuthLink>(
-        "SELECT * FROM oauth_links WHERE lower(provider_email) = lower($1)"
+        "SELECT ol.* FROM oauth_links ol
+         JOIN users u ON u.id = ol.user_id
+         WHERE lower(ol.provider_email) = lower($1) AND u.deleted_at IS NULL"
     )
     .bind(email)
     .fetch_all(pool)
@@ -323,6 +338,23 @@ pub async fn find_refresh_token(
 ) -> Result<Option<RefreshTokenRow>> {
     let row = sqlx::query_as::<_, RefreshTokenRow>(
         "SELECT * FROM refresh_tokens WHERE token_hash = $1 AND expires_at > now()"
+    )
+    .bind(token_hash)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Atomically find and delete a refresh token (for rotation).
+/// Returns None if the token doesn't exist or is expired.
+pub async fn consume_refresh_token(
+    pool: &PgPool,
+    token_hash: &str,
+) -> Result<Option<RefreshTokenRow>> {
+    let row = sqlx::query_as::<_, RefreshTokenRow>(
+        "DELETE FROM refresh_tokens
+         WHERE token_hash = $1 AND expires_at > now()
+         RETURNING *"
     )
     .bind(token_hash)
     .fetch_optional(pool)
@@ -520,13 +552,16 @@ pub async fn store_authorization_code(
     Ok(())
 }
 
-pub async fn find_authorization_code(
+/// Atomically find and consume an authorization code.
+/// Returns None if the code doesn't exist, is expired, or was already used.
+pub async fn consume_authorization_code(
     pool: &PgPool,
     code_hash: &str,
 ) -> Result<Option<AuthorizationCodeRow>> {
     let row = sqlx::query_as::<_, AuthorizationCodeRow>(
-        "SELECT * FROM authorization_codes
-         WHERE code_hash = $1 AND expires_at > now() AND used = false"
+        "UPDATE authorization_codes SET used = true
+         WHERE code_hash = $1 AND expires_at > now() AND used = false
+         RETURNING *"
     )
     .bind(code_hash)
     .fetch_optional(pool)
@@ -534,12 +569,90 @@ pub async fn find_authorization_code(
     Ok(row)
 }
 
-pub async fn mark_authorization_code_used(pool: &PgPool, code_hash: &str) -> Result<()> {
-    sqlx::query("UPDATE authorization_codes SET used = true WHERE code_hash = $1")
-        .bind(code_hash)
-        .execute(pool)
-        .await?;
-    Ok(())
+// --- Transactional operations ---
+
+/// Create a user and OAuth link atomically.
+pub async fn create_user_with_link(
+    pool: &PgPool,
+    username: &str,
+    display_name: Option<&str>,
+    avatar_url: Option<&str>,
+    provider: &str,
+    provider_id: &str,
+    email: Option<&str>,
+) -> Result<User> {
+    let mut tx = pool.begin().await?;
+
+    let user = sqlx::query_as::<_, User>(
+        "INSERT INTO users (username, display_name, avatar_url)
+         VALUES ($1, $2, $3)
+         RETURNING *"
+    )
+    .bind(username)
+    .bind(display_name)
+    .bind(avatar_url)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email)
+         VALUES ($1, $2, $3, $4)"
+    )
+    .bind(user.id)
+    .bind(provider)
+    .bind(provider_id)
+    .bind(email)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(user)
+}
+
+/// Change username with history tracking, atomically.
+pub async fn change_username(
+    pool: &PgPool,
+    user_id: Uuid,
+    old_username: &str,
+    new_username: &str,
+    held_until: DateTime<Utc>,
+) -> Result<User> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "INSERT INTO username_history (user_id, old_username, held_until)
+         VALUES ($1, $2, $3)"
+    )
+    .bind(user_id)
+    .bind(old_username)
+    .bind(held_until)
+    .execute(&mut *tx)
+    .await?;
+
+    let user = sqlx::query_as::<_, User>(
+        "UPDATE users SET username = $2, updated_at = now()
+         WHERE id = $1 AND deleted_at IS NULL
+         RETURNING *"
+    )
+    .bind(user_id)
+    .bind(new_username)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(Error::UserNotFound)?;
+
+    tx.commit().await?;
+    Ok(user)
+}
+
+/// Find the current role for a user (fresh from DB, not from JWT claims).
+pub async fn get_user_role(pool: &PgPool, user_id: Uuid) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT role FROM users WHERE id = $1 AND deleted_at IS NULL"
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
 }
 
 // --- Cleanup ---
