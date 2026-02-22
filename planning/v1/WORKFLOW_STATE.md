@@ -1,8 +1,8 @@
 # v1 Workflow State
 
 **Current Phase:** Exhaustive Review (Phases 1-7)
-**Current Step:** Review round 8 (clean pass attempt #1 after R7 fixes)
-**Status:** R7 Codex found 2 major (atomic link creation, cookie removal path/domain), fixed in 0856d44. Launching R8.
+**Current Step:** Review round 9 (clean pass attempt #1 after R8 fix)
+**Status:** R8 Codex found 1 major (READ COMMITTED snapshot race in create_oauth_link), fixed with FOR SHARE in 4d0df05. Launching R9.
 
 ## Progress
 
@@ -20,7 +20,8 @@
 | - | R5 review | 1 major (deadlock) + 4 minor | Fixed (5f8d69f) |
 | - | R6 review | 2 major (link creation + unlink bypass) | Fixed (c5591bf) |
 | - | R7 review | 2 major (atomic link + cookie path) | Fixed (0856d44) |
-| - | R8 review | Parallel review (clean pass attempt #1) | In Progress |
+| - | R8 review | 1 major (READ COMMITTED race) | Fixed (4d0df05) |
+| - | R9 review | Clean pass attempt #1 | In Progress |
 | 8 | 8.1-8.5 | Docker, integration tests, Dockerfile, config, rate limiting | Pending |
 
 ## Blockers
@@ -29,6 +30,6 @@ None.
 
 ## Recent Activity
 
-- R6: 2 major — deleted-user link check + multi-provider unlink guard (c5591bf)
 - R7: 2 major — atomic link creation + cookie removal path/domain (0856d44)
-- R8: Parallel review launching
+- R8: 1 major — READ COMMITTED snapshot race in create_oauth_link, fixed with FOR SHARE (4d0df05)
+- R9: Launching parallel review (clean pass attempt #1)

@@ -36,3 +36,11 @@ This file records architectural tradeoffs flagged during review that are intenti
 ## Token issuance TOCTOU (user deleted between fetch and token store)
 **Flagged by**: Codex R6 (major)
 **Decision**: Dismissed. If a user is soft-deleted between `find_user_by_id` and `store_refresh_token`, the orphaned refresh token can never be used — the next `auth_refresh` call checks `find_user_by_id` (which filters `deleted_at IS NULL`) and returns UserNotFound. The access token expires naturally within the short TTL. This is the standard JWT tradeoff — not a bug, not fixable without making JWTs stateful (defeating their purpose).
+
+## JWT audience defaults (`validate_aud = false`)
+**Flagged by**: Gemini R7 (minor), Gemini R8 (minor)
+**Decision**: Defense-in-depth improvement only. All current call sites correctly check audience: session routes verify `aud == issuer`, OAuth provider routes verify `aud == client_id`. The risk is a future developer adding a new route without audience checking. Low priority since the entire auth module is small and well-understood.
+
+## `auth_setup` maps all unique violations to username_taken
+**Flagged by**: Gemini R6 (minor)
+**Decision**: Acceptable. The username is pre-checked before the transaction, so the only unique violation that can realistically occur is the username constraint. If some exotic race causes a different unique violation, returning "username taken" is a safe and non-leaking error.
