@@ -429,7 +429,15 @@ async fn delete_account(
     let claims = extract_user(&state, &jar)?;
     let user_id = claims.sub_uuid()?;
 
-    db::soft_delete_user(&state.db, user_id).await?;
+    match db::soft_delete_user(&state.db, user_id).await? {
+        db::DeleteUserResult::Deleted => {}
+        db::DeleteUserResult::LastAdmin => {
+            return Err(Error::BadRequest("cannot delete the last admin".to_string()));
+        }
+        db::DeleteUserResult::NotFound => {
+            return Err(Error::UserNotFound);
+        }
+    }
 
     let jar = jar
         .remove(Cookie::from(ACCESS_TOKEN_COOKIE))

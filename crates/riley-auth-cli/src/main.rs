@@ -170,11 +170,15 @@ async fn main() -> anyhow::Result<()> {
             let user = db::find_user_by_username(&pool, &username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("user '{}' not found", username))?;
-            let deleted = db::soft_delete_user(&pool, user.id).await?;
-            if !deleted {
-                anyhow::bail!("user '{}' was already deleted", username);
+            match db::soft_delete_user(&pool, user.id).await? {
+                db::DeleteUserResult::Deleted => println!("User {} deleted (anonymized)", username),
+                db::DeleteUserResult::LastAdmin => {
+                    anyhow::bail!("cannot delete '{}' — they are the last admin", username);
+                }
+                db::DeleteUserResult::NotFound => {
+                    anyhow::bail!("user '{}' was already deleted", username);
+                }
             }
-            println!("User {} deleted (anonymized)", username);
         }
         Command::RegisterClient { name, redirect_uris, auto_approve } => {
             // Generate client_id and client_secret

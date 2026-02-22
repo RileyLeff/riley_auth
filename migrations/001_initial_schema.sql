@@ -28,7 +28,7 @@ CREATE TABLE oauth_links (
 );
 
 CREATE INDEX idx_oauth_links_user_id ON oauth_links(user_id);
-CREATE INDEX idx_oauth_links_provider_email ON oauth_links(provider_email)
+CREATE INDEX idx_oauth_links_provider_email ON oauth_links(lower(provider_email))
     WHERE provider_email IS NOT NULL;
 
 -- OAuth clients (for cross-domain "Sign in with Riley")

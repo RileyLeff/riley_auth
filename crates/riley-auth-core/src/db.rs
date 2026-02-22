@@ -153,13 +153,54 @@ pub async fn update_user_avatar(
     Ok(user)
 }
 
-/// Soft-delete a user: revoke all refresh tokens, delete OAuth links, anonymize.
-/// All operations are atomic within a single transaction.
-pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<bool> {
+/// Result of attempting to soft-delete a user.
+pub enum DeleteUserResult {
+    /// Successfully deleted.
+    Deleted,
+    /// Cannot delete the last admin.
+    LastAdmin,
+    /// User not found (or already deleted).
+    NotFound,
+}
+
+/// Soft-delete a user: revoke all tokens, delete linked data, anonymize.
+/// Prevents deleting the last admin. All operations are atomic within a single transaction.
+pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<DeleteUserResult> {
     let mut tx = pool.begin().await?;
+
+    // Check if this user is an admin; if so, ensure they're not the last one
+    let user_role: Option<(String,)> = sqlx::query_as(
+        "SELECT role FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE"
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some((role,)) = user_role else {
+        return Ok(DeleteUserResult::NotFound);
+    };
+
+    if role == "admin" {
+        // Lock all admin rows to serialize with concurrent demotion/deletion
+        let admin_count: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM users WHERE role = 'admin' AND deleted_at IS NULL FOR UPDATE"
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if admin_count.len() <= 1 {
+            return Ok(DeleteUserResult::LastAdmin);
+        }
+    }
 
     // Revoke all refresh tokens
     sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // Revoke any outstanding authorization codes
+    sqlx::query("DELETE FROM authorization_codes WHERE user_id = $1")
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
@@ -170,8 +211,14 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<bool> {
         .execute(&mut *tx)
         .await?;
 
+    // Clean up username history (PII)
+    sqlx::query("DELETE FROM username_history WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
     // Anonymize: replace username with full UUID to avoid collisions, clear PII
-    let result = sqlx::query(
+    sqlx::query(
         "UPDATE users SET
             username = $2,
             display_name = 'Deleted User',
@@ -186,7 +233,7 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<bool> {
     .await?;
 
     tx.commit().await?;
-    Ok(result.rows_affected() > 0)
+    Ok(DeleteUserResult::Deleted)
 }
 
 /// Result of attempting to update a user's role.

@@ -179,11 +179,13 @@ async fn delete_user(
 ) -> Result<StatusCode, Error> {
     require_admin(&state, &jar).await?;
 
-    let deleted = db::soft_delete_user(&state.db, id).await?;
-    if !deleted {
-        return Err(Error::UserNotFound);
+    match db::soft_delete_user(&state.db, id).await? {
+        db::DeleteUserResult::Deleted => Ok(StatusCode::OK),
+        db::DeleteUserResult::LastAdmin => {
+            Err(Error::BadRequest("cannot delete the last admin".to_string()))
+        }
+        db::DeleteUserResult::NotFound => Err(Error::UserNotFound),
     }
-    Ok(StatusCode::OK)
 }
 
 // --- Client admin endpoints ---
