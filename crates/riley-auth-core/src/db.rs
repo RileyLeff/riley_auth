@@ -165,30 +165,30 @@ pub enum DeleteUserResult {
 
 /// Soft-delete a user: revoke all tokens, delete linked data, anonymize.
 /// Prevents deleting the last admin. All operations are atomic within a single transaction.
+/// Uses a single lock query with consistent ORDER BY to prevent deadlocks.
 pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<DeleteUserResult> {
     let mut tx = pool.begin().await?;
 
-    // Check if this user is an admin; if so, ensure they're not the last one
-    let user_role: Option<(String,)> = sqlx::query_as(
-        "SELECT role FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE"
+    // Lock the target user AND all admin rows in a single query with consistent
+    // id ordering to prevent deadlocks between concurrent delete/demote operations.
+    let locked_rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, role FROM users
+         WHERE (id = $1 OR role = 'admin') AND deleted_at IS NULL
+         ORDER BY id FOR UPDATE"
     )
     .bind(user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
 
-    let Some((role,)) = user_role else {
+    // Find the target user in the result set
+    let target = locked_rows.iter().find(|(id, _)| *id == user_id);
+    let Some((_, role)) = target else {
         return Ok(DeleteUserResult::NotFound);
     };
 
     if role == "admin" {
-        // Lock all admin rows to serialize with concurrent demotion/deletion
-        let admin_count: Vec<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM users WHERE role = 'admin' AND deleted_at IS NULL FOR UPDATE"
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-
-        if admin_count.len() <= 1 {
+        let admin_count = locked_rows.iter().filter(|(_, r)| r == "admin").count();
+        if admin_count <= 1 {
             return Ok(DeleteUserResult::LastAdmin);
         }
     }
@@ -247,7 +247,8 @@ pub enum RoleUpdateResult {
 }
 
 /// Update a user's role, preventing last-admin lockout.
-/// Uses `SELECT FOR UPDATE` on admin rows to serialize concurrent demotion attempts.
+/// Uses a single `SELECT FOR UPDATE` with consistent `ORDER BY id` to prevent
+/// deadlocks with concurrent role changes and soft-deletes.
 pub async fn update_user_role(
     pool: &PgPool,
     user_id: Uuid,
@@ -255,18 +256,29 @@ pub async fn update_user_role(
 ) -> Result<RoleUpdateResult> {
     let mut tx = pool.begin().await?;
 
-    // If demoting, lock all admin rows to prevent concurrent demotion race
     if new_role != "admin" {
-        let admins: Vec<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM users WHERE role = 'admin' AND deleted_at IS NULL FOR UPDATE"
+        // Lock the target user AND all admin rows in a single query with
+        // consistent id ordering to prevent deadlocks between concurrent
+        // demote/delete operations.
+        let locked_rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, role FROM users
+             WHERE (id = $1 OR role = 'admin') AND deleted_at IS NULL
+             ORDER BY id FOR UPDATE"
         )
+        .bind(user_id)
         .fetch_all(&mut *tx)
         .await?;
 
-        // If target is an admin and is the only one, reject
-        let target_is_admin = admins.iter().any(|(id,)| *id == user_id);
-        if target_is_admin && admins.len() <= 1 {
-            return Ok(RoleUpdateResult::LastAdmin);
+        let target = locked_rows.iter().find(|(id, _)| *id == user_id);
+        let Some((_, current_role)) = target else {
+            return Ok(RoleUpdateResult::NotFound);
+        };
+
+        if current_role == "admin" {
+            let admin_count = locked_rows.iter().filter(|(_, r)| r == "admin").count();
+            if admin_count <= 1 {
+                return Ok(RoleUpdateResult::LastAdmin);
+            }
         }
     }
 
