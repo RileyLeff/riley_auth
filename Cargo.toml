@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = ["crates/riley-auth-core", "crates/riley-auth-api", "crates/riley-auth-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/rileyleff/riley_auth"
+authors = ["Riley Leff <rileyleff@gmail.com>"]
+keywords = ["auth", "oauth", "jwt", "identity"]
+categories = ["web-programming", "authentication"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP server
+axum = "0.8"
+axum-extra = { version = "0.10", features = ["cookie"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "set-header"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# HTTP client (for OAuth token exchange)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
+
+# JWT
+jsonwebtoken = "9"
+
+# Crypto
+rand = "0.9"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
+dirs = "6.0"
+
+# Workspace crates
+riley-auth-core = { path = "crates/riley-auth-core", version = "0.1.0" }
+riley-auth-api = { path = "crates/riley-auth-api", version = "0.1.0" }
+riley-auth-cli = { path = "crates/riley-auth-cli", version = "0.1.0" }

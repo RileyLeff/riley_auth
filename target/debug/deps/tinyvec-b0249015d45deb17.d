@@ -1,0 +1,11 @@
+/Users/rileyleff/Documents/dev/riley_auth/target/debug/deps/tinyvec-b0249015d45deb17.d: /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/lib.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array/const_generic_impl.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec_drain.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/slicevec.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/tinyvec.rs
+
+/Users/rileyleff/Documents/dev/riley_auth/target/debug/deps/libtinyvec-b0249015d45deb17.rmeta: /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/lib.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array/const_generic_impl.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec_drain.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/slicevec.rs /Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/tinyvec.rs
+
+/Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/lib.rs:
+/Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array.rs:
+/Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array/const_generic_impl.rs:
+/Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec.rs:
+/Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec_drain.rs:
+/Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/slicevec.rs:
+/Users/rileyleff/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/tinyvec.rs:
