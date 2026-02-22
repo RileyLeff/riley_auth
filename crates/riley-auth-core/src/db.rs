@@ -366,7 +366,10 @@ pub async fn find_oauth_links_by_user(
 }
 
 /// Create an OAuth link, atomically verifying the user is active (not soft-deleted).
-/// Uses INSERT ... SELECT to prevent creating orphaned links for deleted users.
+/// Uses `SELECT ... FOR SHARE` to lock the user row, serializing against
+/// `soft_delete_user`'s `FOR UPDATE` lock. This prevents the READ COMMITTED
+/// snapshot race where an INSERT could succeed against a concurrently-deleted user.
+/// `FOR SHARE` (not `FOR UPDATE`) allows concurrent link creations to proceed in parallel.
 pub async fn create_oauth_link(
     pool: &PgPool,
     user_id: Uuid,
@@ -374,19 +377,34 @@ pub async fn create_oauth_link(
     provider_id: &str,
     email: Option<&str>,
 ) -> Result<OAuthLink> {
+    let mut tx = pool.begin().await?;
+
+    // Lock the user row with FOR SHARE — blocks if soft_delete_user holds FOR UPDATE,
+    // and prevents soft_delete_user from acquiring FOR UPDATE while we hold this lock.
+    let user_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR SHARE"
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if user_exists.is_none() {
+        return Err(Error::UserNotFound);
+    }
+
     let link = sqlx::query_as::<_, OAuthLink>(
         "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email)
-         SELECT $1, $2, $3, $4
-         FROM users WHERE id = $1 AND deleted_at IS NULL
+         VALUES ($1, $2, $3, $4)
          RETURNING *"
     )
     .bind(user_id)
     .bind(provider)
     .bind(provider_id)
     .bind(email)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(Error::UserNotFound)?;
+    .fetch_one(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
     Ok(link)
 }
 
