@@ -8,6 +8,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use riley_auth_core::config::Config;
+use riley_auth_core::jwt::Keys;
 
 use crate::routes;
 
@@ -16,9 +17,10 @@ use crate::routes;
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: PgPool,
+    pub keys: Arc<Keys>,
 }
 
-pub async fn serve(config: Config, db: PgPool) -> anyhow::Result<()> {
+pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()> {
     let addr = SocketAddr::new(config.server.host.parse()?, config.server.port);
 
     let cors = build_cors(&config);
@@ -26,6 +28,7 @@ pub async fn serve(config: Config, db: PgPool) -> anyhow::Result<()> {
     let state = AppState {
         config: Arc::new(config),
         db,
+        keys: Arc::new(keys),
     };
 
     let app = Router::new()

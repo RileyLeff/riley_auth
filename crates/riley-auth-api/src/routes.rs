@@ -18,8 +18,13 @@ async fn health(State(_state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(state.keys.jwks())
+}
+
 /// Build the application router.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
+        .route("/.well-known/jwks.json", get(jwks))
 }
