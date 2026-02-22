@@ -578,19 +578,11 @@ async fn unlink_provider(
     let claims = extract_user(&state, &jar)?;
     let user_id = claims.sub_uuid()?;
 
-    // Atomically delete only if user has >1 provider (prevents TOCTOU race)
-    let deleted = db::delete_oauth_link_if_not_last(&state.db, user_id, &provider_name).await?;
-    if !deleted {
-        // Either the link doesn't exist or it's the last one.
-        // Check which case: if the link exists, it must be the last provider.
-        let count = db::count_oauth_links(&state.db, user_id).await?;
-        if count > 0 {
-            return Err(Error::LastProvider);
-        }
-        return Err(Error::NotFound);
+    match db::delete_oauth_link_if_not_last(&state.db, user_id, &provider_name).await? {
+        db::UnlinkResult::Deleted => Ok(StatusCode::OK),
+        db::UnlinkResult::LastProvider => Err(Error::LastProvider),
+        db::UnlinkResult::NotFound => Err(Error::NotFound),
     }
-
-    Ok(StatusCode::OK)
 }
 
 // --- Helpers ---

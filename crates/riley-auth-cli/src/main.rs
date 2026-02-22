@@ -137,15 +137,27 @@ async fn main() -> anyhow::Result<()> {
             let user = db::find_user_by_username(&pool, &username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("user '{}' not found", username))?;
-            db::update_user_role(&pool, user.id, "admin").await?;
-            println!("{} promoted to admin", username);
+            match db::update_user_role(&pool, user.id, "admin").await? {
+                db::RoleUpdateResult::Updated(_) => println!("{} promoted to admin", username),
+                db::RoleUpdateResult::LastAdmin => unreachable!("promoting cannot hit last-admin guard"),
+                db::RoleUpdateResult::NotFound => {
+                    anyhow::bail!("user '{}' not found", username);
+                }
+            }
         }
         Command::Demote { username } => {
             let user = db::find_user_by_username(&pool, &username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("user '{}' not found", username))?;
-            db::update_user_role(&pool, user.id, "user").await?;
-            println!("{} demoted to user", username);
+            match db::update_user_role(&pool, user.id, "user").await? {
+                db::RoleUpdateResult::Updated(_) => println!("{} demoted to user", username),
+                db::RoleUpdateResult::LastAdmin => {
+                    anyhow::bail!("cannot demote '{}' — they are the last admin", username);
+                }
+                db::RoleUpdateResult::NotFound => {
+                    anyhow::bail!("user '{}' not found", username);
+                }
+            }
         }
         Command::Revoke { username } => {
             let user = db::find_user_by_username(&pool, &username)
@@ -158,8 +170,10 @@ async fn main() -> anyhow::Result<()> {
             let user = db::find_user_by_username(&pool, &username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("user '{}' not found", username))?;
-            db::delete_all_refresh_tokens(&pool, user.id).await?;
-            db::soft_delete_user(&pool, user.id).await?;
+            let deleted = db::soft_delete_user(&pool, user.id).await?;
+            if !deleted {
+                anyhow::bail!("user '{}' was already deleted", username);
+            }
             println!("User {} deleted (anonymized)", username);
         }
         Command::RegisterClient { name, redirect_uris, auto_approve } => {

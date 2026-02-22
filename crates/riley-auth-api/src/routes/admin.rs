@@ -107,8 +107,9 @@ async fn list_users(
 ) -> Result<Json<Vec<serde_json::Value>>, Error> {
     require_admin(&state, &jar).await?;
 
-    let limit = query.limit.min(MAX_LIMIT);
-    let users = db::list_users(&state.db, limit, query.offset).await?;
+    let limit = query.limit.max(0).min(MAX_LIMIT);
+    let offset = query.offset.max(0);
+    let users = db::list_users(&state.db, limit, offset).await?;
     let response: Vec<serde_json::Value> = users.iter().map(|u| {
         serde_json::json!({
             "id": u.id.to_string(),
@@ -156,25 +157,19 @@ async fn update_role(
     jar: CookieJar,
     Json(body): Json<UpdateRoleRequest>,
 ) -> Result<StatusCode, Error> {
-    let claims = require_admin(&state, &jar).await?;
+    let _claims = require_admin(&state, &jar).await?;
 
     if body.role != "user" && body.role != "admin" {
         return Err(Error::BadRequest("role must be 'user' or 'admin'".to_string()));
     }
 
-    // Prevent last-admin lockout: if demoting, check that another admin exists
-    if body.role != "admin" {
-        let caller_id: uuid::Uuid = claims.sub.parse().map_err(|_| Error::InvalidToken)?;
-        if caller_id == id {
-            let admin_count = db::count_admins(&state.db).await?;
-            if admin_count <= 1 {
-                return Err(Error::BadRequest("cannot demote the last admin".to_string()));
-            }
+    match db::update_user_role(&state.db, id, &body.role).await? {
+        db::RoleUpdateResult::Updated(_) => Ok(StatusCode::OK),
+        db::RoleUpdateResult::LastAdmin => {
+            Err(Error::BadRequest("cannot demote the last admin".to_string()))
         }
+        db::RoleUpdateResult::NotFound => Err(Error::UserNotFound),
     }
-
-    db::update_user_role(&state.db, id, &body.role).await?;
-    Ok(StatusCode::OK)
 }
 
 async fn delete_user(

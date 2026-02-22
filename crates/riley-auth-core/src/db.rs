@@ -189,31 +189,56 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<bool> {
     Ok(result.rows_affected() > 0)
 }
 
+/// Result of attempting to update a user's role.
+pub enum RoleUpdateResult {
+    /// Successfully updated.
+    Updated(User),
+    /// Would leave zero admins — rejected.
+    LastAdmin,
+    /// Target user not found.
+    NotFound,
+}
+
+/// Update a user's role, preventing last-admin lockout.
+/// Uses `SELECT FOR UPDATE` on admin rows to serialize concurrent demotion attempts.
 pub async fn update_user_role(
     pool: &PgPool,
     user_id: Uuid,
-    role: &str,
-) -> Result<User> {
+    new_role: &str,
+) -> Result<RoleUpdateResult> {
+    let mut tx = pool.begin().await?;
+
+    // If demoting, lock all admin rows to prevent concurrent demotion race
+    if new_role != "admin" {
+        let admins: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM users WHERE role = 'admin' AND deleted_at IS NULL FOR UPDATE"
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        // If target is an admin and is the only one, reject
+        let target_is_admin = admins.iter().any(|(id,)| *id == user_id);
+        if target_is_admin && admins.len() <= 1 {
+            return Ok(RoleUpdateResult::LastAdmin);
+        }
+    }
+
     let user = sqlx::query_as::<_, User>(
         "UPDATE users SET role = $2, updated_at = now()
          WHERE id = $1 AND deleted_at IS NULL
          RETURNING *"
     )
     .bind(user_id)
-    .bind(role)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(Error::UserNotFound)?;
-    Ok(user)
-}
-
-pub async fn count_admins(pool: &PgPool) -> Result<i64> {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND deleted_at IS NULL"
-    )
-    .fetch_one(pool)
+    .bind(new_role)
+    .fetch_optional(&mut *tx)
     .await?;
-    Ok(row.0)
+
+    tx.commit().await?;
+
+    match user {
+        Some(u) => Ok(RoleUpdateResult::Updated(u)),
+        None => Ok(RoleUpdateResult::NotFound),
+    }
 }
 
 pub async fn list_users(
@@ -302,34 +327,53 @@ pub async fn create_oauth_link(
     Ok(link)
 }
 
+/// Result of attempting to unlink a provider.
+pub enum UnlinkResult {
+    /// Successfully deleted the link.
+    Deleted,
+    /// Cannot delete — this is the user's only provider.
+    LastProvider,
+    /// No link found for this provider.
+    NotFound,
+}
+
 /// Delete an OAuth link only if the user has more than one.
-/// Returns Ok(true) if deleted, Ok(false) if not found, Err(LastProvider) if it would be the last.
+/// Uses `SELECT FOR UPDATE` to serialize concurrent unlink attempts.
 pub async fn delete_oauth_link_if_not_last(
     pool: &PgPool,
     user_id: Uuid,
     provider: &str,
-) -> Result<bool> {
-    // Atomic: only delete if the user has at least 2 links
-    let result = sqlx::query(
-        "DELETE FROM oauth_links
-         WHERE user_id = $1 AND provider = $2
-           AND (SELECT COUNT(*) FROM oauth_links WHERE user_id = $1) > 1"
-    )
-    .bind(user_id)
-    .bind(provider)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
+) -> Result<UnlinkResult> {
+    let mut tx = pool.begin().await?;
 
-pub async fn count_oauth_links(pool: &PgPool, user_id: Uuid) -> Result<i64> {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM oauth_links WHERE user_id = $1"
+    // Lock all links for this user to prevent concurrent unlinks
+    let links: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, provider FROM oauth_links WHERE user_id = $1 FOR UPDATE"
     )
     .bind(user_id)
-    .fetch_one(pool)
+    .fetch_all(&mut *tx)
     .await?;
-    Ok(row.0)
+
+    // Check if the target provider link exists
+    let has_target = links.iter().any(|(_, p)| p == provider);
+    if !has_target {
+        return Ok(UnlinkResult::NotFound);
+    }
+
+    // Check if it's the last provider
+    if links.len() <= 1 {
+        return Ok(UnlinkResult::LastProvider);
+    }
+
+    // Safe to delete
+    sqlx::query("DELETE FROM oauth_links WHERE user_id = $1 AND provider = $2")
+        .bind(user_id)
+        .bind(provider)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(UnlinkResult::Deleted)
 }
 
 // --- Refresh token queries ---
