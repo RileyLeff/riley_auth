@@ -23,3 +23,7 @@ jsonwebtoken.workspace = true
 uuid.workspace = true
 cookie = "0.18"
 regex = "1"
+sha2 = "0.10"
+base64 = "0.22"
+rand.workspace = true
+url.workspace = true

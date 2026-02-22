@@ -17,7 +17,7 @@ use riley_auth_core::oauth::{self, Provider};
 use crate::server::AppState;
 
 // --- Cookie names ---
-const ACCESS_TOKEN_COOKIE: &str = "riley_auth_access";
+pub const ACCESS_TOKEN_COOKIE: &str = "riley_auth_access";
 const REFRESH_TOKEN_COOKIE: &str = "riley_auth_refresh";
 const OAUTH_STATE_COOKIE: &str = "riley_auth_oauth_state";
 const PKCE_COOKIE: &str = "riley_auth_pkce";

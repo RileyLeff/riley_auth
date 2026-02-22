@@ -401,6 +401,147 @@ pub async fn is_username_held(pool: &PgPool, username: &str) -> Result<bool> {
     Ok(row.is_some())
 }
 
+// --- OAuth client queries ---
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct OAuthClient {
+    pub id: Uuid,
+    pub name: String,
+    pub client_id: String,
+    pub client_secret_hash: String,
+    pub redirect_uris: Vec<String>,
+    pub auto_approve: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn find_client_by_client_id(
+    pool: &PgPool,
+    client_id: &str,
+) -> Result<Option<OAuthClient>> {
+    let client = sqlx::query_as::<_, OAuthClient>(
+        "SELECT * FROM oauth_clients WHERE client_id = $1"
+    )
+    .bind(client_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(client)
+}
+
+pub async fn find_client_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OAuthClient>> {
+    let client = sqlx::query_as::<_, OAuthClient>(
+        "SELECT * FROM oauth_clients WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(client)
+}
+
+pub async fn list_clients(pool: &PgPool) -> Result<Vec<OAuthClient>> {
+    let clients = sqlx::query_as::<_, OAuthClient>(
+        "SELECT * FROM oauth_clients ORDER BY created_at DESC"
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(clients)
+}
+
+pub async fn create_client(
+    pool: &PgPool,
+    name: &str,
+    client_id: &str,
+    client_secret_hash: &str,
+    redirect_uris: &[String],
+    auto_approve: bool,
+) -> Result<OAuthClient> {
+    let client = sqlx::query_as::<_, OAuthClient>(
+        "INSERT INTO oauth_clients (name, client_id, client_secret_hash, redirect_uris, auto_approve)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *"
+    )
+    .bind(name)
+    .bind(client_id)
+    .bind(client_secret_hash)
+    .bind(redirect_uris)
+    .bind(auto_approve)
+    .fetch_one(pool)
+    .await?;
+    Ok(client)
+}
+
+pub async fn delete_client(pool: &PgPool, id: Uuid) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM oauth_clients WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+// --- Authorization code queries ---
+
+#[derive(Debug, Clone, FromRow)]
+pub struct AuthorizationCodeRow {
+    pub id: Uuid,
+    pub code_hash: String,
+    pub user_id: Uuid,
+    pub client_id: Uuid,
+    pub redirect_uri: String,
+    pub scopes: Vec<String>,
+    pub code_challenge: Option<String>,
+    pub code_challenge_method: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub used: bool,
+}
+
+pub async fn store_authorization_code(
+    pool: &PgPool,
+    code_hash: &str,
+    user_id: Uuid,
+    client_id: Uuid,
+    redirect_uri: &str,
+    code_challenge: Option<&str>,
+    code_challenge_method: Option<&str>,
+    expires_at: DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO authorization_codes (code_hash, user_id, client_id, redirect_uri, code_challenge, code_challenge_method, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)"
+    )
+    .bind(code_hash)
+    .bind(user_id)
+    .bind(client_id)
+    .bind(redirect_uri)
+    .bind(code_challenge)
+    .bind(code_challenge_method)
+    .bind(expires_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn find_authorization_code(
+    pool: &PgPool,
+    code_hash: &str,
+) -> Result<Option<AuthorizationCodeRow>> {
+    let row = sqlx::query_as::<_, AuthorizationCodeRow>(
+        "SELECT * FROM authorization_codes
+         WHERE code_hash = $1 AND expires_at > now() AND used = false"
+    )
+    .bind(code_hash)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn mark_authorization_code_used(pool: &PgPool, code_hash: &str) -> Result<()> {
+    sqlx::query("UPDATE authorization_codes SET used = true WHERE code_hash = $1")
+        .bind(code_hash)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // --- Cleanup ---
 
 pub async fn cleanup_expired_tokens(pool: &PgPool) -> Result<u64> {
