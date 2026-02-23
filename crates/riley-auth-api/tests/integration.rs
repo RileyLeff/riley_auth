@@ -1712,3 +1712,206 @@ fn oidc_token_response_includes_id_token() {
         );
     });
 }
+
+// --- Session visibility tests ---
+
+#[test]
+#[ignore]
+fn session_list_shows_current_session() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, refresh_token) =
+            s.create_user_with_session("sess_user", "user").await;
+
+        let resp = client
+            .get(s.url("/auth/sessions"))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let sessions: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["is_current"], true);
+        // Session id should be a valid UUID string
+        assert!(uuid::Uuid::parse_str(sessions[0]["id"].as_str().unwrap()).is_ok());
+    });
+}
+
+#[test]
+#[ignore]
+fn session_list_multiple_sessions() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Create user with first session
+        let (user, access_token, refresh_token) =
+            s.create_user_with_session("multi_sess", "user").await;
+
+        // Create a second session directly in DB (simulates login from another device)
+        let (_, second_hash) = jwt::generate_refresh_token();
+        let expires_at = chrono::Utc::now()
+            + chrono::Duration::seconds(s.config.jwt.refresh_token_ttl_secs as i64);
+        db::store_refresh_token(
+            &s.db,
+            user.id,
+            None,
+            &second_hash,
+            expires_at,
+            &[],
+            Some("Mozilla/5.0 (iPhone)"),
+            Some("10.0.0.1"),
+        )
+        .await
+        .unwrap();
+
+        let client = s.client();
+        let resp = client
+            .get(s.url("/auth/sessions"))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let sessions: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert_eq!(sessions.len(), 2);
+
+        // Exactly one should be current
+        let current_count = sessions.iter().filter(|s| s["is_current"] == true).count();
+        assert_eq!(current_count, 1);
+
+        // The other session should have the metadata we stored
+        let other = sessions.iter().find(|s| s["is_current"] == false).unwrap();
+        assert_eq!(other["user_agent"], "Mozilla/5.0 (iPhone)");
+        assert_eq!(other["ip_address"], "10.0.0.1");
+    });
+}
+
+#[test]
+#[ignore]
+fn session_revoke_other_session() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        let (user, access_token, refresh_token) =
+            s.create_user_with_session("revoke_sess", "user").await;
+
+        // Create a second session
+        let (_, second_hash) = jwt::generate_refresh_token();
+        let expires_at = chrono::Utc::now()
+            + chrono::Duration::seconds(s.config.jwt.refresh_token_ttl_secs as i64);
+        db::store_refresh_token(
+            &s.db, user.id, None, &second_hash, expires_at, &[], None, None,
+        )
+        .await
+        .unwrap();
+
+        let client = s.client();
+
+        // List sessions to find the other session's ID
+        let resp = client
+            .get(s.url("/auth/sessions"))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        let sessions: Vec<serde_json::Value> = resp.json().await.unwrap();
+        let other = sessions.iter().find(|s| s["is_current"] == false).unwrap();
+        let other_id = other["id"].as_str().unwrap();
+
+        // Revoke the other session
+        let resp = client
+            .delete(s.url(&format!("/auth/sessions/{other_id}")))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify only one session remains
+        let resp = client
+            .get(s.url("/auth/sessions"))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        let sessions: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["is_current"], true);
+    });
+}
+
+#[test]
+#[ignore]
+fn session_cannot_revoke_current() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        let (_, access_token, refresh_token) =
+            s.create_user_with_session("current_sess", "user").await;
+
+        let client = s.client();
+
+        // Get current session ID
+        let resp = client
+            .get(s.url("/auth/sessions"))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        let sessions: Vec<serde_json::Value> = resp.json().await.unwrap();
+        let current_id = sessions[0]["id"].as_str().unwrap();
+
+        // Try to revoke current session — should fail
+        let resp = client
+            .delete(s.url(&format!("/auth/sessions/{current_id}")))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
+fn session_requires_authentication() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // List sessions without auth
+        let resp = client
+            .get(s.url("/auth/sessions"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Revoke session without auth
+        let resp = client
+            .delete(s.url("/auth/sessions/00000000-0000-0000-0000-000000000000"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
