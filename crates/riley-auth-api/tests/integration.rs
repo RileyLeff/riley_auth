@@ -1955,6 +1955,18 @@ fn oidc_discovery_document() {
         assert!(scopes.contains(&serde_json::json!("openid")));
         assert!(scopes.contains(&serde_json::json!("read:profile")));
         assert!(scopes.contains(&serde_json::json!("write:profile")));
+
+        // userinfo_endpoint
+        assert_eq!(
+            doc["userinfo_endpoint"],
+            "http://localhost:3000/auth/me"
+        );
+
+        // claims_supported
+        assert_eq!(
+            doc["claims_supported"],
+            serde_json::json!(["sub", "name", "preferred_username", "picture"])
+        );
     });
 }
 
