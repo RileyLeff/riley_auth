@@ -243,6 +243,9 @@ async fn register_client(
 ) -> Result<(StatusCode, Json<RegisterClientResponse>), Error> {
     require_admin(&state, &jar).await?;
 
+    if body.name.is_empty() || body.name.len() > 256 {
+        return Err(Error::BadRequest("client name must be 1-256 characters".to_string()));
+    }
     if body.redirect_uris.is_empty() {
         return Err(Error::BadRequest("at least one redirect_uri required".to_string()));
     }
@@ -415,6 +418,9 @@ async fn register_webhook(
 ) -> Result<(StatusCode, Json<WebhookResponse>), Error> {
     require_admin(&state, &jar).await?;
 
+    if body.url.len() > 2048 {
+        return Err(Error::BadRequest("webhook URL must be at most 2048 characters".to_string()));
+    }
     // Validate URL: must be non-empty with an https:// or http:// scheme.
     // This prevents SSRF via internal URIs (e.g. file://, ftp://, internal endpoints).
     let parsed_url = url::Url::parse(&body.url)
