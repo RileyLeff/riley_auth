@@ -54,6 +54,9 @@ jsonwebtoken = "9"
 rand = "0.9"
 hmac = "0.12"
 
+# Redis (optional, for rate limit persistence)
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"

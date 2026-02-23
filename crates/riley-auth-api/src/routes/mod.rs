@@ -115,7 +115,7 @@ pub fn router_with_rate_limit(behind_proxy: bool, rate_limit: bool) -> Router<Ap
         return base;
     }
 
-    // Rate limiting: 30 requests per 60 seconds per IP.
+    // Rate limiting: 30 requests per 60 seconds per IP (in-memory via tower_governor).
     // Use proxy-aware extraction when behind a reverse proxy.
     if behind_proxy {
         let config = GovernorConfigBuilder::default()
@@ -133,4 +133,29 @@ pub fn router_with_rate_limit(behind_proxy: bool, rate_limit: bool) -> Router<Ap
             .expect("invalid rate limit config");
         base.layer(GovernorLayer::new(Arc::new(config)))
     }
+}
+
+/// Build the application router with Redis-backed rate limiting.
+#[cfg(feature = "redis")]
+pub fn router_with_redis_rate_limit(
+    behind_proxy: bool,
+    limiter: Arc<crate::rate_limit::RedisRateLimiter>,
+) -> Router<AppState> {
+    let csrf_protected = Router::new()
+        .merge(auth::router())
+        .merge(admin::router())
+        .layer(middleware::from_fn(require_csrf_header));
+
+    let base = Router::new()
+        .route("/health", get(health))
+        .route("/.well-known/jwks.json", get(jwks))
+        .route("/.well-known/openid-configuration", get(openid_configuration))
+        .merge(csrf_protected)
+        .merge(oauth_provider::router());
+
+    let limiter_clone = limiter.clone();
+    base.layer(middleware::from_fn(move |req, next| {
+        let limiter = limiter_clone.clone();
+        crate::rate_limit::redis_rate_limit_middleware(limiter, behind_proxy, req, next)
+    }))
 }

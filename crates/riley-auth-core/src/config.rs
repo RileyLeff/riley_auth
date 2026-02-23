@@ -17,6 +17,8 @@ pub struct Config {
     pub usernames: UsernameConfig,
     #[serde(default)]
     pub scopes: ScopesConfig,
+    #[serde(default)]
+    pub rate_limiting: RateLimitingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -121,6 +123,22 @@ pub struct ScopeDefinition {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitingConfig {
+    #[serde(default = "default_rate_limit_backend")]
+    pub backend: String,
+    pub redis_url: Option<ConfigValue>,
+}
+
+impl Default for RateLimitingConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_rate_limit_backend(),
+            redis_url: None,
+        }
+    }
+}
+
 /// Validate that a scope name uses only safe characters.
 /// Allowed: lowercase ASCII letters, digits, colons, dots, underscores, hyphens.
 /// Must start with a letter and be non-empty.
@@ -184,6 +202,22 @@ impl Config {
         // Validate scope definition names
         for def in &config.scopes.definitions {
             validate_scope_name(&def.name)?;
+        }
+        // Validate rate limiting config
+        match config.rate_limiting.backend.as_str() {
+            "memory" => {}
+            "redis" => {
+                if config.rate_limiting.redis_url.is_none() {
+                    return Err(Error::Config(
+                        "rate_limiting.redis_url is required when backend is \"redis\"".to_string(),
+                    ));
+                }
+            }
+            other => {
+                return Err(Error::Config(format!(
+                    "unknown rate_limiting.backend: \"{other}\" (expected \"memory\" or \"redis\")"
+                )));
+            }
         }
         Ok(config)
     }
@@ -280,6 +314,7 @@ fn default_pattern() -> String { r"^[a-zA-Z][a-zA-Z0-9_-]*$".to_string() }
 fn default_true() -> bool { true }
 fn default_change_cooldown() -> u32 { 30 }
 fn default_hold_days() -> u32 { 90 }
+fn default_rate_limit_backend() -> String { "memory".to_string() }
 
 #[cfg(test)]
 mod tests {
@@ -304,6 +339,8 @@ public_key_path = "/tmp/public.pem"
         assert_eq!(config.jwt.access_token_ttl_secs, 900);
         assert_eq!(config.usernames.min_length, 3);
         assert!(config.oauth.google.is_none());
+        assert_eq!(config.rate_limiting.backend, "memory");
+        assert!(config.rate_limiting.redis_url.is_none());
     }
 
     #[test]
@@ -352,6 +389,10 @@ description = "Read your profile information"
 [[scopes.definitions]]
 name = "write:profile"
 description = "Update your profile information"
+
+[rate_limiting]
+backend = "redis"
+redis_url = "redis://localhost:6379"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.server.port, 9000);
@@ -362,6 +403,11 @@ description = "Update your profile information"
         assert_eq!(config.scopes.definitions.len(), 2);
         assert_eq!(config.scopes.definitions[0].name, "read:profile");
         assert_eq!(config.scopes.definitions[1].description, "Update your profile information");
+        assert_eq!(config.rate_limiting.backend, "redis");
+        assert_eq!(
+            config.rate_limiting.redis_url.as_ref().unwrap().resolve().unwrap(),
+            "redis://localhost:6379"
+        );
     }
 
     #[test]

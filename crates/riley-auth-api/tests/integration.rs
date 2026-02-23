@@ -17,8 +17,8 @@ use reqwest::{Client, StatusCode};
 use riley_auth_api::routes;
 use riley_auth_api::server::AppState;
 use riley_auth_core::config::{
-    Config, ConfigValue, DatabaseConfig, JwtConfig, OAuthProvidersConfig, ScopeDefinition,
-    ScopesConfig, ServerConfig, UsernameConfig,
+    Config, ConfigValue, DatabaseConfig, JwtConfig, OAuthProvidersConfig, RateLimitingConfig,
+    ScopeDefinition, ScopesConfig, ServerConfig, UsernameConfig,
 };
 use riley_auth_core::db;
 use riley_auth_core::jwt::{self, Keys};
@@ -116,6 +116,7 @@ impl TestServer {
                     },
                 ],
             },
+            rate_limiting: RateLimitingConfig::default(),
         };
 
         let cookie_names = riley_auth_api::server::CookieNames::from_prefix(&config.server.cookie_prefix);

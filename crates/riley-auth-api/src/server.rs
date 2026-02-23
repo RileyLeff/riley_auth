@@ -49,6 +49,37 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
 
     let cors = build_cors(&config);
 
+    let behind_proxy = config.server.behind_proxy;
+    let rate_limit_backend = config.rate_limiting.backend.as_str();
+
+    // Build router with appropriate rate limiting backend
+    let base_router = match rate_limit_backend {
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let redis_url = config
+                .rate_limiting
+                .redis_url
+                .as_ref()
+                .expect("redis_url validated at config load")
+                .resolve()?;
+            let limiter = crate::rate_limit::RedisRateLimiter::new(&redis_url, 30, 60).await?;
+            let limiter = Arc::new(limiter);
+            tracing::info!("rate limiting backend: redis");
+            routes::router_with_redis_rate_limit(behind_proxy, limiter)
+        }
+        #[cfg(not(feature = "redis"))]
+        "redis" => {
+            anyhow::bail!(
+                "rate_limiting.backend is \"redis\" but riley-auth was compiled without \
+                 the `redis` feature. Rebuild with `--features redis`."
+            );
+        }
+        _ => {
+            tracing::info!("rate limiting backend: in-memory");
+            routes::router(behind_proxy)
+        }
+    };
+
     let cookie_names = CookieNames::from_prefix(&config.server.cookie_prefix);
     let state = AppState {
         config: Arc::new(config),
@@ -58,9 +89,8 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         cookie_names,
     };
 
-    let behind_proxy = state.config.server.behind_proxy;
     let app = Router::new()
-        .merge(routes::router(behind_proxy))
+        .merge(base_router)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -68,7 +98,8 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     tracing::info!(%addr, "starting server");
     let listener = TcpListener::bind(addr).await?;
 
-    // Use into_make_service_with_connect_info so tower_governor can extract peer IP
+    // Use into_make_service_with_connect_info so tower_governor / redis middleware
+    // can extract peer IP
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
