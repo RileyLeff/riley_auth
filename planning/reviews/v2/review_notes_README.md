@@ -50,3 +50,18 @@ OPTIONS requests go through the rate limiter before the CORS layer. This means a
 
 ### IP extraction is duplicated (accepted for now)
 `rate_limit.rs::extract_ip` and `auth.rs::extract_client_ip` have slightly different APIs (IpAddr vs String). Consolidation is desirable but not urgent — the duplication is small and the behaviors are intentionally slightly different.
+
+### Deleted user access token window is a stateless JWT tradeoff
+Soft-deleted users retain valid access tokens for up to `access_token_ttl_secs` (default 15 min). Adding a DB check on every request would defeat the purpose of stateless JWTs. The mitigation is short access token TTL. This is inherent to JWT-based auth — documented, not a bug.
+
+### Consume-first pattern for tokens and auth codes is intentional
+Refresh tokens and authorization codes are atomically consumed (deleted/marked used) before validating binding (client_id, redirect_uri). This prevents TOCTOU races. The "burn" risk requires the attacker to possess the token value, which is already a compromise. Accepted tradeoff.
+
+### Scope revocation not enforced on auth-code exchange (narrow window)
+Auth-code exchange uses scopes stored at authorization time. If a scope is revoked between code issuance and exchange (max 10 min), the first access token carries the old scope. Refresh correctly intersects with current allowed_scopes. The window is negligibly narrow.
+
+### Webhook SSRF protection is scheme-level only (admin-only endpoint)
+URL scheme validation prevents file://, ftp://, etc. but does not filter private/internal IPs (127.0.0.1, 169.254.x.x, 10.x.x.x). Since only admins can register webhooks and admins have full system access, this is acceptable for v2. DNS resolution + IP filtering is a v3 improvement.
+
+### No periodic cleanup task for expired tokens/codes
+`cleanup_expired_tokens` and `cleanup_expired_auth_codes` exist but are never called. Expired tokens/codes accumulate but cannot be used (checked via `expires_at > now()`). A background cleanup task is a v3 item.
