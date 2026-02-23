@@ -117,9 +117,13 @@ async fn authorize(
         return Err(Error::InvalidRedirectUri);
     }
 
-    // Validate and deduplicate requested scopes
+    // Validate and deduplicate requested scopes.
+    // "openid" is implicitly accepted (ID tokens are always issued) and filtered out
+    // of the stored scopes since it's not a resource-access scope.
     let granted_scopes: Vec<String> = if let Some(ref scope_str) = query.scope {
-        let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
+        let requested: BTreeSet<&str> = scope_str.split_whitespace()
+            .filter(|s| *s != "openid")
+            .collect();
         let defined_names: Vec<&str> = state.config.scopes.definitions.iter()
             .map(|d| d.name.as_str())
             .collect();
@@ -218,9 +222,12 @@ async fn consent(
         .await?
         .ok_or(Error::InvalidClient)?;
 
-    // Resolve requested scopes to descriptions (validate like authorize endpoint)
+    // Resolve requested scopes to descriptions (validate like authorize endpoint).
+    // "openid" is implicitly accepted and filtered out (not a resource-access scope).
     let scopes = if let Some(ref scope_str) = query.scope {
-        let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
+        let requested: BTreeSet<&str> = scope_str.split_whitespace()
+            .filter(|s| *s != "openid")
+            .collect();
         let mut result = Vec::new();
         for s in &requested {
             let def = state.config.scopes.definitions.iter()
