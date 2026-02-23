@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use riley_auth_core::config::validate_scope_name;
 use riley_auth_core::db;
 use riley_auth_core::jwt::{self, Keys};
 use riley_auth_core::webhooks;
@@ -203,6 +204,18 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::RegisterClient { name, redirect_uris, scopes, auto_approve } => {
+            // Validate scopes: format + existence in config definitions
+            let defined_names: Vec<&str> = config.scopes.definitions.iter()
+                .map(|d| d.name.as_str())
+                .collect();
+            for scope in &scopes {
+                validate_scope_name(scope)
+                    .map_err(|e| anyhow::anyhow!("invalid scope name '{}': {}", scope, e))?;
+                if !defined_names.contains(&scope.as_str()) {
+                    anyhow::bail!("undefined scope '{}' — not found in config scopes.definitions", scope);
+                }
+            }
+
             // Generate client_id and client_secret
             let mut id_bytes = [0u8; 16];
             rand::RngCore::fill_bytes(&mut rand::rng(), &mut id_bytes);

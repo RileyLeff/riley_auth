@@ -51,14 +51,29 @@ const MAX_DELIVERY_ATTEMPTS: u32 = 3;
 
 /// Dispatch a webhook event to all matching subscribers.
 ///
+/// When `event_client_id` is `Some`, only webhooks with a matching `client_id`
+/// or a NULL `client_id` (global) are notified. When `None`, all matching
+/// webhooks receive the event.
+///
 /// Spawns a background task per webhook — delivery failures are recorded but
 /// never bubble up to the caller.
 pub fn dispatch_event(pool: PgPool, client: reqwest::Client, event_type: &str, payload: serde_json::Value) {
+    dispatch_event_for_client(pool, client, event_type, payload, None);
+}
+
+/// Like `dispatch_event`, but scoped to a specific client.
+pub fn dispatch_event_for_client(
+    pool: PgPool,
+    client: reqwest::Client,
+    event_type: &str,
+    payload: serde_json::Value,
+    event_client_id: Option<uuid::Uuid>,
+) {
     let event_type = event_type.to_owned();
     let pool = pool.clone();
 
     tokio::spawn(async move {
-        let webhooks = match db::find_webhooks_for_event(&pool, &event_type).await {
+        let webhooks = match db::find_webhooks_for_event(&pool, &event_type, event_client_id).await {
             Ok(hooks) => hooks,
             Err(e) => {
                 warn!(event = %event_type, error = %e, "failed to query webhooks");

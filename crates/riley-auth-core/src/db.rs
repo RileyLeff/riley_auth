@@ -983,13 +983,34 @@ pub async fn delete_webhook(pool: &PgPool, id: Uuid) -> Result<bool> {
 }
 
 /// Find all active webhooks subscribed to a given event type.
-pub async fn find_webhooks_for_event(pool: &PgPool, event_type: &str) -> Result<Vec<Webhook>> {
-    let rows = sqlx::query_as::<_, Webhook>(
-        "SELECT * FROM webhooks WHERE active = true AND $1 = ANY(events)"
-    )
-    .bind(event_type)
-    .fetch_all(pool)
-    .await?;
+///
+/// When `event_client_id` is `Some`, only returns webhooks with a matching
+/// `client_id` or with NULL `client_id` (global webhooks). When `None`, returns
+/// all matching webhooks regardless of their `client_id`.
+pub async fn find_webhooks_for_event(
+    pool: &PgPool,
+    event_type: &str,
+    event_client_id: Option<Uuid>,
+) -> Result<Vec<Webhook>> {
+    let rows = match event_client_id {
+        Some(cid) => {
+            sqlx::query_as::<_, Webhook>(
+                "SELECT * FROM webhooks WHERE active = true AND $1 = ANY(events) AND (client_id IS NULL OR client_id = $2)"
+            )
+            .bind(event_type)
+            .bind(cid)
+            .fetch_all(pool)
+            .await?
+        }
+        None => {
+            sqlx::query_as::<_, Webhook>(
+                "SELECT * FROM webhooks WHERE active = true AND $1 = ANY(events)"
+            )
+            .bind(event_type)
+            .fetch_all(pool)
+            .await?
+        }
+    };
     Ok(rows)
 }
 
@@ -1019,15 +1040,17 @@ pub async fn list_webhook_deliveries(
     pool: &PgPool,
     webhook_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<WebhookDelivery>> {
     let rows = sqlx::query_as::<_, WebhookDelivery>(
         "SELECT * FROM webhook_deliveries
          WHERE webhook_id = $1
          ORDER BY attempted_at DESC
-         LIMIT $2"
+         LIMIT $2 OFFSET $3"
     )
     .bind(webhook_id)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
     Ok(rows)

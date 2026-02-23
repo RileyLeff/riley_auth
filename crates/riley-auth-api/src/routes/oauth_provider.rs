@@ -378,10 +378,18 @@ async fn token(
                 .await?
                 .ok_or(Error::UserNotFound)?;
 
-            let scope_str = if token_row.scopes.is_empty() {
+            // Intersect original scopes with client's current allowed_scopes.
+            // If an admin revoked a scope from the client since the token was issued,
+            // the refreshed token will no longer carry that scope.
+            let effective_scopes: Vec<String> = token_row.scopes.iter()
+                .filter(|s| client.allowed_scopes.contains(s))
+                .cloned()
+                .collect();
+
+            let scope_str = if effective_scopes.is_empty() {
                 None
             } else {
-                Some(token_row.scopes.join(" "))
+                Some(effective_scopes.join(" "))
             };
 
             let access_token = state.keys.sign_access_token_with_scopes(
@@ -403,7 +411,7 @@ async fn token(
                 Some(client.id),
                 &new_refresh_hash,
                 expires_at,
-                &token_row.scopes,
+                &effective_scopes,
                 None,
                 None,
             )

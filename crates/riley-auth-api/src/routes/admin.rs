@@ -317,6 +317,7 @@ struct RegisterWebhookRequest {
     client_id: Option<Uuid>,
 }
 
+/// Full response including secret — returned only at creation time.
 #[derive(Serialize)]
 struct WebhookResponse {
     id: String,
@@ -336,6 +337,30 @@ impl From<db::Webhook> for WebhookResponse {
             url: w.url,
             events: w.events,
             secret: w.secret,
+            active: w.active,
+            created_at: w.created_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Redacted response for list endpoint — secret is never exposed.
+#[derive(Serialize)]
+struct WebhookListResponse {
+    id: String,
+    client_id: Option<String>,
+    url: String,
+    events: Vec<String>,
+    active: bool,
+    created_at: String,
+}
+
+impl From<db::Webhook> for WebhookListResponse {
+    fn from(w: db::Webhook) -> Self {
+        Self {
+            id: w.id.to_string(),
+            client_id: w.client_id.map(|id| id.to_string()),
+            url: w.url,
+            events: w.events,
             active: w.active,
             created_at: w.created_at.to_rfc3339(),
         }
@@ -374,8 +399,13 @@ async fn register_webhook(
 ) -> Result<(StatusCode, Json<WebhookResponse>), Error> {
     require_admin(&state, &jar).await?;
 
-    if body.url.is_empty() {
-        return Err(Error::BadRequest("url is required".to_string()));
+    // Validate URL: must be non-empty with an https:// or http:// scheme.
+    // This prevents SSRF via internal URIs (e.g. file://, ftp://, internal endpoints).
+    let parsed_url = url::Url::parse(&body.url)
+        .map_err(|_| Error::BadRequest("invalid webhook URL".to_string()))?;
+    match parsed_url.scheme() {
+        "https" | "http" => {}
+        _ => return Err(Error::BadRequest("webhook URL must use https:// or http://".to_string())),
     }
     if body.events.is_empty() {
         return Err(Error::BadRequest("at least one event type required".to_string()));
@@ -406,11 +436,11 @@ async fn register_webhook(
 async fn list_webhooks(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> Result<Json<Vec<WebhookResponse>>, Error> {
+) -> Result<Json<Vec<WebhookListResponse>>, Error> {
     require_admin(&state, &jar).await?;
 
     let hooks = db::list_webhooks(&state.db).await?;
-    let response: Vec<WebhookResponse> = hooks.into_iter().map(Into::into).collect();
+    let response: Vec<WebhookListResponse> = hooks.into_iter().map(Into::into).collect();
 
     Ok(Json(response))
 }
@@ -444,7 +474,8 @@ async fn list_deliveries(
     }
 
     let limit = query.limit.max(0).min(MAX_LIMIT);
-    let deliveries = db::list_webhook_deliveries(&state.db, id, limit).await?;
+    let offset = query.offset.max(0);
+    let deliveries = db::list_webhook_deliveries(&state.db, id, limit, offset).await?;
     let response: Vec<DeliveryResponse> = deliveries.into_iter().map(Into::into).collect();
 
     Ok(Json(response))

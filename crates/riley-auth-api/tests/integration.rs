@@ -2056,6 +2056,8 @@ fn webhook_register_list_remove() {
         let hooks: Vec<serde_json::Value> = resp.json().await.unwrap();
         assert_eq!(hooks.len(), 1);
         assert_eq!(hooks[0]["url"], "https://example.com/hook");
+        // Secret must NOT be exposed in list responses (only at creation)
+        assert!(hooks[0].get("secret").is_none(), "secret should not appear in list response");
 
         // Remove webhook
         let resp = client
@@ -2170,7 +2172,7 @@ fn webhook_delivery_recorded_on_event() {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         // Check delivery was recorded
-        let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10)
+        let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0)
             .await
             .unwrap();
         assert!(!deliveries.is_empty(), "delivery should be recorded after dispatch");
