@@ -1529,3 +1529,186 @@ fn admin_rejects_invalid_scope_name() {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     });
 }
+
+#[test]
+#[ignore]
+fn oidc_discovery_document() {
+    let s = server();
+    runtime().block_on(async {
+        let client = s.client();
+
+        let resp = client
+            .get(s.url("/.well-known/openid-configuration"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let doc: serde_json::Value = resp.json().await.unwrap();
+
+        // Required OIDC Discovery fields
+        assert_eq!(doc["issuer"], "riley-auth-test");
+        assert_eq!(
+            doc["authorization_endpoint"],
+            "http://localhost:3000/oauth/authorize"
+        );
+        assert_eq!(
+            doc["token_endpoint"],
+            "http://localhost:3000/oauth/token"
+        );
+        assert_eq!(
+            doc["jwks_uri"],
+            "http://localhost:3000/.well-known/jwks.json"
+        );
+        assert_eq!(
+            doc["revocation_endpoint"],
+            "http://localhost:3000/oauth/revoke"
+        );
+
+        // Supported values
+        assert_eq!(doc["response_types_supported"], serde_json::json!(["code"]));
+        assert_eq!(
+            doc["grant_types_supported"],
+            serde_json::json!(["authorization_code", "refresh_token"])
+        );
+        assert_eq!(doc["subject_types_supported"], serde_json::json!(["public"]));
+        assert_eq!(
+            doc["id_token_signing_alg_values_supported"],
+            serde_json::json!(["RS256"])
+        );
+        assert_eq!(
+            doc["code_challenge_methods_supported"],
+            serde_json::json!(["S256"])
+        );
+        assert_eq!(
+            doc["token_endpoint_auth_methods_supported"],
+            serde_json::json!(["client_secret_post"])
+        );
+
+        // Scopes from config
+        let scopes = doc["scopes_supported"].as_array().unwrap();
+        assert_eq!(scopes.len(), 2);
+        assert!(scopes.contains(&serde_json::json!("read:profile")));
+        assert!(scopes.contains(&serde_json::json!("write:profile")));
+    });
+}
+
+#[test]
+#[ignore]
+fn oidc_token_response_includes_id_token() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("oidcuser", "user").await;
+
+        // Register client with scopes
+        let client_id_str = "oidc-test-client";
+        let client_secret = "oidc-test-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "OIDC Test Client",
+            client_id_str,
+            &secret_hash,
+            &["https://oidc.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Authorize
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://oidc.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "read:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code for tokens
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://oidc.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+
+        // id_token must be present
+        let id_token_str = token_resp["id_token"]
+            .as_str()
+            .expect("id_token missing from token response");
+
+        // Decode id_token and check claims
+        let parts: Vec<&str> = id_token_str.split('.').collect();
+        assert_eq!(parts.len(), 3, "id_token must be a 3-part JWT");
+
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(claims["iss"], "riley-auth-test");
+        assert_eq!(claims["aud"], client_id_str);
+        assert_eq!(claims["preferred_username"], "oidcuser");
+        assert_eq!(claims["name"], "oidcuser Display");
+        assert!(claims["sub"].as_str().is_some());
+        assert!(claims["exp"].as_i64().is_some());
+        assert!(claims["iat"].as_i64().is_some());
+        // picture should be absent (user has no avatar)
+        assert!(claims.get("picture").is_none());
+
+        // Verify scope is also in the response
+        assert_eq!(token_resp["scope"], "read:profile");
+
+        // Refresh and verify id_token is also in refresh response
+        let refresh_token = token_resp["refresh_token"].as_str().unwrap();
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            refresh_resp["id_token"].as_str().is_some(),
+            "id_token must be present in refresh response"
+        );
+    });
+}

@@ -505,6 +505,55 @@ mod tests {
     }
 
     #[test]
+    fn sign_id_token_claims() {
+        let (priv_file, pub_file) = generate_test_keys();
+        let keys = Keys::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+        let config = JwtConfig {
+            private_key_path: priv_file.path().to_path_buf(),
+            public_key_path: pub_file.path().to_path_buf(),
+            access_token_ttl_secs: 900,
+            refresh_token_ttl_secs: 2_592_000,
+            issuer: "test-auth".to_string(),
+            authorization_code_ttl_secs: 300,
+        };
+
+        // With display name and avatar
+        let token = keys.sign_id_token(
+            &config, "user-123", "testuser",
+            Some("Test User"), Some("https://example.com/avatar.png"),
+            "my-client",
+        ).unwrap();
+
+        // Decode manually to verify IdTokenClaims shape
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: IdTokenClaims = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(claims.sub, "user-123");
+        assert_eq!(claims.iss, "test-auth");
+        assert_eq!(claims.aud, "my-client");
+        assert_eq!(claims.preferred_username, "testuser");
+        assert_eq!(claims.name.as_deref(), Some("Test User"));
+        assert_eq!(claims.picture.as_deref(), Some("https://example.com/avatar.png"));
+
+        // Without display name and avatar (optional fields omitted)
+        let token = keys.sign_id_token(
+            &config, "user-456", "minimaluser",
+            None, None,
+            "another-client",
+        ).unwrap();
+        let parts: Vec<&str> = token.split('.').collect();
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: IdTokenClaims = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(claims.sub, "user-456");
+        assert_eq!(claims.preferred_username, "minimaluser");
+        assert!(claims.name.is_none());
+        assert!(claims.picture.is_none());
+    }
+
+    #[test]
     fn refresh_token_generation() {
         let (raw1, hash1) = generate_refresh_token();
         let (raw2, hash2) = generate_refresh_token();
