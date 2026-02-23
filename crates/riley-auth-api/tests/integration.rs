@@ -3409,9 +3409,13 @@ fn ssrf_safe_client_blocks_localhost_delivery() {
             &s.db, &ssrf_client, &entries[0], true,
         ).await;
 
-        // Should fail with private IP error
+        // Should fail with permanent SSRF error
         assert!(result.is_err());
         let err = result.unwrap_err();
+        assert!(
+            err.starts_with("permanent:"),
+            "SSRF block should be a permanent error, got: {err}"
+        );
         assert!(
             err.contains("private") || err.contains("reserved"),
             "error should mention private/reserved IP, got: {err}"

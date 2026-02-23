@@ -122,7 +122,8 @@ pub async fn deliver_outbox_entry(
 
     // SSRF check: block private IP literals in the URL
     if block_private_ips {
-        check_url_ip_literal(&webhook.url)?;
+        check_url_ip_literal(&webhook.url)
+            .map_err(|e| format!("permanent: {e}"))?;
     }
 
     let body = serde_json::json!({
@@ -266,11 +267,17 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
             || v4.is_link_local()  // 169.254.0.0/16
             || v4.is_broadcast()   // 255.255.255.255
             || v4.is_unspecified() // 0.0.0.0
+            || v4.is_multicast()   // 224.0.0.0/4
             || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // 100.64.0.0/10 (CGNAT)
         }
         IpAddr::V6(v6) => {
+            // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+            if let Some(mapped_v4) = v6.to_ipv4_mapped() {
+                return is_private_ip(&IpAddr::V4(mapped_v4));
+            }
             v6.is_loopback()       // ::1
             || v6.is_unspecified() // ::
+            || v6.is_multicast()   // ff00::/8
             || (v6.segments()[0] & 0xFE00) == 0xFC00  // fc00::/7 (unique local)
             || (v6.segments()[0] & 0xFFC0) == 0xFE80  // fe80::/10 (link-local)
         }
@@ -314,10 +321,15 @@ impl reqwest::dns::Resolve for SsrfSafeResolver {
 /// When `allow_private_ips` is false, uses `SsrfSafeResolver` to block
 /// delivery to private/loopback addresses.
 pub fn build_webhook_client(allow_private_ips: bool) -> reqwest::Client {
+    let builder = reqwest::Client::builder()
+        // Disable redirect following — prevents open-redirect SSRF bypass
+        // where a public server 302s to a private IP literal
+        .redirect(reqwest::redirect::Policy::none());
+
     if allow_private_ips {
-        reqwest::Client::new()
+        builder.build().expect("failed to build HTTP client")
     } else {
-        reqwest::Client::builder()
+        builder
             .dns_resolver(Arc::new(SsrfSafeResolver))
             .build()
             .expect("failed to build SSRF-safe HTTP client")
@@ -363,6 +375,8 @@ mod tests {
         assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));     // unspecified
         assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)))); // broadcast
         assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));  // CGNAT
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1))));  // multicast
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(239, 255, 255, 255)))); // multicast
 
         // IPv6 private ranges
         assert!(is_private_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));           // ::1
@@ -370,6 +384,13 @@ mod tests {
         assert!(is_private_ip(&IpAddr::V6("fc00::1".parse().unwrap())));    // unique local
         assert!(is_private_ip(&IpAddr::V6("fd12::1".parse().unwrap())));    // unique local
         assert!(is_private_ip(&IpAddr::V6("fe80::1".parse().unwrap())));    // link-local
+        assert!(is_private_ip(&IpAddr::V6("ff02::1".parse().unwrap())));    // multicast
+
+        // IPv4-mapped IPv6 addresses
+        assert!(is_private_ip(&IpAddr::V6("::ffff:127.0.0.1".parse().unwrap())));   // mapped loopback
+        assert!(is_private_ip(&IpAddr::V6("::ffff:10.0.0.1".parse().unwrap())));    // mapped private
+        assert!(is_private_ip(&IpAddr::V6("::ffff:192.168.1.1".parse().unwrap()))); // mapped private
+        assert!(is_private_ip(&IpAddr::V6("::ffff:172.16.0.1".parse().unwrap())));  // mapped private
     }
 
     #[test]
@@ -385,5 +406,9 @@ mod tests {
 
         assert!(!is_private_ip(&IpAddr::V6("2001:db8::1".parse().unwrap())));
         assert!(!is_private_ip(&IpAddr::V6("2607:f8b0:4004:800::200e".parse().unwrap()))); // Google
+
+        // IPv4-mapped public IPs should be allowed
+        assert!(!is_private_ip(&IpAddr::V6("::ffff:8.8.8.8".parse().unwrap())));     // mapped Google DNS
+        assert!(!is_private_ip(&IpAddr::V6("::ffff:93.184.216.34".parse().unwrap()))); // mapped example.com
     }
 }
