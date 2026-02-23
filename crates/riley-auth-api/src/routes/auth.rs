@@ -294,15 +294,19 @@ async fn auth_refresh(
 
     let refresh_hash = jwt::hash_token(&refresh_raw);
 
-    // Atomically consume the refresh token (prevents TOCTOU race)
-    let token_row = db::consume_refresh_token(&state.db, &refresh_hash)
-        .await?
-        .ok_or(Error::InvalidToken)?;
-
-    // Reject client-bound refresh tokens at the session endpoint
-    if token_row.client_id.is_some() {
+    // Check for token reuse — if this hash was already consumed, an attacker
+    // is replaying a stolen token. Revoke the entire family.
+    if let Some(family_id) = db::check_token_reuse(&state.db, &refresh_hash).await? {
+        db::revoke_token_family(&state.db, family_id).await?;
         return Err(Error::InvalidToken);
     }
+
+    // Atomically consume a session-only refresh token (client_id IS NULL).
+    // This rejects client-bound tokens without consuming them, preventing
+    // accidental destruction of OAuth client tokens at the session endpoint.
+    let token_row = db::consume_session_refresh_token(&state.db, &refresh_hash)
+        .await?
+        .ok_or(Error::InvalidToken)?;
 
     let user = db::find_user_by_id(&state.db, token_row.user_id)
         .await?
@@ -310,10 +314,32 @@ async fn auth_refresh(
 
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
     let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
-    let (jar, new_hash) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
+
+    // Issue new tokens, inheriting the family_id from the consumed token
+    let access_token = state.keys.sign_access_token(
+        &state.config.jwt,
+        &user.id.to_string(),
+        &user.username,
+        &user.role,
+        &state.config.jwt.issuer,
+    )?;
+
+    const MAX_USER_AGENT_BYTES: usize = 512;
+    let ua_truncated = ua.map(|ua| &ua[..ua.floor_char_boundary(MAX_USER_AGENT_BYTES)]);
+
+    let (new_refresh_raw, new_refresh_hash) = jwt::generate_refresh_token();
+    let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
+    db::store_refresh_token(
+        &state.db, user.id, None, &new_refresh_hash, expires_at,
+        &[], ua_truncated, Some(&ip), token_row.family_id,
+    ).await?;
 
     // Mark the new token as just used (session was actively refreshed)
-    db::touch_refresh_token(&state.db, &new_hash).await?;
+    db::touch_refresh_token(&state.db, &new_refresh_hash).await?;
+
+    let jar = jar
+        .add(build_access_cookie(&state.cookie_names.access, &access_token, &state.config))
+        .add(build_refresh_cookie(&state.cookie_names.refresh, &new_refresh_raw, &state.config));
 
     Ok((jar, StatusCode::OK))
 }
@@ -873,8 +899,9 @@ async fn issue_tokens(
     let ua_truncated = user_agent.map(|ua| &ua[..ua.floor_char_boundary(MAX_USER_AGENT_BYTES)]);
 
     let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
+    let family_id = uuid::Uuid::now_v7();
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
-    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], ua_truncated, ip_address).await?;
+    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], ua_truncated, ip_address, family_id).await?;
 
     let jar = jar
         .add(build_access_cookie(&state.cookie_names.access, &access_token, &state.config))

@@ -4,7 +4,7 @@
 -- inherits the family_id. If a consumed token is re-presented, all tokens
 -- in that family are revoked (credential theft signal).
 ALTER TABLE refresh_tokens
-    ADD COLUMN family_id uuid NOT NULL DEFAULT gen_random_uuid();
+    ADD COLUMN family_id uuid NOT NULL DEFAULT uuidv7();
 
 CREATE INDEX idx_refresh_tokens_family_id ON refresh_tokens(family_id);
 
@@ -19,3 +19,6 @@ CREATE TABLE consumed_refresh_tokens (
 
 CREATE INDEX idx_consumed_refresh_tokens_consumed_at
     ON consumed_refresh_tokens(consumed_at);
+
+CREATE INDEX idx_consumed_refresh_tokens_family_id
+    ON consumed_refresh_tokens(family_id);

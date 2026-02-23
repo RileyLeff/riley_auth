@@ -82,6 +82,7 @@ pub struct RefreshTokenRow {
     pub scopes: Vec<String>,
     pub user_agent: Option<String>,
     pub ip_address: Option<String>,
+    pub family_id: Uuid,
 }
 
 // --- User queries ---
@@ -501,10 +502,11 @@ pub async fn store_refresh_token(
     scopes: &[String],
     user_agent: Option<&str>,
     ip_address: Option<&str>,
+    family_id: Uuid,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO refresh_tokens (user_id, client_id, token_hash, expires_at, scopes, user_agent, ip_address)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        "INSERT INTO refresh_tokens (user_id, client_id, token_hash, expires_at, scopes, user_agent, ip_address, family_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
     )
     .bind(user_id)
     .bind(client_id)
@@ -513,6 +515,7 @@ pub async fn store_refresh_token(
     .bind(scopes)
     .bind(user_agent)
     .bind(ip_address)
+    .bind(family_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -531,21 +534,108 @@ pub async fn find_refresh_token(
     Ok(row)
 }
 
-/// Atomically find and delete a refresh token (for rotation).
-/// Returns None if the token doesn't exist or is expired.
+/// Atomically consume a refresh token for rotation.
+/// Moves the token to `consumed_refresh_tokens` (for reuse detection) and deletes
+/// from `refresh_tokens`. Returns None if the token doesn't exist or is expired.
 pub async fn consume_refresh_token(
     pool: &PgPool,
     token_hash: &str,
 ) -> Result<Option<RefreshTokenRow>> {
+    let mut tx = pool.begin().await?;
+
     let row = sqlx::query_as::<_, RefreshTokenRow>(
         "DELETE FROM refresh_tokens
          WHERE token_hash = $1 AND expires_at > now()
          RETURNING *"
     )
     .bind(token_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if let Some(ref token) = row {
+        // Record in consumed table for reuse detection
+        sqlx::query(
+            "INSERT INTO consumed_refresh_tokens (token_hash, family_id)
+             VALUES ($1, $2)
+             ON CONFLICT (token_hash) DO NOTHING"
+        )
+        .bind(&token.token_hash)
+        .bind(token.family_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(row)
+}
+
+/// Atomically consume a session-only refresh token (client_id IS NULL).
+/// Same as `consume_refresh_token` but rejects client-bound tokens without
+/// consuming them, preventing accidental destruction of OAuth client tokens
+/// when they're mistakenly sent to the session refresh endpoint.
+pub async fn consume_session_refresh_token(
+    pool: &PgPool,
+    token_hash: &str,
+) -> Result<Option<RefreshTokenRow>> {
+    let mut tx = pool.begin().await?;
+
+    let row = sqlx::query_as::<_, RefreshTokenRow>(
+        "DELETE FROM refresh_tokens
+         WHERE token_hash = $1 AND expires_at > now() AND client_id IS NULL
+         RETURNING *"
+    )
+    .bind(token_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if let Some(ref token) = row {
+        sqlx::query(
+            "INSERT INTO consumed_refresh_tokens (token_hash, family_id)
+             VALUES ($1, $2)
+             ON CONFLICT (token_hash) DO NOTHING"
+        )
+        .bind(&token.token_hash)
+        .bind(token.family_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(row)
+}
+
+/// Check if a token hash was already consumed (reuse detection).
+/// If found, returns the family_id so the caller can revoke the entire family.
+pub async fn check_token_reuse(
+    pool: &PgPool,
+    token_hash: &str,
+) -> Result<Option<Uuid>> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT family_id FROM consumed_refresh_tokens WHERE token_hash = $1"
+    )
+    .bind(token_hash)
     .fetch_optional(pool)
     .await?;
-    Ok(row)
+    Ok(row.map(|(id,)| id))
+}
+
+/// Revoke all refresh tokens in a family (used when reuse is detected).
+/// Also cleans up consumed token records for the family.
+pub async fn revoke_token_family(pool: &PgPool, family_id: Uuid) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+
+    let result = sqlx::query("DELETE FROM refresh_tokens WHERE family_id = $1")
+        .bind(family_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("DELETE FROM consumed_refresh_tokens WHERE family_id = $1")
+        .bind(family_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(result.rows_affected())
 }
 
 pub async fn delete_refresh_token(pool: &PgPool, token_hash: &str) -> Result<()> {
@@ -910,6 +1000,20 @@ pub async fn cleanup_expired_tokens(pool: &PgPool) -> Result<u64> {
 
 pub async fn cleanup_expired_auth_codes(pool: &PgPool) -> Result<u64> {
     let result = sqlx::query("DELETE FROM authorization_codes WHERE expires_at <= now()")
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Clean up consumed refresh token records older than the given cutoff.
+/// The cutoff should be ~2x the refresh token TTL — if the attacker hasn't
+/// replayed the stolen token within that window, the family has naturally expired.
+pub async fn cleanup_consumed_refresh_tokens(
+    pool: &PgPool,
+    older_than: DateTime<Utc>,
+) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM consumed_refresh_tokens WHERE consumed_at < $1")
+        .bind(older_than)
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
