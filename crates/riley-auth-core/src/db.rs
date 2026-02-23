@@ -1,5 +1,6 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, FromRow, PgPool};
@@ -29,7 +30,7 @@ pub async fn connect(config: &DatabaseConfig) -> Result<PgPool> {
         opts = opts.after_connect(move |conn, _meta| {
             let schema = schema.clone();
             Box::pin(async move {
-                conn.execute(format!("SET search_path TO {}", schema).as_str())
+                conn.execute(format!("SET search_path TO \"{}\"", schema).as_str())
                     .await?;
                 Ok(())
             })
@@ -242,11 +243,14 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<DeleteUser
         .execute(&mut *tx)
         .await?;
 
-    // Anonymize: replace username with a compact, unregisterable placeholder.
-    // Format: "_" + base64url(uuid_bytes) = 23 chars, fits within default max_length (24).
+    // Anonymize: replace username with a random, unregisterable placeholder.
+    // Uses 12 random bytes (16 base64 chars) → "_" + 16 chars = 17 chars total.
     // The "_" prefix is blocked by the default username regex (first char must be a letter),
-    // preventing anyone from registering a collision.
-    let deleted_name = format!("_{}", URL_SAFE_NO_PAD.encode(user_id.as_bytes()));
+    // preventing anyone from registering a collision. Random bytes (not user_id-derived)
+    // prevent confirming whether a known UUID was deleted by predicting the placeholder.
+    let mut random_bytes = [0u8; 12];
+    rand::rng().fill_bytes(&mut random_bytes);
+    let deleted_name = format!("_{}", URL_SAFE_NO_PAD.encode(&random_bytes));
     sqlx::query(
         "UPDATE users SET
             username = $2,

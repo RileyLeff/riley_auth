@@ -2168,13 +2168,18 @@ fn webhook_delivery_recorded_on_event() {
             serde_json::json!({ "user_id": "test-user-id" }),
         );
 
-        // Give the background task time to attempt delivery and retries
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-        // Check delivery was recorded
-        let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0)
-            .await
-            .unwrap();
+        // Poll for the delivery record instead of a fixed sleep — retries every 250ms,
+        // gives up after 10s. Much faster in the common case, still tolerant of slow CI.
+        let mut deliveries = vec![];
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0)
+                .await
+                .unwrap();
+            if !deliveries.is_empty() {
+                break;
+            }
+        }
         assert!(!deliveries.is_empty(), "delivery should be recorded after dispatch");
         assert_eq!(deliveries[0].event_type, "user.created");
         // Should have an error since the URL is unreachable

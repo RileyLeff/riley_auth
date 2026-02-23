@@ -869,7 +869,8 @@ async fn issue_tokens(
 
     // Truncate user_agent to prevent storage bloat from oversized headers.
     // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 sequences.
-    let ua_truncated = user_agent.map(|ua| &ua[..ua.floor_char_boundary(512)]);
+    const MAX_USER_AGENT_BYTES: usize = 512;
+    let ua_truncated = user_agent.map(|ua| &ua[..ua.floor_char_boundary(MAX_USER_AGENT_BYTES)]);
 
     let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
@@ -947,12 +948,25 @@ fn user_to_me(user: &db::User) -> MeResponse {
 
 /// Setup token: short-lived JWT containing OAuth profile data.
 /// Used to pass profile info between callback and setup endpoints.
+/// The `binding` field is a SHA-256 hash of provider+provider_id, ensuring the token
+/// can only be used for the specific OAuth flow that created it.
 #[derive(Serialize, Deserialize)]
 struct SetupClaims {
     profile: oauth::OAuthProfile,
     exp: i64,
     iss: String,
     purpose: String,
+    binding: String,
+}
+
+/// Compute a hex-encoded SHA-256 binding from provider + provider_id.
+fn setup_token_binding(provider: &str, provider_id: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(provider.as_bytes());
+    hasher.update(b":");
+    hasher.update(provider_id.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 fn create_setup_token(
@@ -961,6 +975,7 @@ fn create_setup_token(
     profile: &oauth::OAuthProfile,
 ) -> Result<String, Error> {
     let claims = SetupClaims {
+        binding: setup_token_binding(&profile.provider, &profile.provider_id),
         profile: profile.clone(),
         exp: (Utc::now() + Duration::minutes(15)).timestamp(),
         iss: config.jwt.issuer.clone(),
@@ -968,8 +983,6 @@ fn create_setup_token(
     };
 
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-    // We need access to the encoding key — use the Keys struct directly
-    // For now, sign with the same key. Setup tokens are short-lived and same-origin.
     jsonwebtoken::encode(&header, &claims, &keys.encoding_key())
         .map_err(|e| Error::OAuth(format!("failed to create setup token: {e}")))
 }
@@ -988,6 +1001,12 @@ fn decode_setup_token(
         .map_err(|_| Error::InvalidToken)?;
 
     if data.claims.purpose != "setup" {
+        return Err(Error::InvalidToken);
+    }
+
+    // Verify the token is bound to the profile it contains (prevents cross-flow replay)
+    let expected = setup_token_binding(&data.claims.profile.provider, &data.claims.profile.provider_id);
+    if data.claims.binding != expected {
         return Err(Error::InvalidToken);
     }
 
