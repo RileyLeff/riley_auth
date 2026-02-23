@@ -69,6 +69,11 @@ async fn require_csrf_header(
 /// Otherwise, malicious clients can bypass rate limiting by sending a
 /// spoofed `X-Forwarded-For` header with a random IP.
 pub fn router(behind_proxy: bool) -> Router<AppState> {
+    router_with_rate_limit(behind_proxy, true)
+}
+
+/// Build the application router, optionally with rate limiting.
+pub fn router_with_rate_limit(behind_proxy: bool, rate_limit: bool) -> Router<AppState> {
     // Cookie-authenticated routes get CSRF protection + rate limiting.
     // The OAuth provider router (client-credential authenticated) is CSRF-exempt
     // but still rate-limited.
@@ -82,6 +87,10 @@ pub fn router(behind_proxy: bool) -> Router<AppState> {
         .route("/.well-known/jwks.json", get(jwks))
         .merge(csrf_protected)
         .merge(oauth_provider::router());
+
+    if !rate_limit {
+        return base;
+    }
 
     // Rate limiting: 30 requests per 60 seconds per IP.
     // Use proxy-aware extraction when behind a reverse proxy.
