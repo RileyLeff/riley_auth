@@ -27,3 +27,26 @@ Migration 002 adds these columns for Phase 3 (Session Visibility). They store `N
 
 ### Regex recompilation in validate_username
 The username regex is compiled from config on every call. Performance impact is negligible for typical auth traffic patterns. Could be optimized with `LazyLock` if it becomes a bottleneck, but not worth the complexity now.
+
+## Phase 6 — Exhaustive Review (Final v2)
+
+### Webhook dispatch is fire-and-forget (known tradeoff)
+All three review models flagged this. Webhooks are dispatched via `tokio::spawn` with no persistent outbox. Events are lost on restart. This is a deliberate v2 tradeoff — a persistent queue (Redis Streams, DB outbox) is the logical v3 upgrade. Documented.
+
+### /oauth/authorize CSRF is standard OAuth behavior (NOT a bug)
+Codex flagged the authorize endpoint as CSRF-vulnerable with auto_approve. This is standard OAuth — the authorize endpoint is always an unauthenticated GET. Protection comes from the `state` parameter (client-side CSRF token) and `redirect_uri` validation. Auto_approve is for first-party clients only.
+
+### client_id on webhooks is for scoped filtering, not just metadata
+After review round 13, `find_webhooks_for_event` now filters by `client_id` when the event includes one. Global events (user.created, etc.) still go to all webhooks. Client-scoped events will only reach matching webhooks.
+
+### OIDC nonce support deferred
+The nonce parameter is not implemented in v2. OIDC clients that require nonce will fail at the authorize step. This is a known gap — nonce support is a v3 item.
+
+### ID token always issued (regardless of openid scope)
+ID tokens are currently issued on both authorization_code and refresh_token grants regardless of whether the client requested the "openid" scope. This is technically non-compliant but harmless — the token is just extra data. Proper conditional issuance is a v3 refinement.
+
+### CORS preflight may hit rate limiter
+OPTIONS requests go through the rate limiter before the CORS layer. This means a rate-limited preflight returns 429 without CORS headers, which browsers see as a CORS failure. Acceptable for v2 (admin-only clients, low traffic), but should be fixed if rate limits are ever tightened.
+
+### IP extraction is duplicated (accepted for now)
+`rate_limit.rs::extract_ip` and `auth.rs::extract_client_ip` have slightly different APIs (IpAddr vs String). Consolidation is desirable but not urgent — the duplication is small and the behaviors are intentionally slightly different.
