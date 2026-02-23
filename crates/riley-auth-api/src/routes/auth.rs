@@ -1,5 +1,7 @@
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Redirect;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -74,6 +76,8 @@ pub fn router() -> Router<AppState> {
         .route("/auth/refresh", post(auth_refresh))
         .route("/auth/logout", post(auth_logout))
         .route("/auth/logout-all", post(auth_logout_all))
+        .route("/auth/sessions", get(list_sessions))
+        .route("/auth/sessions/{id}", axum::routing::delete(revoke_session))
         // Profile
         .route("/auth/me", get(auth_me).patch(update_display_name).delete(delete_account))
         .route("/auth/me/username", patch(update_username))
@@ -121,8 +125,10 @@ async fn auth_redirect(
 /// GET /auth/{provider}/callback — OAuth callback
 async fn auth_callback(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(provider_name): Path<String>,
     Query(query): Query<CallbackQuery>,
+    headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<(CookieJar, Redirect), Error> {
     let provider = Provider::from_str(&provider_name)
@@ -175,7 +181,9 @@ async fn auth_callback(
             .await?
             .ok_or(Error::UserNotFound)?;
 
-        let jar = issue_tokens(&state, jar, &user).await?;
+        let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
+        let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
+        let jar = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
         return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
     }
 
@@ -207,6 +215,8 @@ async fn auth_callback(
 /// POST /auth/setup — create account with username after OAuth
 async fn auth_setup(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(body): Json<SetupRequest>,
 ) -> Result<(CookieJar, Json<MeResponse>), Error> {
@@ -248,7 +258,9 @@ async fn auth_setup(
 
     // Issue tokens, clear setup cookie
     let jar = jar.remove(removal_cookie(SETUP_TOKEN_COOKIE, "/", &state.config));
-    let jar = issue_tokens(&state, jar, &user).await?;
+    let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
+    let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
+    let jar = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
 
     Ok((jar, Json(user_to_me(&user))))
 }
@@ -258,6 +270,8 @@ async fn auth_setup(
 /// POST /auth/refresh — exchange refresh cookie for new access token
 async fn auth_refresh(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), Error> {
     let refresh_raw = jar
@@ -281,7 +295,9 @@ async fn auth_refresh(
         .await?
         .ok_or(Error::UserNotFound)?;
 
-    let jar = issue_tokens(&state, jar, &user).await?;
+    let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
+    let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
+    let jar = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
 
     Ok((jar, StatusCode::OK))
 }
@@ -317,6 +333,89 @@ async fn auth_logout_all(
         .remove(removal_cookie(REFRESH_TOKEN_COOKIE, "/auth", &state.config));
 
     Ok((jar, StatusCode::OK))
+}
+
+// --- Session List/Revoke Endpoints ---
+
+#[derive(Serialize)]
+struct SessionResponse {
+    id: String,
+    user_agent: Option<String>,
+    ip_address: Option<String>,
+    created_at: String,
+    last_used_at: Option<String>,
+    is_current: bool,
+}
+
+/// GET /auth/sessions — list active sessions for the current user
+async fn list_sessions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<SessionResponse>>, Error> {
+    let claims = extract_user(&state, &jar)?;
+    let user_id = claims.sub_uuid()?;
+
+    // Identify the current session by its refresh token
+    let current_token_hash = jar
+        .get(REFRESH_TOKEN_COOKIE)
+        .map(|c| jwt::hash_token(c.value()));
+
+    let sessions = db::list_sessions(&state.db, user_id).await?;
+
+    // Look up the current session's ID from its token hash
+    let current_session_id = if let Some(ref hash) = current_token_hash {
+        db::find_refresh_token(&state.db, hash)
+            .await?
+            .map(|row| row.id)
+    } else {
+        None
+    };
+
+    let response: Vec<SessionResponse> = sessions
+        .into_iter()
+        .map(|s| SessionResponse {
+            is_current: current_session_id.is_some_and(|id| id == s.id),
+            id: s.id.to_string(),
+            user_agent: s.user_agent,
+            ip_address: s.ip_address,
+            created_at: s.created_at.to_rfc3339(),
+            last_used_at: s.last_used_at.map(|t| t.to_rfc3339()),
+        })
+        .collect();
+
+    Ok(Json(response))
+}
+
+/// DELETE /auth/sessions/{id} — revoke a specific session
+async fn revoke_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    jar: CookieJar,
+) -> Result<StatusCode, Error> {
+    let claims = extract_user(&state, &jar)?;
+    let user_id = claims.sub_uuid()?;
+
+    let session_uuid = uuid::Uuid::parse_str(&session_id)
+        .map_err(|_| Error::BadRequest("invalid session id".to_string()))?;
+
+    // Prevent revoking the current session (use /auth/logout for that)
+    if let Some(refresh) = jar.get(REFRESH_TOKEN_COOKIE) {
+        let hash = jwt::hash_token(refresh.value());
+        if let Some(token_row) = db::find_refresh_token(&state.db, &hash).await? {
+            if token_row.id == session_uuid {
+                return Err(Error::BadRequest(
+                    "cannot revoke current session; use /auth/logout instead".to_string(),
+                ));
+            }
+        }
+    }
+
+    let deleted = db::revoke_session(&state.db, session_uuid, user_id).await?;
+    if !deleted {
+        return Err(Error::BadRequest("session not found".to_string()));
+    }
+
+    Ok(StatusCode::OK)
 }
 
 // --- Profile Endpoints ---
@@ -659,10 +758,37 @@ fn validate_username(username: &str, config: &Config) -> Result<(), Error> {
     Ok(())
 }
 
+/// Extract the client IP address from the request.
+///
+/// When `behind_proxy` is true, checks X-Forwarded-For and X-Real-IP headers
+/// first (the proxy must overwrite these with the real client IP).
+/// Falls back to the peer socket address.
+fn extract_client_ip(headers: &HeaderMap, addr: SocketAddr, behind_proxy: bool) -> String {
+    if behind_proxy {
+        if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first) = forwarded.split(',').next() {
+                let ip = first.trim();
+                if !ip.is_empty() {
+                    return ip.to_string();
+                }
+            }
+        }
+        if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            let ip = real_ip.trim();
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+    addr.ip().to_string()
+}
+
 async fn issue_tokens(
     state: &AppState,
     jar: CookieJar,
     user: &db::User,
+    user_agent: Option<&str>,
+    ip_address: Option<&str>,
 ) -> Result<CookieJar, Error> {
     let access_token = state.keys.sign_access_token(
         &state.config.jwt,
@@ -674,7 +800,7 @@ async fn issue_tokens(
 
     let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
-    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], None, None).await?;
+    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], user_agent, ip_address).await?;
 
     let jar = jar
         .add(build_access_cookie(&access_token, &state.config))

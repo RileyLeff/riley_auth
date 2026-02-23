@@ -582,6 +582,44 @@ pub async fn touch_refresh_token(pool: &PgPool, token_hash: &str) -> Result<()> 
     Ok(())
 }
 
+// --- Session queries ---
+
+/// A session is a session-scoped refresh token (client_id IS NULL).
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct SessionRow {
+    pub id: Uuid,
+    pub user_agent: Option<String>,
+    pub ip_address: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+/// List active sessions for a user (non-expired, session-scoped refresh tokens).
+pub async fn list_sessions(pool: &PgPool, user_id: Uuid) -> Result<Vec<SessionRow>> {
+    let rows = sqlx::query_as::<_, SessionRow>(
+        "SELECT id, user_agent, ip_address, created_at, last_used_at
+         FROM refresh_tokens
+         WHERE user_id = $1 AND client_id IS NULL AND expires_at > now()
+         ORDER BY created_at DESC"
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Revoke a specific session. Returns true if a row was deleted.
+pub async fn revoke_session(pool: &PgPool, session_id: Uuid, user_id: Uuid) -> Result<bool> {
+    let result = sqlx::query(
+        "DELETE FROM refresh_tokens WHERE id = $1 AND user_id = $2 AND client_id IS NULL"
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 // --- Username history queries ---
 
 pub async fn record_username_change(
