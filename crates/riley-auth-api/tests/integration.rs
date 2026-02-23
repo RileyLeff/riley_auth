@@ -2792,3 +2792,198 @@ fn outbox_cleanup_removes_old_entries() {
         assert_eq!(deleted, 0);
     });
 }
+
+// --- OIDC compliance tests ---
+
+#[test]
+#[ignore]
+fn oidc_nonce_round_trip() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("nonceuser", "user").await;
+
+        // Register client
+        let client_id_str = "nonce-test-client";
+        let client_secret = "nonce-test-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Nonce Test Client",
+            client_id_str,
+            &secret_hash,
+            &["https://nonce.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Authorize with nonce
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://nonce.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid read:profile"),
+                ("nonce", "my-unique-nonce-abc123"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code for tokens
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://nonce.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+
+        // id_token must be present (openid scope was requested)
+        let id_token_str = token_resp["id_token"]
+            .as_str()
+            .expect("id_token missing when openid scope was requested");
+
+        // Decode and verify nonce is echoed back
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let parts: Vec<&str> = id_token_str.split('.').collect();
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(claims["nonce"], "my-unique-nonce-abc123");
+    });
+}
+
+#[test]
+#[ignore]
+fn oidc_no_id_token_without_openid_scope() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("noiduser", "user").await;
+
+        // Register client
+        let client_id_str = "no-oidc-client";
+        let client_secret = "no-oidc-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "No OIDC Client",
+            client_id_str,
+            &secret_hash,
+            &["https://noidc.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Authorize WITHOUT openid scope
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://noidc.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "read:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code for tokens
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://noidc.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+
+        // id_token must NOT be present (openid scope was not requested)
+        assert!(
+            token_resp.get("id_token").is_none()
+                || token_resp["id_token"].is_null(),
+            "id_token must be absent when openid scope is not requested"
+        );
+
+        // access_token and refresh_token should still be present
+        assert!(token_resp["access_token"].as_str().is_some());
+        assert!(token_resp["refresh_token"].as_str().is_some());
+
+        // Refresh should also not include id_token
+        let refresh_token = token_resp["refresh_token"].as_str().unwrap();
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            refresh_resp.get("id_token").is_none()
+                || refresh_resp["id_token"].is_null(),
+            "id_token must be absent on refresh when openid scope was not in original grant"
+        );
+    });
+}
