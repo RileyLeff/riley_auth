@@ -177,6 +177,7 @@ async fn authorize(
         &granted_scopes,
         Some(code_challenge),
         Some(method),
+        None, // nonce — wired in Step 4.2
         expires_at,
     )
     .await?;

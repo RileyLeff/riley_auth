@@ -855,6 +855,7 @@ pub struct AuthorizationCodeRow {
     pub scopes: Vec<String>,
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
+    pub nonce: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub used: bool,
@@ -869,11 +870,12 @@ pub async fn store_authorization_code(
     scopes: &[String],
     code_challenge: Option<&str>,
     code_challenge_method: Option<&str>,
+    nonce: Option<&str>,
     expires_at: DateTime<Utc>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO authorization_codes (code_hash, user_id, client_id, redirect_uri, scopes, code_challenge, code_challenge_method, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        "INSERT INTO authorization_codes (code_hash, user_id, client_id, redirect_uri, scopes, code_challenge, code_challenge_method, nonce, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
     )
     .bind(code_hash)
     .bind(user_id)
@@ -882,6 +884,7 @@ pub async fn store_authorization_code(
     .bind(scopes)
     .bind(code_challenge)
     .bind(code_challenge_method)
+    .bind(nonce)
     .bind(expires_at)
     .execute(pool)
     .await?;
