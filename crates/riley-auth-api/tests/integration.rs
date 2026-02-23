@@ -641,6 +641,166 @@ fn oauth_refresh_reuse_revokes_family() {
     });
 }
 
+/// Regression: a client-bound refresh token sent to /auth/refresh must be
+/// rejected without being consumed (the token should remain usable at the
+/// correct endpoint).
+#[test]
+#[ignore]
+fn cross_endpoint_client_token_at_session_endpoint() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("cross_ep1", "user").await;
+
+        // Register OAuth client + do PKCE flow to get a client-bound refresh token
+        let client_id_str = "cross-ep-client";
+        let client_secret = "cross-ep-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Cross EP Client",
+            client_id_str,
+            &secret_hash,
+            &["https://cross-ep.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://cross-ep.example.com/callback"),
+                ("response_type", "code"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url.query_pairs().find(|(k, _)| k == "code").unwrap().1.to_string();
+
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://cross-ep.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let oauth_refresh = token_resp["refresh_token"].as_str().unwrap().to_string();
+
+        // Send the client-bound token to /auth/refresh — should be rejected
+        let resp = client
+            .post(s.url("/auth/refresh"))
+            .header("cookie", format!("riley_auth_refresh={oauth_refresh}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "client-bound token must be rejected at session endpoint"
+        );
+
+        // The token should still work at the correct endpoint (not consumed/destroyed)
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &oauth_refresh),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "client-bound token must still be usable at /oauth/token after session endpoint rejection"
+        );
+    });
+}
+
+/// Regression: a session refresh token sent to /oauth/token must be rejected
+/// without being consumed (the token should remain usable at /auth/refresh).
+#[test]
+#[ignore]
+fn cross_endpoint_session_token_at_oauth_endpoint() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, _, session_refresh) = s.create_user_with_session("cross_ep2", "user").await;
+
+        // Register an OAuth client to authenticate the /oauth/token request
+        let client_id_str = "cross-ep-client2";
+        let client_secret = "cross-ep-secret2";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Cross EP Client 2",
+            client_id_str,
+            &secret_hash,
+            &["https://cross-ep2.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Send the session token to /oauth/token — should be rejected
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &session_refresh),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "session token must be rejected at OAuth endpoint"
+        );
+
+        // The session token should still work at /auth/refresh (not consumed/destroyed)
+        let resp = client
+            .post(s.url("/auth/refresh"))
+            .header("cookie", format!("riley_auth_refresh={session_refresh}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "session token must still be usable at /auth/refresh after OAuth endpoint rejection"
+        );
+    });
+}
+
 #[test]
 #[ignore]
 fn logout() {
