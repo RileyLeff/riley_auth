@@ -107,3 +107,9 @@ RFC 6749 Section 4.1.2.1 says errors (after validating client_id and redirect_ur
 
 ### No pagination on list_clients and list_webhooks
 Admin-only endpoints with naturally small result sets. Pagination deferred.
+
+### generate_keypair shells out to openssl via PATH
+CLI-only setup-time operation (the `generate-keys` subcommand). Not reachable via HTTP API. In a compromised environment, a malicious binary could intercept key generation, but this is inherent to any CLI tool. Using a Rust-native RSA library would add a heavyweight dependency for a one-time setup command. Accepted.
+
+### Cookie Secure flag always true
+All cookies are set with `Secure = true` unconditionally. This prevents local HTTP development without workarounds, but is the correct default for production. Integration tests work because reqwest ignores the Secure flag. Accepted as safe default.
