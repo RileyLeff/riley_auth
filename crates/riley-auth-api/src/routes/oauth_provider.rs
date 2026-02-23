@@ -230,12 +230,19 @@ async fn token(
                 .ok_or(Error::UserNotFound)?;
 
             // Issue tokens with client_id as audience
-            let access_token = state.keys.sign_access_token(
+            let scope_str = if auth_code.scopes.is_empty() {
+                None
+            } else {
+                Some(auth_code.scopes.join(" "))
+            };
+
+            let access_token = state.keys.sign_access_token_with_scopes(
                 &state.config.jwt,
                 &user.id.to_string(),
                 &user.username,
                 &user.role,
                 &client.client_id,
+                scope_str.as_deref(),
             )?;
 
             let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
@@ -254,18 +261,12 @@ async fn token(
             )
             .await?;
 
-            let scope = if auth_code.scopes.is_empty() {
-                None
-            } else {
-                Some(auth_code.scopes.join(" "))
-            };
-
             Ok(Json(TokenResponse {
                 access_token,
                 token_type: "Bearer",
                 expires_in: state.config.jwt.access_token_ttl_secs,
                 refresh_token: refresh_raw,
-                scope,
+                scope: scope_str,
             }))
         }
         "refresh_token" => {
@@ -288,12 +289,19 @@ async fn token(
                 .await?
                 .ok_or(Error::UserNotFound)?;
 
-            let access_token = state.keys.sign_access_token(
+            let scope_str = if token_row.scopes.is_empty() {
+                None
+            } else {
+                Some(token_row.scopes.join(" "))
+            };
+
+            let access_token = state.keys.sign_access_token_with_scopes(
                 &state.config.jwt,
                 &user.id.to_string(),
                 &user.username,
                 &user.role,
                 &client.client_id,
+                scope_str.as_deref(),
             )?;
 
             let (new_refresh_raw, new_refresh_hash) = jwt::generate_refresh_token();
@@ -312,18 +320,12 @@ async fn token(
             )
             .await?;
 
-            let scope = if token_row.scopes.is_empty() {
-                None
-            } else {
-                Some(token_row.scopes.join(" "))
-            };
-
             Ok(Json(TokenResponse {
                 access_token,
                 token_type: "Bearer",
                 expires_in: state.config.jwt.access_token_ttl_secs,
                 refresh_token: new_refresh_raw,
-                scope,
+                scope: scope_str,
             }))
         }
         _ => Err(Error::BadRequest(format!("unsupported grant_type: {}", body.grant_type))),

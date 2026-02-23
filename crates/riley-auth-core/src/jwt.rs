@@ -22,6 +22,8 @@ pub struct Claims {
     pub iss: String,
     pub iat: i64,
     pub exp: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// Loaded key material for signing and verification.
@@ -70,6 +72,19 @@ impl Keys {
         role: &str,
         audience: &str,
     ) -> Result<String> {
+        self.sign_access_token_with_scopes(config, user_id, username, role, audience, None)
+    }
+
+    /// Create a signed access token with optional scope claim.
+    pub fn sign_access_token_with_scopes(
+        &self,
+        config: &JwtConfig,
+        user_id: &str,
+        username: &str,
+        role: &str,
+        audience: &str,
+        scope: Option<&str>,
+    ) -> Result<String> {
         let now = Utc::now();
         let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
 
@@ -81,6 +96,7 @@ impl Keys {
             iss: config.issuer.clone(),
             iat: now.timestamp(),
             exp: exp.timestamp(),
+            scope: scope.map(String::from),
         };
 
         let mut header = Header::new(Algorithm::RS256);
