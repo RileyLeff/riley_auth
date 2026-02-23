@@ -357,6 +357,10 @@ mod redis_impl {
                 RateLimitTier::Public => &self.public,
             }
         }
+
+        pub fn auth(&self) -> &RedisRateLimiter { &self.auth }
+        pub fn standard(&self) -> &RedisRateLimiter { &self.standard }
+        pub fn public(&self) -> &RedisRateLimiter { &self.public }
     }
 
     /// Axum middleware for Redis-backed tiered rate limiting.
