@@ -44,3 +44,11 @@ This file records architectural tradeoffs flagged during review that are intenti
 ## `auth_setup` maps all unique violations to username_taken
 **Flagged by**: Gemini R6 (minor)
 **Decision**: Acceptable. The username is pre-checked before the transaction, so the only unique violation that can realistically occur is the username constraint. If some exotic race causes a different unique violation, returning "username taken" is a safe and non-leaking error.
+
+## Manual ASN.1/DER parsing in JWKS endpoint
+**Flagged by**: Gemini R9 (minor)
+**Decision**: The `extract_rsa_components` function manually parses the DER structure to extract modulus and exponent. While the `rsa` crate (transitive dependency) could provide this more robustly, the current implementation works correctly for the standard RSA key format we generate. Not a security vulnerability — worst case is a broken JWKS endpoint, not a bypass. Can improve later.
+
+## kid generation from full PEM content
+**Flagged by**: Gemini R9 (minor)
+**Decision**: The key ID is SHA-256 of the full PEM file. This means whitespace/comment changes would alter the kid. In practice we control key generation and PEM format is stable. For a v1 single-key deployment this is fine. Could improve to hash only DER bytes in a future iteration.

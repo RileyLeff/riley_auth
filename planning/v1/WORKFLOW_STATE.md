@@ -1,8 +1,8 @@
 # v1 Workflow State
 
 **Current Phase:** Exhaustive Review (Phases 1-7)
-**Current Step:** Review round 9 (clean pass attempt #1 after R8 fix)
-**Status:** R8 Codex found 1 major (READ COMMITTED snapshot race in create_oauth_link), fixed with FOR SHARE in 4d0df05. Launching R9.
+**Current Step:** Review round 10 (clean pass attempt #2)
+**Status:** R9 achieved clean pass #1 (0 major across all 3 models). Launching R10 for pass #2.
 
 ## Progress
 
@@ -21,7 +21,8 @@
 | - | R6 review | 2 major (link creation + unlink bypass) | Fixed (c5591bf) |
 | - | R7 review | 2 major (atomic link + cookie path) | Fixed (0856d44) |
 | - | R8 review | 1 major (READ COMMITTED race) | Fixed (4d0df05) |
-| - | R9 review | Clean pass attempt #1 | In Progress |
+| - | R9 review | Clean pass #1 (0 major, 3 models) | Done |
+| - | R10 review | Clean pass attempt #2 | In Progress |
 | 8 | 8.1-8.5 | Docker, integration tests, Dockerfile, config, rate limiting | Pending |
 
 ## Blockers
@@ -30,6 +31,6 @@ None.
 
 ## Recent Activity
 
-- R7: 2 major — atomic link creation + cookie removal path/domain (0856d44)
 - R8: 1 major — READ COMMITTED snapshot race in create_oauth_link, fixed with FOR SHARE (4d0df05)
-- R9: Launching parallel review (clean pass attempt #1)
+- R9: CLEAN PASS #1 — 0 major across Claude + Gemini + Codex
+- R10: Launching parallel review (clean pass attempt #2)
