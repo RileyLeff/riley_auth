@@ -17,7 +17,7 @@ cors_origins = [                           # Allowed CORS origins (empty = permi
   "https://app.example.com",
 ]
 cookie_domain = ".example.com"             # Domain for auth cookies (enables subdomain SSO)
-frontend_url = "https://example.com"       # Redirect target after OAuth flows
+public_url = "https://example.com"         # Public base URL (used for OAuth callbacks and post-login redirects)
 behind_proxy = false                       # Trust X-Forwarded-For headers for rate limiting (default: false)
                                            # IMPORTANT: When true, your reverse proxy MUST overwrite (not append to)
                                            # the X-Forwarded-For header with the real client IP. Otherwise, clients
@@ -66,7 +66,6 @@ client_secret = "env:GITHUB_CLIENT_SECRET"
 min_length = 3                             # Minimum username length (default: 3)
 max_length = 24                            # Maximum username length (default: 24)
 pattern = "^[a-zA-Z][a-zA-Z0-9_-]*$"      # Username regex (default: letter + alphanumeric/dash/underscore)
-case_sensitive = false                     # Treat "Riley" and "riley" as the same (default: false)
 allow_changes = true                       # Allow username changes (default: true)
 change_cooldown_days = 30                  # Days between username changes (default: 30)
 old_name_hold_days = 90                    # Days old username is reserved after change (default: 90)

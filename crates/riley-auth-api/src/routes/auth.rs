@@ -95,7 +95,7 @@ async fn auth_redirect(
     let provider_config = get_provider_config(&state.config, provider)?;
     let callback_url = format!(
         "{}/auth/{}/callback",
-        state.config.server.frontend_url, provider_name
+        state.config.server.public_url, provider_name
     );
 
     let oauth_state = oauth::generate_state();
@@ -145,7 +145,7 @@ async fn auth_callback(
     let provider_config = get_provider_config(&state.config, provider)?;
     let callback_url = format!(
         "{}/auth/{}/callback",
-        state.config.server.frontend_url, provider_name
+        state.config.server.public_url, provider_name
     );
 
     // Exchange code for access token
@@ -174,7 +174,7 @@ async fn auth_callback(
             .ok_or(Error::UserNotFound)?;
 
         let jar = issue_tokens(&state, jar, &user).await?;
-        return Ok((jar, Redirect::temporary(&state.config.server.frontend_url)));
+        return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
     }
 
     // Check for email match (suggest linking)
@@ -186,8 +186,8 @@ async fn auth_callback(
             let setup_token = create_setup_token(&state.keys, &state.config, &profile)?;
             let jar = jar.add(build_temp_cookie(SETUP_TOKEN_COOKIE, &setup_token, &state.config));
             let mut redirect_url = url::Url::parse(&format!(
-                "{}/link-accounts", state.config.server.frontend_url
-            )).map_err(|_| Error::Config("invalid frontend_url".to_string()))?;
+                "{}/link-accounts", state.config.server.public_url
+            )).map_err(|_| Error::Config("invalid public_url".to_string()))?;
             redirect_url.query_pairs_mut()
                 .append_pair("provider", &profile.provider)
                 .append_pair("email", email);
@@ -198,7 +198,7 @@ async fn auth_callback(
     // New user — redirect to onboarding with setup token
     let setup_token = create_setup_token(&state.keys, &state.config, &profile)?;
     let jar = jar.add(build_temp_cookie(SETUP_TOKEN_COOKIE, &setup_token, &state.config));
-    let redirect_url = format!("{}/onboarding", state.config.server.frontend_url);
+    let redirect_url = format!("{}/onboarding", state.config.server.public_url);
     Ok((jar, Redirect::temporary(&redirect_url)))
 }
 
@@ -483,7 +483,7 @@ async fn link_redirect(
     let provider_config = get_provider_config(&state.config, provider)?;
     let callback_url = format!(
         "{}/auth/link/{}/callback",
-        state.config.server.frontend_url, provider_name
+        state.config.server.public_url, provider_name
     );
 
     let oauth_state = oauth::generate_state();
@@ -535,7 +535,7 @@ async fn link_callback(
     let provider_config = get_provider_config(&state.config, provider)?;
     let callback_url = format!(
         "{}/auth/link/{}/callback",
-        state.config.server.frontend_url, provider_name
+        state.config.server.public_url, provider_name
     );
 
     let provider_token = oauth::exchange_code(
@@ -573,7 +573,7 @@ async fn link_callback(
         .remove(removal_cookie(OAUTH_STATE_COOKIE, "/", &state.config))
         .remove(removal_cookie(PKCE_COOKIE, "/", &state.config));
 
-    let redirect_url = format!("{}/profile", state.config.server.frontend_url);
+    let redirect_url = format!("{}/profile", state.config.server.public_url);
     Ok((jar, Redirect::temporary(&redirect_url)))
 }
 
@@ -646,19 +646,10 @@ fn validate_username(username: &str, config: &Config) -> Result<(), Error> {
         });
     }
 
-    let check_name = if rules.case_sensitive {
-        username.to_string()
-    } else {
-        username.to_lowercase()
-    };
+    let check_name = username.to_lowercase();
 
     for reserved in &rules.reserved {
-        let check_reserved = if rules.case_sensitive {
-            reserved.clone()
-        } else {
-            reserved.to_lowercase()
-        };
-        if check_name == check_reserved {
+        if check_name == reserved.to_lowercase() {
             return Err(Error::ReservedUsername);
         }
     }

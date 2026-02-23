@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "riley-auth"
+path = "src/main.rs"
+
 [dependencies]
 riley-auth-core.workspace = true
 riley-auth-api.workspace = true

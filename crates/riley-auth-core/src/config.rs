@@ -26,7 +26,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub cors_origins: Vec<String>,
     pub cookie_domain: Option<String>,
-    pub frontend_url: String,
+    /// Public base URL for this service (used for OAuth callback URLs,
+    /// post-login redirects, etc.). Typically the reverse proxy origin
+    /// that fronts both the API and frontend.
+    pub public_url: String,
     #[serde(default)]
     pub behind_proxy: bool,
 }
@@ -88,8 +91,6 @@ pub struct UsernameConfig {
     pub max_length: usize,
     #[serde(default = "default_pattern")]
     pub pattern: String,
-    #[serde(default)]
-    pub case_sensitive: bool,
     #[serde(default = "default_true")]
     pub allow_changes: bool,
     #[serde(default = "default_change_cooldown")]
@@ -205,7 +206,6 @@ impl Default for UsernameConfig {
             min_length: default_min_length(),
             max_length: default_max_length(),
             pattern: default_pattern(),
-            case_sensitive: false,
             allow_changes: true,
             change_cooldown_days: default_change_cooldown(),
             old_name_hold_days: default_hold_days(),
@@ -239,7 +239,7 @@ mod tests {
     fn parse_minimal_config() {
         let toml = r#"
 [server]
-frontend_url = "https://example.com"
+public_url = "https://example.com"
 
 [database]
 url = "postgres://localhost/test"
@@ -263,7 +263,7 @@ host = "127.0.0.1"
 port = 9000
 cors_origins = ["https://example.com"]
 cookie_domain = ".example.com"
-frontend_url = "https://example.com"
+public_url = "https://example.com"
 
 [database]
 url = "postgres://localhost/test"

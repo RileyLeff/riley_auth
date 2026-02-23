@@ -84,7 +84,7 @@ impl TestServer {
                 port: 0,
                 cors_origins: vec![],
                 cookie_domain: None,
-                frontend_url: "http://localhost:3000".to_string(),
+                public_url: "http://localhost:3000".to_string(),
                 behind_proxy: false,
             },
             database: DatabaseConfig {
