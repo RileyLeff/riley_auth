@@ -431,6 +431,34 @@ mod tests {
     }
 
     #[test]
+    fn sign_and_verify_token_with_scopes() {
+        let (priv_file, pub_file) = generate_test_keys();
+        let keys = Keys::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+        let config = JwtConfig {
+            private_key_path: priv_file.path().to_path_buf(),
+            public_key_path: pub_file.path().to_path_buf(),
+            access_token_ttl_secs: 900,
+            refresh_token_ttl_secs: 2_592_000,
+            issuer: "test-auth".to_string(),
+            authorization_code_ttl_secs: 300,
+        };
+
+        // With scopes
+        let token = keys.sign_access_token_with_scopes(
+            &config, "user-123", "testuser", "user", "my-client",
+            Some("read:profile write:profile"),
+        ).unwrap();
+        let decoded = keys.verify_access_token(&config, &token).unwrap();
+        assert_eq!(decoded.claims.scope.as_deref(), Some("read:profile write:profile"));
+        assert_eq!(decoded.claims.aud, "my-client");
+
+        // Without scopes (session token)
+        let token = keys.sign_access_token(&config, "user-123", "testuser", "user", "test-auth").unwrap();
+        let decoded = keys.verify_access_token(&config, &token).unwrap();
+        assert!(decoded.claims.scope.is_none());
+    }
+
+    #[test]
     fn refresh_token_generation() {
         let (raw1, hash1) = generate_refresh_token();
         let (raw2, hash2) = generate_refresh_token();

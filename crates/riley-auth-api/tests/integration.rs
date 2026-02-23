@@ -17,8 +17,8 @@ use reqwest::{Client, StatusCode};
 use riley_auth_api::routes;
 use riley_auth_api::server::AppState;
 use riley_auth_core::config::{
-    Config, ConfigValue, DatabaseConfig, JwtConfig, OAuthProvidersConfig, ScopesConfig,
-    ServerConfig, UsernameConfig,
+    Config, ConfigValue, DatabaseConfig, JwtConfig, OAuthProvidersConfig, ScopeDefinition,
+    ScopesConfig, ServerConfig, UsernameConfig,
 };
 use riley_auth_core::db;
 use riley_auth_core::jwt::{self, Keys};
@@ -103,7 +103,18 @@ impl TestServer {
             oauth: OAuthProvidersConfig::default(),
             storage: None,
             usernames: UsernameConfig::default(),
-            scopes: ScopesConfig::default(),
+            scopes: ScopesConfig {
+                definitions: vec![
+                    ScopeDefinition {
+                        name: "read:profile".to_string(),
+                        description: "Read your profile information".to_string(),
+                    },
+                    ScopeDefinition {
+                        name: "write:profile".to_string(),
+                        description: "Update your profile information".to_string(),
+                    },
+                ],
+            },
         };
 
         let state = AppState {
@@ -939,6 +950,358 @@ fn cross_audience_token_rejected() {
         let resp = client
             .get(s.url("/auth/me"))
             .header("cookie", format!("riley_auth_access={client_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
+
+// --- Scope tests ---
+
+#[test]
+#[ignore]
+fn oauth_scopes_full_flow() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("scopeuser", "user").await;
+
+        // Register client with allowed scopes
+        let client_id_str = "scope-test-client";
+        let client_secret = "scope-test-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Scope Test Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string(), "write:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Authorize with scopes
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "read:profile write:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code for tokens — should include scope in response
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(token_resp["scope"], "read:profile write:profile");
+        let refresh_token = token_resp["refresh_token"].as_str().unwrap().to_string();
+
+        // Verify JWT has scope claim
+        let token_data = s
+            .keys
+            .verify_access_token(
+                &s.config.jwt,
+                token_resp["access_token"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(token_data.claims.scope.as_deref(), Some("read:profile write:profile"));
+
+        // Refresh — scopes should be preserved
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(refresh_resp["scope"], "read:profile write:profile");
+
+        // Verify refreshed JWT also has scope claim
+        let token_data = s
+            .keys
+            .verify_access_token(
+                &s.config.jwt,
+                refresh_resp["access_token"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(token_data.claims.scope.as_deref(), Some("read:profile write:profile"));
+    });
+}
+
+#[test]
+#[ignore]
+fn oauth_rejects_unauthorized_scope() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("badscopeuser", "user").await;
+
+        // Register client with only read:profile allowed
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Limited Client",
+            "limited-client-id",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Request write:profile which is NOT in client's allowed_scopes
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "limited-client-id"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "read:profile write:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
+fn oauth_rejects_unknown_scope() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("unknownscopeuser", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Unknown Scope Client",
+            "unknown-scope-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Request a scope that doesn't exist in config definitions
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "unknown-scope-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "admin:everything"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
+fn oauth_no_scopes_omits_scope_field() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("noscopeuser", "user").await;
+
+        let client_id_str = "noscope-client";
+        let client_secret = "noscope-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "No Scope Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Authorize without requesting scopes
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        // scope field should be absent (skip_serializing_if = "Option::is_none")
+        assert!(token_resp.get("scope").is_none());
+
+        // JWT should have no scope claim
+        let token_data = s
+            .keys
+            .verify_access_token(
+                &s.config.jwt,
+                token_resp["access_token"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert!(token_data.claims.scope.is_none());
+    });
+}
+
+#[test]
+#[ignore]
+fn consent_endpoint_returns_scope_descriptions() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("consentuser", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Consent Test Client",
+            "consent-test-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string(), "write:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let resp = client
+            .get(s.url("/oauth/consent"))
+            .query(&[
+                ("client_id", "consent-test-client"),
+                ("scope", "read:profile write:profile"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["client_name"], "Consent Test Client");
+        let scopes = body["scopes"].as_array().unwrap();
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0]["name"], "read:profile");
+        assert_eq!(scopes[0]["description"], "Read your profile information");
+        assert_eq!(scopes[1]["name"], "write:profile");
+        assert_eq!(scopes[1]["description"], "Update your profile information");
+    });
+}
+
+#[test]
+#[ignore]
+fn consent_endpoint_requires_session_token() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // No cookie — should be rejected
+        let resp = client
+            .get(s.url("/oauth/consent"))
+            .query(&[("client_id", "anything")])
             .send()
             .await
             .unwrap();
