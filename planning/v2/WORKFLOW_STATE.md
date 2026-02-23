@@ -1,8 +1,8 @@
 # v2 Workflow State
 
-**Current Phase:** 4 — Webhooks / Event System (NOT STARTED)
-**Current Step:** 4.1 — Database — webhook tables
-**Status:** Phases 1-3 complete. 18 unit + 41 integration tests pass. Starting Phase 4.
+**Current Phase:** COMPLETE
+**Current Step:** N/A
+**Status:** All 6 phases implemented. Exhaustive review converged (rounds 2 + 3 with 0 major findings). v2 is production-ready.
 
 ## Progress
 
@@ -12,23 +12,25 @@
 | 1 | review | Exhaustive review (3 rounds, converged) | Done |
 | 2 | 2.1-2.3 | OIDC Discovery + ID Tokens + tests | Done |
 | 3 | 3.1-3.4 | Session Visibility implementation + tests | Done |
-| 3 | review R1 | Exhaustive review round 1 (Gemini + Claude) | Done — 4 major fixed (c38ff2f) |
-| 3 | review R2 | Exhaustive review round 2 (Gemini + Claude) | Done — 1 major fixed (0e12ad7) |
-| 3 | review R3 | Exhaustive review round 3 (Gemini + Claude) | Done — 0 major (converged, 07ae4ab) |
-| 4 | 4.1 | Database — webhook tables | Not Started |
-| 4 | 4.2 | Config & event types | Not Started |
-| 4 | 4.3 | Webhook registration API | Not Started |
-| 4 | 4.4 | Event dispatch system | Not Started |
-| 4 | 4.5 | Emit events from existing code | Not Started |
-| 4 | 4.6 | CLI — webhook management | Not Started |
-| 4 | 4.7 | Tests — webhooks | Not Started |
-| 5 | 5.1 | Configurable cookie prefix | Not Started |
-| 5 | 5.2 | Tests — cookie prefix | Not Started |
-| 6 | 6.1 | Optional Redis dependency | Not Started |
-| 6 | 6.2 | Redis rate limit store | Not Started |
-| 6 | 6.3 | Server integration | Not Started |
-| 6 | 6.4 | Tests — Redis rate limiting | Not Started |
-| 6 | review | Exhaustive review (final) | Not Started |
+| 3 | review | Exhaustive review (3 rounds, converged) | Done |
+| 4 | 4.1-4.7 | Webhooks / Event System | Done (9ff1b27) |
+| 5 | 5.1-5.2 | Cookie Prefix | Done (38c5d29) |
+| 6 | 6.1-6.4 | Redis Rate Limit Persistence | Done (b32b725) |
+| 6 | review | Exhaustive review — 3 rounds, converged | Done |
+
+## Review Summary
+
+### Round 1 (Codex + Gemini + Claude)
+- 5 major findings → all fixed (07a327c)
+- Webhook secret exposure, URL scheme validation, client_id scoping, scope downgrade on refresh, CLI scope validation
+
+### Round 2 (Codex + Claude, Gemini rate-limited)
+- 0 major findings
+- 3 minor fixes (0b32c10): CLI URL validation, byte slicing, serde skip
+
+### Round 3 (Codex + Gemini + Claude — all 3 models)
+- 0 major findings — CONVERGENCE
+- 1 minor fix (ba5e228): config path fallback
 
 ## Blockers
 
@@ -36,7 +38,8 @@ None.
 
 ## Recent Activity
 
-- Phase 3 complete: session visibility (ac96d62, a630477)
-- Phase 3 review: 3 rounds, 5 major total fixed (c38ff2f, 0e12ad7, 07ae4ab)
-- Converged with 0 major bugs in rounds 2+3
-- 18 unit + 41 integration tests pass
+- Phase 6 complete: Redis rate limiting (b32b725)
+- Round 1 review: 5 majors fixed (07a327c), artifacts filed (adcb3e6)
+- Round 2 review: 0 majors, 3 minors fixed (0b32c10), artifacts filed (effe110)
+- Round 3 review: 0 majors, 1 minor fixed (ba5e228) — CONVERGED
+- Total: 20 unit + 2 API unit + 47 integration + 5 Redis = 74 tests, all passing
