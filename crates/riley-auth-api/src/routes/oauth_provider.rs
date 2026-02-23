@@ -127,6 +127,7 @@ async fn authorize(
         user_id,
         client.id,
         &query.redirect_uri,
+        &[],
         Some(code_challenge),
         Some(method),
         expires_at,
@@ -225,6 +226,9 @@ async fn token(
                 Some(client.id),
                 &refresh_hash,
                 expires_at,
+                &[],
+                None,
+                None,
             )
             .await?;
 
@@ -273,6 +277,9 @@ async fn token(
                 Some(client.id),
                 &new_refresh_hash,
                 expires_at,
+                &[],
+                None,
+                None,
             )
             .await?;
 

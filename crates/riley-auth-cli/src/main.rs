@@ -197,6 +197,7 @@ async fn main() -> anyhow::Result<()> {
                 &client_id,
                 &secret_hash,
                 &redirect_uris,
+                &[],
                 auto_approve,
             )
             .await?;

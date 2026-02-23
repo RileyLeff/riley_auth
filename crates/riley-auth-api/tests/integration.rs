@@ -191,7 +191,7 @@ impl TestServer {
         let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
         let expires_at = chrono::Utc::now()
             + chrono::Duration::seconds(self.config.jwt.refresh_token_ttl_secs as i64);
-        db::store_refresh_token(&self.db, user.id, None, &refresh_hash, expires_at)
+        db::store_refresh_token(&self.db, user.id, None, &refresh_hash, expires_at, &[], None, None)
             .await
             .expect("failed to store refresh token");
 
@@ -467,7 +467,7 @@ fn logout_all() {
 
         let (_, hash2) = jwt::generate_refresh_token();
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(86400);
-        db::store_refresh_token(&s.db, user.id, None, &hash2, expires_at)
+        db::store_refresh_token(&s.db, user.id, None, &hash2, expires_at, &[], None, None)
             .await
             .unwrap();
 
@@ -689,6 +689,7 @@ fn oauth_provider_full_flow() {
             client_id_str,
             &secret_hash,
             &["https://app.example.com/callback".to_string()],
+            &[],
             true,
         )
         .await
@@ -865,6 +866,7 @@ fn oauth_provider_rejects_wrong_redirect_uri() {
             "strict-client-id",
             &secret_hash,
             &["https://allowed.example.com/callback".to_string()],
+            &[],
             true,
         )
         .await

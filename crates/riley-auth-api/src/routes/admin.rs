@@ -236,6 +236,7 @@ async fn register_client(
         &client_id,
         &secret_hash,
         &body.redirect_uris,
+        &[],
         body.auto_approve,
     )
     .await?;

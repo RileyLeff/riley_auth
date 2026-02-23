@@ -78,6 +78,9 @@ pub struct RefreshTokenRow {
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    pub scopes: Vec<String>,
+    pub user_agent: Option<String>,
+    pub ip_address: Option<String>,
 }
 
 // --- User queries ---
@@ -491,15 +494,21 @@ pub async fn store_refresh_token(
     client_id: Option<Uuid>,
     token_hash: &str,
     expires_at: DateTime<Utc>,
+    scopes: &[String],
+    user_agent: Option<&str>,
+    ip_address: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO refresh_tokens (user_id, client_id, token_hash, expires_at)
-         VALUES ($1, $2, $3, $4)"
+        "INSERT INTO refresh_tokens (user_id, client_id, token_hash, expires_at, scopes, user_agent, ip_address)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)"
     )
     .bind(user_id)
     .bind(client_id)
     .bind(token_hash)
     .bind(expires_at)
+    .bind(scopes)
+    .bind(user_agent)
+    .bind(ip_address)
     .execute(pool)
     .await?;
     Ok(())
@@ -629,6 +638,7 @@ pub struct OAuthClient {
     pub client_id: String,
     pub client_secret_hash: String,
     pub redirect_uris: Vec<String>,
+    pub allowed_scopes: Vec<String>,
     pub auto_approve: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -671,17 +681,19 @@ pub async fn create_client(
     client_id: &str,
     client_secret_hash: &str,
     redirect_uris: &[String],
+    allowed_scopes: &[String],
     auto_approve: bool,
 ) -> Result<OAuthClient> {
     let client = sqlx::query_as::<_, OAuthClient>(
-        "INSERT INTO oauth_clients (name, client_id, client_secret_hash, redirect_uris, auto_approve)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO oauth_clients (name, client_id, client_secret_hash, redirect_uris, allowed_scopes, auto_approve)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *"
     )
     .bind(name)
     .bind(client_id)
     .bind(client_secret_hash)
     .bind(redirect_uris)
+    .bind(allowed_scopes)
     .bind(auto_approve)
     .fetch_one(pool)
     .await?;
@@ -719,18 +731,20 @@ pub async fn store_authorization_code(
     user_id: Uuid,
     client_id: Uuid,
     redirect_uri: &str,
+    scopes: &[String],
     code_challenge: Option<&str>,
     code_challenge_method: Option<&str>,
     expires_at: DateTime<Utc>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO authorization_codes (code_hash, user_id, client_id, redirect_uri, code_challenge, code_challenge_method, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        "INSERT INTO authorization_codes (code_hash, user_id, client_id, redirect_uri, scopes, code_challenge, code_challenge_method, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
     )
     .bind(code_hash)
     .bind(user_id)
     .bind(client_id)
     .bind(redirect_uri)
+    .bind(scopes)
     .bind(code_challenge)
     .bind(code_challenge_method)
     .bind(expires_at)

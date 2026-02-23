@@ -672,7 +672,7 @@ async fn issue_tokens(
 
     let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
-    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at).await?;
+    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], None, None).await?;
 
     let jar = jar
         .add(build_access_cookie(&access_token, &state.config))
