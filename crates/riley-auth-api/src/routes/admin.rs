@@ -6,6 +6,7 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use riley_auth_core::config::validate_scope_name;
 use riley_auth_core::db;
 use riley_auth_core::error::Error;
 use riley_auth_core::jwt;
@@ -223,6 +224,19 @@ async fn register_client(
 
     if body.redirect_uris.is_empty() {
         return Err(Error::BadRequest("at least one redirect_uri required".to_string()));
+    }
+
+    // Validate allowed_scopes: format + existence in config definitions
+    let defined_names: Vec<&str> = state.config.scopes.definitions.iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    for scope in &body.allowed_scopes {
+        validate_scope_name(scope).map_err(|_| {
+            Error::BadRequest(format!("invalid scope name: {scope}"))
+        })?;
+        if !defined_names.contains(&scope.as_str()) {
+            return Err(Error::BadRequest(format!("undefined scope: {scope}")));
+        }
     }
 
     // Generate client_id and client_secret

@@ -8,6 +8,8 @@ use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use subtle::ConstantTimeEq;
+
 use riley_auth_core::config::Config;
 use riley_auth_core::db;
 use riley_auth_core::error::Error;
@@ -132,7 +134,7 @@ async fn auth_callback(
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
-    if query.state != saved_state {
+    if query.state.as_bytes().ct_eq(saved_state.as_bytes()).unwrap_u8() == 0 {
         return Err(Error::InvalidOAuthState);
     }
 
@@ -523,7 +525,7 @@ async fn link_callback(
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
-    if query.state != saved_state {
+    if query.state.as_bytes().ct_eq(saved_state.as_bytes()).unwrap_u8() == 0 {
         return Err(Error::InvalidOAuthState);
     }
 

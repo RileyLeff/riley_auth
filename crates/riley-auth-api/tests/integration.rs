@@ -1292,6 +1292,44 @@ fn consent_endpoint_returns_scope_descriptions() {
 
 #[test]
 #[ignore]
+fn consent_endpoint_rejects_disallowed_scope() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("consentbad", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Consent Limited Client",
+            "consent-limited-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string()], // only read:profile allowed
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Request write:profile which is NOT in client's allowed_scopes
+        let resp = client
+            .get(s.url("/oauth/consent"))
+            .query(&[
+                ("client_id", "consent-limited-client"),
+                ("scope", "read:profile write:profile"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
 fn consent_endpoint_requires_session_token() {
     let s = server();
     runtime().block_on(async {
@@ -1306,5 +1344,188 @@ fn consent_endpoint_requires_session_token() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
+
+#[test]
+#[ignore]
+fn oauth_deduplicates_scopes() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("dedupuser", "user").await;
+
+        let client_id_str = "dedup-client";
+        let client_secret = "dedup-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Dedup Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string(), "write:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Request duplicate scopes
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "read:profile read:profile write:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        // Scope should be deduplicated
+        assert_eq!(token_resp["scope"], "read:profile write:profile");
+
+        // JWT scope claim should also be deduplicated
+        let token_data = s
+            .keys
+            .verify_access_token(
+                &s.config.jwt,
+                token_resp["access_token"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(token_data.claims.scope.as_deref(), Some("read:profile write:profile"));
+    });
+}
+
+#[test]
+#[ignore]
+fn admin_register_client_with_scopes() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("scopeadmin", "admin").await;
+
+        // Register client with valid scopes
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "Scoped App",
+                "redirect_uris": ["https://app.example.com/callback"],
+                "allowed_scopes": ["read:profile"],
+                "auto_approve": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["allowed_scopes"], serde_json::json!(["read:profile"]));
+
+        // List clients — verify scopes persisted
+        let resp = client
+            .get(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let clients: Vec<serde_json::Value> = resp.json().await.unwrap();
+        let scoped_client = clients.iter().find(|c| c["name"] == "Scoped App").unwrap();
+        assert_eq!(scoped_client["allowed_scopes"], serde_json::json!(["read:profile"]));
+    });
+}
+
+#[test]
+#[ignore]
+fn admin_rejects_undefined_scope() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("badscopeadmin", "admin").await;
+
+        // Register client with a scope that doesn't exist in config definitions
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "Bad Scope App",
+                "redirect_uris": ["https://app.example.com/callback"],
+                "allowed_scopes": ["admin:nuclear"],
+                "auto_approve": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
+fn admin_rejects_invalid_scope_name() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("invalidscopeadmin", "admin").await;
+
+        // Register client with a scope name containing whitespace (injection attempt)
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "Whitespace Scope App",
+                "redirect_uris": ["https://app.example.com/callback"],
+                "allowed_scopes": ["read:profile write:profile"],
+                "auto_approve": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     });
 }

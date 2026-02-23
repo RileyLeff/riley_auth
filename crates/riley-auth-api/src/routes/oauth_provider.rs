@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Redirect;
@@ -113,9 +115,9 @@ async fn authorize(
         return Err(Error::InvalidRedirectUri);
     }
 
-    // Validate requested scopes
+    // Validate and deduplicate requested scopes
     let granted_scopes: Vec<String> = if let Some(ref scope_str) = query.scope {
-        let requested: Vec<&str> = scope_str.split_whitespace().collect();
+        let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
         let defined_names: Vec<&str> = state.config.scopes.definitions.iter()
             .map(|d| d.name.as_str())
             .collect();
@@ -214,22 +216,20 @@ async fn consent(
         .await?
         .ok_or(Error::InvalidClient)?;
 
-    // Resolve requested scopes to descriptions
+    // Resolve requested scopes to descriptions (validate like authorize endpoint)
     let scopes = if let Some(ref scope_str) = query.scope {
-        let requested: Vec<&str> = scope_str.split_whitespace().collect();
+        let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
         let mut result = Vec::new();
-        for s in requested {
-            // Only include scopes that are both defined and allowed for this client
+        for s in &requested {
+            let def = state.config.scopes.definitions.iter()
+                .find(|d| d.name == *s)
+                .ok_or_else(|| Error::BadRequest(format!("unknown scope: {s}")))?;
             if !client.allowed_scopes.iter().any(|a| a == s) {
-                continue;
+                return Err(Error::BadRequest(format!("scope not allowed for this client: {s}")));
             }
-            let description = state.config.scopes.definitions.iter()
-                .find(|d| d.name == s)
-                .map(|d| d.description.clone())
-                .unwrap_or_default();
             result.push(ConsentScope {
                 name: s.to_string(),
-                description,
+                description: def.description.clone(),
             });
         }
         result

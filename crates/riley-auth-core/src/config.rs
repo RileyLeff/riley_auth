@@ -115,6 +115,31 @@ pub struct ScopeDefinition {
     pub description: String,
 }
 
+/// Validate that a scope name uses only safe characters.
+/// Allowed: lowercase ASCII letters, digits, colons, dots, underscores, hyphens.
+/// Must start with a letter and be non-empty.
+pub fn validate_scope_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::Config("scope name cannot be empty".to_string()));
+    }
+    // ^[a-z][a-z0-9:._-]*$
+    let first = name.as_bytes()[0];
+    if !first.is_ascii_lowercase() {
+        return Err(Error::Config(format!(
+            "scope name must start with a lowercase letter: {name}"
+        )));
+    }
+    for ch in name.bytes() {
+        if !matches!(ch, b'a'..=b'z' | b'0'..=b'9' | b':' | b'.' | b'_' | b'-') {
+            return Err(Error::Config(format!(
+                "scope name contains invalid character '{}': {name}",
+                ch as char
+            )));
+        }
+    }
+    Ok(())
+}
+
 // --- ConfigValue: supports "env:VAR_NAME" syntax ---
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,10 +171,15 @@ impl Config {
         let content = std::fs::read_to_string(path).map_err(|e| {
             Error::Config(format!("cannot read {}: {e}", path.display()))
         })?;
-        toml::from_str(&content).map_err(|e| Error::ConfigParse {
+        let config: Config = toml::from_str(&content).map_err(|e| Error::ConfigParse {
             path: path.to_path_buf(),
             source: e,
-        })
+        })?;
+        // Validate scope definition names
+        for def in &config.scopes.definitions {
+            validate_scope_name(&def.name)?;
+        }
+        Ok(config)
     }
 }
 
@@ -346,5 +376,25 @@ description = "Update your profile information"
     fn config_value_env_missing() {
         let val = ConfigValue::Literal("env:NONEXISTENT_VAR_12345".to_string());
         assert!(val.resolve().is_err());
+    }
+
+    #[test]
+    fn scope_name_validation() {
+        // Valid scope names
+        assert!(validate_scope_name("read:profile").is_ok());
+        assert!(validate_scope_name("write:profile").is_ok());
+        assert!(validate_scope_name("admin:users.list").is_ok());
+        assert!(validate_scope_name("openid").is_ok());
+        assert!(validate_scope_name("a").is_ok());
+        assert!(validate_scope_name("scope-with-dash").is_ok());
+        assert!(validate_scope_name("scope_with_underscore").is_ok());
+
+        // Invalid scope names
+        assert!(validate_scope_name("").is_err()); // empty
+        assert!(validate_scope_name("Read:Profile").is_err()); // uppercase
+        assert!(validate_scope_name("1scope").is_err()); // starts with digit
+        assert!(validate_scope_name("scope with space").is_err()); // whitespace
+        assert!(validate_scope_name("scope\nnewline").is_err()); // newline
+        assert!(validate_scope_name(":leading-colon").is_err()); // starts with colon
     }
 }
