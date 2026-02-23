@@ -66,6 +66,7 @@ pub fn router() -> Router<AppState> {
         .route("/auth/{provider}", get(auth_redirect))
         .route("/auth/{provider}/callback", get(auth_callback))
         .route("/auth/setup", post(auth_setup))
+        .route("/auth/link/confirm", post(link_confirm))
         // Session
         .route("/auth/refresh", post(auth_refresh))
         .route("/auth/logout", post(auth_logout))
@@ -283,6 +284,72 @@ async fn auth_setup(
         serde_json::json!({ "user_id": user.id.to_string() }),
         state.config.webhooks.max_retry_attempts,
     ).await;
+
+    Ok((jar, Json(user_to_me(&user))))
+}
+
+/// POST /auth/link/confirm — confirm linking a new provider to an existing account
+///
+/// Used when auth_callback detects an email collision and redirects to /link-accounts
+/// with a setup token. The frontend shows a "link this account?" prompt, and the user
+/// confirms by calling this endpoint with both their session cookie and the setup token.
+async fn link_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<(CookieJar, Json<MeResponse>), Error> {
+    // User must be authenticated
+    let claims = extract_user(&state, &jar)?;
+    let user_id = claims.sub_uuid()?;
+
+    // Get setup token
+    let setup_token = jar
+        .get(&state.cookie_names.setup)
+        .map(|c| c.value().to_string())
+        .ok_or(Error::Unauthenticated)?;
+
+    let profile = decode_setup_token(&state.keys, &state.config, &setup_token)?;
+
+    // Check if this provider account is already linked
+    if db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id)
+        .await?
+        .is_some()
+    {
+        return Err(Error::ProviderAlreadyLinked);
+    }
+
+    // Create the link (catch unique violation from concurrent requests)
+    db::create_oauth_link(
+        &state.db,
+        user_id,
+        &profile.provider,
+        &profile.provider_id,
+        profile.email.as_deref(),
+    )
+    .await
+    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
+        Error::ProviderAlreadyLinked
+    } else {
+        e
+    })?;
+
+    // Clear setup cookie
+    let jar = jar.remove(removal_cookie(&state.cookie_names.setup, "/", &state.config));
+
+    // Dispatch webhook
+    webhooks::dispatch_event(
+        &state.db,
+        webhooks::LINK_CREATED,
+        serde_json::json!({
+            "user_id": user_id.to_string(),
+            "provider": profile.provider,
+        }),
+        state.config.webhooks.max_retry_attempts,
+    ).await;
+
+    // Return updated user profile
+    let user = db::find_user_by_id(&state.db, user_id)
+        .await?
+        .ok_or(Error::UserNotFound)?;
 
     Ok((jar, Json(user_to_me(&user))))
 }

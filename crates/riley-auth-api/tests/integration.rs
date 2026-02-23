@@ -3971,3 +3971,179 @@ fn webhook_signature_includes_timestamp() {
         assert_eq!(hex_part.len(), 64, "SHA-256 hex should be 64 chars");
     });
 }
+
+#[test]
+#[ignore]
+fn link_confirm_adds_provider_to_existing_account() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Create user with google provider
+        let (user, access_token, _) = s.create_user_with_session("linkconfirm", "user").await;
+
+        // Verify user has exactly one provider link
+        let resp = client
+            .get(s.url("/auth/me/links"))
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let links: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["provider"], "google");
+
+        // Create a setup token simulating an email collision from github
+        // (as if auth_callback detected that github user has same email)
+        let setup_token = {
+            use sha2::{Sha256, Digest};
+            let provider = "github";
+            let provider_id = "gh-12345";
+            let mut hasher = Sha256::new();
+            hasher.update(provider.as_bytes());
+            hasher.update(b":");
+            hasher.update(provider_id.as_bytes());
+            let binding = hex::encode(hasher.finalize());
+
+            let claims = serde_json::json!({
+                "binding": binding,
+                "profile": {
+                    "provider": provider,
+                    "provider_id": provider_id,
+                    "email": "linkconfirm@example.com",
+                    "name": "Link Confirm User",
+                    "avatar_url": null
+                },
+                "exp": (chrono::Utc::now() + chrono::Duration::minutes(15)).timestamp(),
+                "iss": s.config.jwt.issuer,
+                "purpose": "setup"
+            });
+
+            let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+            jsonwebtoken::encode(&header, &claims, &s.keys.encoding_key()).unwrap()
+        };
+
+        // Call POST /auth/link/confirm with session + setup token cookies
+        let cookie_str = format!(
+            "riley_auth_access={access_token}; riley_auth_setup={setup_token}"
+        );
+        let resp = client
+            .post(s.url("/auth/link/confirm"))
+            .header("cookie", &cookie_str)
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Response should be the user profile
+        let me: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(me["username"], "linkconfirm");
+
+        // Verify user now has two provider links
+        let resp = client
+            .get(s.url("/auth/me/links"))
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let links: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert_eq!(links.len(), 2, "user should now have two provider links");
+
+        let providers: Vec<&str> = links.iter().map(|l| l["provider"].as_str().unwrap()).collect();
+        assert!(providers.contains(&"google"));
+        assert!(providers.contains(&"github"));
+    });
+}
+
+#[test]
+#[ignore]
+fn link_confirm_rejects_already_linked_provider() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (user, access_token, _) = s.create_user_with_session("linkdup", "user").await;
+
+        // Get the user's existing provider link to find the provider_id
+        let links = db::find_oauth_links_by_user(&s.db, user.id).await.unwrap();
+        let existing_link = &links[0];
+
+        // Create setup token for the same provider identity that's already linked
+        let setup_token = {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(existing_link.provider.as_bytes());
+            hasher.update(b":");
+            hasher.update(existing_link.provider_id.as_bytes());
+            let binding = hex::encode(hasher.finalize());
+
+            let claims = serde_json::json!({
+                "binding": binding,
+                "profile": {
+                    "provider": &existing_link.provider,
+                    "provider_id": &existing_link.provider_id,
+                    "email": "linkdup@example.com",
+                    "name": null,
+                    "avatar_url": null
+                },
+                "exp": (chrono::Utc::now() + chrono::Duration::minutes(15)).timestamp(),
+                "iss": s.config.jwt.issuer,
+                "purpose": "setup"
+            });
+
+            let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+            jsonwebtoken::encode(&header, &claims, &s.keys.encoding_key()).unwrap()
+        };
+
+        let cookie_str = format!(
+            "riley_auth_access={access_token}; riley_auth_setup={setup_token}"
+        );
+        let resp = client
+            .post(s.url("/auth/link/confirm"))
+            .header("cookie", &cookie_str)
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let err: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(err["error"], "provider_already_linked");
+    });
+}
+
+#[test]
+#[ignore]
+fn link_confirm_requires_both_cookies() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("linknocookie", "user").await;
+
+        // Without setup cookie → should fail
+        let resp = client
+            .post(s.url("/auth/link/confirm"))
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Without session cookie → should fail
+        let resp = client
+            .post(s.url("/auth/link/confirm"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
