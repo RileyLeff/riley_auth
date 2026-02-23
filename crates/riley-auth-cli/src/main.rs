@@ -59,6 +59,9 @@ enum Command {
         /// Allowed redirect URI(s)
         #[arg(required = true, num_args = 1..)]
         redirect_uris: Vec<String>,
+        /// Allowed scopes for this client (e.g. read:profile write:profile)
+        #[arg(long, num_args = 0..)]
+        scopes: Vec<String>,
         /// Skip consent screen for this client
         #[arg(long)]
         auto_approve: bool,
@@ -180,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::RegisterClient { name, redirect_uris, auto_approve } => {
+        Command::RegisterClient { name, redirect_uris, scopes, auto_approve } => {
             // Generate client_id and client_secret
             let mut id_bytes = [0u8; 16];
             rand::RngCore::fill_bytes(&mut rand::rng(), &mut id_bytes);
@@ -197,18 +200,19 @@ async fn main() -> anyhow::Result<()> {
                 &client_id,
                 &secret_hash,
                 &redirect_uris,
-                &[],
+                &scopes,
                 auto_approve,
             )
             .await?;
 
             println!("Client registered:");
-            println!("  ID:            {}", client.id);
-            println!("  Name:          {}", client.name);
-            println!("  Client ID:     {}", client_id);
-            println!("  Client Secret: {}", client_secret);
-            println!("  Redirect URIs: {:?}", client.redirect_uris);
-            println!("  Auto-approve:  {}", client.auto_approve);
+            println!("  ID:             {}", client.id);
+            println!("  Name:           {}", client.name);
+            println!("  Client ID:      {}", client_id);
+            println!("  Client Secret:  {}", client_secret);
+            println!("  Redirect URIs:  {:?}", client.redirect_uris);
+            println!("  Allowed Scopes: {:?}", client.allowed_scopes);
+            println!("  Auto-approve:   {}", client.auto_approve);
             println!("\nSave the client secret — it cannot be retrieved later.");
         }
         Command::ListClients => {

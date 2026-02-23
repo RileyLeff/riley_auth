@@ -47,6 +47,8 @@ struct RegisterClientRequest {
     name: String,
     redirect_uris: Vec<String>,
     #[serde(default)]
+    allowed_scopes: Vec<String>,
+    #[serde(default)]
     auto_approve: bool,
 }
 
@@ -56,6 +58,7 @@ struct ClientResponse {
     name: String,
     client_id: String,
     redirect_uris: Vec<String>,
+    allowed_scopes: Vec<String>,
     auto_approve: bool,
     created_at: String,
 }
@@ -67,6 +70,7 @@ struct RegisterClientResponse {
     client_id: String,
     client_secret: String,
     redirect_uris: Vec<String>,
+    allowed_scopes: Vec<String>,
     auto_approve: bool,
 }
 
@@ -202,6 +206,7 @@ async fn list_clients(
         name: c.name,
         client_id: c.client_id,
         redirect_uris: c.redirect_uris,
+        allowed_scopes: c.allowed_scopes,
         auto_approve: c.auto_approve,
         created_at: c.created_at.to_rfc3339(),
     }).collect();
@@ -236,7 +241,7 @@ async fn register_client(
         &client_id,
         &secret_hash,
         &body.redirect_uris,
-        &[],
+        &body.allowed_scopes,
         body.auto_approve,
     )
     .await?;
@@ -247,6 +252,7 @@ async fn register_client(
         client_id,
         client_secret,
         redirect_uris: client.redirect_uris,
+        allowed_scopes: client.allowed_scopes,
         auto_approve: client.auto_approve,
     })))
 }
