@@ -233,12 +233,15 @@ impl Config {
 pub fn resolve_config(explicit_path: Option<&Path>) -> Result<Config> {
     let mut searched = Vec::new();
 
-    // 1. Explicit path
+    // 1. Explicit path — fail immediately if specified but missing
     if let Some(path) = explicit_path {
         if path.exists() {
             return Config::from_path(path);
         }
-        searched.push(path.to_path_buf());
+        return Err(Error::Config(format!(
+            "config file not found: {}",
+            path.display()
+        )));
     }
 
     // 2. Environment variable
