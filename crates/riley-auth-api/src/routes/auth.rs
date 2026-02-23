@@ -21,13 +21,6 @@ use riley_auth_core::webhooks;
 
 use crate::server::AppState;
 
-// --- Cookie names ---
-pub const ACCESS_TOKEN_COOKIE: &str = "riley_auth_access";
-const REFRESH_TOKEN_COOKIE: &str = "riley_auth_refresh";
-const OAUTH_STATE_COOKIE: &str = "riley_auth_oauth_state";
-const PKCE_COOKIE: &str = "riley_auth_pkce";
-const SETUP_TOKEN_COOKIE: &str = "riley_auth_setup";
-
 // --- Query params ---
 
 #[derive(Deserialize)]
@@ -117,8 +110,8 @@ async fn auth_redirect(
     )?;
 
     let jar = jar
-        .add(build_temp_cookie(OAUTH_STATE_COOKIE, &oauth_state, &state.config))
-        .add(build_temp_cookie(PKCE_COOKIE, &pkce_verifier, &state.config));
+        .add(build_temp_cookie(&state.cookie_names.oauth_state, &oauth_state, &state.config))
+        .add(build_temp_cookie(&state.cookie_names.pkce, &pkce_verifier, &state.config));
 
     Ok((jar, Redirect::temporary(&auth_url)))
 }
@@ -137,7 +130,7 @@ async fn auth_callback(
 
     // Verify state
     let saved_state = jar
-        .get(OAUTH_STATE_COOKIE)
+        .get(&state.cookie_names.oauth_state)
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
@@ -147,7 +140,7 @@ async fn auth_callback(
 
     // Get PKCE verifier
     let pkce_verifier = jar
-        .get(PKCE_COOKIE)
+        .get(&state.cookie_names.pkce)
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
@@ -172,8 +165,8 @@ async fn auth_callback(
 
     // Clear temp cookies
     let jar = jar
-        .remove(removal_cookie(OAUTH_STATE_COOKIE, "/", &state.config))
-        .remove(removal_cookie(PKCE_COOKIE, "/", &state.config));
+        .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
+        .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config));
 
     // Look up existing oauth link
     if let Some(link) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
@@ -201,7 +194,7 @@ async fn auth_callback(
             // There's an existing account with the same email on a different provider.
             // Redirect to link-accounts page with a setup token.
             let setup_token = create_setup_token(&state.keys, &state.config, &profile)?;
-            let jar = jar.add(build_temp_cookie(SETUP_TOKEN_COOKIE, &setup_token, &state.config));
+            let jar = jar.add(build_temp_cookie(&state.cookie_names.setup, &setup_token, &state.config));
             let mut redirect_url = url::Url::parse(&format!(
                 "{}/link-accounts", state.config.server.public_url
             )).map_err(|_| Error::Config("invalid public_url".to_string()))?;
@@ -214,7 +207,7 @@ async fn auth_callback(
 
     // New user — redirect to onboarding with setup token
     let setup_token = create_setup_token(&state.keys, &state.config, &profile)?;
-    let jar = jar.add(build_temp_cookie(SETUP_TOKEN_COOKIE, &setup_token, &state.config));
+    let jar = jar.add(build_temp_cookie(&state.cookie_names.setup, &setup_token, &state.config));
     let redirect_url = format!("{}/onboarding", state.config.server.public_url);
     Ok((jar, Redirect::temporary(&redirect_url)))
 }
@@ -229,7 +222,7 @@ async fn auth_setup(
 ) -> Result<(CookieJar, Json<MeResponse>), Error> {
     // Get setup token
     let setup_token = jar
-        .get(SETUP_TOKEN_COOKIE)
+        .get(&state.cookie_names.setup)
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 
@@ -264,7 +257,7 @@ async fn auth_setup(
     })?;
 
     // Issue tokens, clear setup cookie
-    let jar = jar.remove(removal_cookie(SETUP_TOKEN_COOKIE, "/", &state.config));
+    let jar = jar.remove(removal_cookie(&state.cookie_names.setup, "/", &state.config));
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
     let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
     let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
@@ -295,7 +288,7 @@ async fn auth_refresh(
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), Error> {
     let refresh_raw = jar
-        .get(REFRESH_TOKEN_COOKIE)
+        .get(&state.cookie_names.refresh)
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 
@@ -330,14 +323,14 @@ async fn auth_logout(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), Error> {
-    if let Some(refresh) = jar.get(REFRESH_TOKEN_COOKIE) {
+    if let Some(refresh) = jar.get(&state.cookie_names.refresh) {
         let hash = jwt::hash_token(refresh.value());
         db::delete_refresh_token(&state.db, &hash).await?;
     }
 
     let jar = jar
-        .remove(removal_cookie(ACCESS_TOKEN_COOKIE, "/", &state.config))
-        .remove(removal_cookie(REFRESH_TOKEN_COOKIE, "/auth", &state.config));
+        .remove(removal_cookie(&state.cookie_names.access, "/", &state.config))
+        .remove(removal_cookie(&state.cookie_names.refresh, "/auth", &state.config));
 
     Ok((jar, StatusCode::OK))
 }
@@ -352,8 +345,8 @@ async fn auth_logout_all(
     db::delete_all_refresh_tokens(&state.db, user.sub_uuid()?).await?;
 
     let jar = jar
-        .remove(removal_cookie(ACCESS_TOKEN_COOKIE, "/", &state.config))
-        .remove(removal_cookie(REFRESH_TOKEN_COOKIE, "/auth", &state.config));
+        .remove(removal_cookie(&state.cookie_names.access, "/", &state.config))
+        .remove(removal_cookie(&state.cookie_names.refresh, "/auth", &state.config));
 
     Ok((jar, StatusCode::OK))
 }
@@ -380,7 +373,7 @@ async fn list_sessions(
 
     // Identify the current session by its refresh token
     let current_token_hash = jar
-        .get(REFRESH_TOKEN_COOKIE)
+        .get(&state.cookie_names.refresh)
         .map(|c| jwt::hash_token(c.value()));
 
     let sessions = db::list_sessions(&state.db, user_id).await?;
@@ -422,7 +415,7 @@ async fn revoke_session(
         .map_err(|_| Error::BadRequest("invalid session id".to_string()))?;
 
     // Prevent revoking the current session (use /auth/logout for that)
-    if let Some(refresh) = jar.get(REFRESH_TOKEN_COOKIE) {
+    if let Some(refresh) = jar.get(&state.cookie_names.refresh) {
         let hash = jwt::hash_token(refresh.value());
         if let Some(token_row) = db::find_refresh_token(&state.db, &hash).await? {
             if token_row.id == session_uuid {
@@ -547,7 +540,7 @@ async fn update_username(
         &state.config.jwt.issuer,
     )?;
 
-    let jar = jar.add(build_access_cookie(&access_token, &state.config));
+    let jar = jar.add(build_access_cookie(&state.cookie_names.access, &access_token, &state.config));
 
     webhooks::dispatch_event(
         state.db.clone(),
@@ -589,8 +582,8 @@ async fn delete_account(
     );
 
     let jar = jar
-        .remove(removal_cookie(ACCESS_TOKEN_COOKIE, "/", &state.config))
-        .remove(removal_cookie(REFRESH_TOKEN_COOKIE, "/auth", &state.config));
+        .remove(removal_cookie(&state.cookie_names.access, "/", &state.config))
+        .remove(removal_cookie(&state.cookie_names.refresh, "/auth", &state.config));
 
     Ok((jar, StatusCode::OK))
 }
@@ -647,8 +640,8 @@ async fn link_redirect(
     )?;
 
     let jar = jar
-        .add(build_temp_cookie(OAUTH_STATE_COOKIE, &oauth_state, &state.config))
-        .add(build_temp_cookie(PKCE_COOKIE, &pkce_verifier, &state.config));
+        .add(build_temp_cookie(&state.cookie_names.oauth_state, &oauth_state, &state.config))
+        .add(build_temp_cookie(&state.cookie_names.pkce, &pkce_verifier, &state.config));
 
     Ok((jar, Redirect::temporary(&auth_url)))
 }
@@ -668,7 +661,7 @@ async fn link_callback(
 
     // Verify state
     let saved_state = jar
-        .get(OAUTH_STATE_COOKIE)
+        .get(&state.cookie_names.oauth_state)
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
@@ -677,7 +670,7 @@ async fn link_callback(
     }
 
     let pkce_verifier = jar
-        .get(PKCE_COOKIE)
+        .get(&state.cookie_names.pkce)
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
@@ -729,8 +722,8 @@ async fn link_callback(
     );
 
     let jar = jar
-        .remove(removal_cookie(OAUTH_STATE_COOKIE, "/", &state.config))
-        .remove(removal_cookie(PKCE_COOKIE, "/", &state.config));
+        .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
+        .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config));
 
     let redirect_url = format!("{}/profile", state.config.server.public_url);
     Ok((jar, Redirect::temporary(&redirect_url)))
@@ -778,7 +771,7 @@ fn get_provider_config<'a>(
 
 fn extract_user(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error> {
     let token = jar
-        .get(ACCESS_TOKEN_COOKIE)
+        .get(&state.cookie_names.access)
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 
@@ -883,14 +876,14 @@ async fn issue_tokens(
     db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], ua_truncated, ip_address).await?;
 
     let jar = jar
-        .add(build_access_cookie(&access_token, &state.config))
-        .add(build_refresh_cookie(&refresh_raw, &state.config));
+        .add(build_access_cookie(&state.cookie_names.access, &access_token, &state.config))
+        .add(build_refresh_cookie(&state.cookie_names.refresh, &refresh_raw, &state.config));
 
     Ok((jar, refresh_hash))
 }
 
-fn build_access_cookie(token: &str, config: &Config) -> Cookie<'static> {
-    let mut cookie = Cookie::new(ACCESS_TOKEN_COOKIE, token.to_string());
+fn build_access_cookie(name: &str, token: &str, config: &Config) -> Cookie<'static> {
+    let mut cookie = Cookie::new(name.to_string(), token.to_string());
     cookie.set_http_only(true);
     cookie.set_secure(true);
     cookie.set_same_site(SameSite::Lax);
@@ -904,8 +897,8 @@ fn build_access_cookie(token: &str, config: &Config) -> Cookie<'static> {
     cookie
 }
 
-fn build_refresh_cookie(token: &str, config: &Config) -> Cookie<'static> {
-    let mut cookie = Cookie::new(REFRESH_TOKEN_COOKIE, token.to_string());
+fn build_refresh_cookie(name: &str, token: &str, config: &Config) -> Cookie<'static> {
+    let mut cookie = Cookie::new(name.to_string(), token.to_string());
     cookie.set_http_only(true);
     cookie.set_secure(true);
     cookie.set_same_site(SameSite::Lax);

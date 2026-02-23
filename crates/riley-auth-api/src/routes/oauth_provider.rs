@@ -18,8 +18,6 @@ use riley_auth_core::jwt;
 
 use crate::server::AppState;
 
-use super::auth::ACCESS_TOKEN_COOKIE;
-
 // --- Request/Response types ---
 
 #[derive(Deserialize)]
@@ -147,7 +145,7 @@ async fn authorize(
 
     // User must be authenticated (cookie-based)
     let access_token = jar
-        .get(ACCESS_TOKEN_COOKIE)
+        .get(&state.cookie_names.access)
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 
@@ -206,7 +204,7 @@ async fn consent(
 ) -> Result<Json<ConsentResponse>, Error> {
     // User must be authenticated
     let access_token = jar
-        .get(ACCESS_TOKEN_COOKIE)
+        .get(&state.cookie_names.access)
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 

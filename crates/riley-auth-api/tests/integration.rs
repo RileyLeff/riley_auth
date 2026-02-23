@@ -86,6 +86,7 @@ impl TestServer {
                 cookie_domain: None,
                 public_url: "http://localhost:3000".to_string(),
                 behind_proxy: false,
+                cookie_prefix: "riley_auth".to_string(),
             },
             database: DatabaseConfig {
                 url: ConfigValue::Literal("unused".to_string()),
@@ -117,11 +118,13 @@ impl TestServer {
             },
         };
 
+        let cookie_names = riley_auth_api::server::CookieNames::from_prefix(&config.server.cookie_prefix);
         let state = AppState {
             config: Arc::new(config.clone()),
             db: pool.clone(),
             keys: Arc::new(keys.clone()),
             http_client: reqwest::Client::new(),
+            cookie_names,
         };
 
         let app = axum::Router::new()

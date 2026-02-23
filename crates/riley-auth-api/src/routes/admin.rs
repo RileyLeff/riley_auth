@@ -14,8 +14,6 @@ use riley_auth_core::webhooks;
 
 use crate::server::AppState;
 
-use super::auth::ACCESS_TOKEN_COOKIE;
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/users", get(list_users))
@@ -83,7 +81,7 @@ struct RegisterClientResponse {
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error> {
     let token = jar
-        .get(ACCESS_TOKEN_COOKIE)
+        .get(&state.cookie_names.access)
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 

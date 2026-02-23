@@ -34,6 +34,12 @@ pub struct ServerConfig {
     pub public_url: String,
     #[serde(default)]
     pub behind_proxy: bool,
+    #[serde(default = "default_cookie_prefix")]
+    pub cookie_prefix: String,
+}
+
+fn default_cookie_prefix() -> String {
+    "riley_auth".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -294,6 +300,7 @@ public_key_path = "/tmp/public.pem"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.server.port, 8081);
+        assert_eq!(config.server.cookie_prefix, "riley_auth");
         assert_eq!(config.jwt.access_token_ttl_secs, 900);
         assert_eq!(config.usernames.min_length, 3);
         assert!(config.oauth.google.is_none());
