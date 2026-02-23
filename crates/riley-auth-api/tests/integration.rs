@@ -208,7 +208,7 @@ impl TestServer {
         let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
         let expires_at = chrono::Utc::now()
             + chrono::Duration::seconds(self.config.jwt.refresh_token_ttl_secs as i64);
-        db::store_refresh_token(&self.db, user.id, None, &refresh_hash, expires_at, &[], None, None)
+        db::store_refresh_token(&self.db, user.id, None, &refresh_hash, expires_at, &[], None, None, uuid::Uuid::now_v7())
             .await
             .expect("failed to store refresh token");
 
@@ -231,6 +231,10 @@ async fn clean_database(pool: &PgPool) {
         .await
         .unwrap();
     sqlx::query("DELETE FROM authorization_codes")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM consumed_refresh_tokens")
         .execute(pool)
         .await
         .unwrap();
@@ -451,6 +455,192 @@ fn refresh_token_rotation() {
     });
 }
 
+// --- Token Family / Reuse Detection ---
+
+#[test]
+#[ignore]
+fn session_refresh_reuse_revokes_family() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Create user with session (token A)
+        let (_, _, token_a) = s.create_user_with_session("reuse_sess", "user").await;
+
+        // Rotate A → B (legitimate refresh)
+        let resp = client
+            .post(s.url("/auth/refresh"))
+            .header("cookie", format!("riley_auth_refresh={token_a}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let token_b = resp
+            .cookies()
+            .find(|c| c.name() == "riley_auth_refresh")
+            .expect("should get new refresh token")
+            .value()
+            .to_string();
+
+        // Token B should work (sanity check — rotate B → C)
+        let resp = client
+            .post(s.url("/auth/refresh"))
+            .header("cookie", format!("riley_auth_refresh={token_b}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let token_c = resp
+            .cookies()
+            .find(|c| c.name() == "riley_auth_refresh")
+            .expect("should get new refresh token")
+            .value()
+            .to_string();
+
+        // NOW: replay token A (attacker reuse). Should fail AND revoke the entire family.
+        let resp = client
+            .post(s.url("/auth/refresh"))
+            .header("cookie", format!("riley_auth_refresh={token_a}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "reused token A should be rejected");
+
+        // Token C (the latest legitimate token) should ALSO be revoked
+        let resp = client
+            .post(s.url("/auth/refresh"))
+            .header("cookie", format!("riley_auth_refresh={token_c}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "token C should be revoked after family revocation"
+        );
+    });
+}
+
+#[test]
+#[ignore]
+fn oauth_refresh_reuse_revokes_family() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Set up user + OAuth client
+        let (_, access_token, _) = s.create_user_with_session("oauth_reuse", "user").await;
+
+        let client_id_str = "reuse-test-client";
+        let client_secret = "reuse-test-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Reuse Test Client",
+            client_id_str,
+            &secret_hash,
+            &["https://reuse.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Full PKCE authorize + exchange flow
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://reuse.example.com/callback"),
+                ("response_type", "code"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url.query_pairs().find(|(k, _)| k == "code").unwrap().1.to_string();
+
+        // Exchange code → token A
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://reuse.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let token_a = token_resp["refresh_token"].as_str().unwrap().to_string();
+
+        // Rotate A → B
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &token_a),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp_b: serde_json::Value = resp.json().await.unwrap();
+        let token_b = resp_b["refresh_token"].as_str().unwrap().to_string();
+
+        // Replay token A (reuse) — should fail and revoke family
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &token_a),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "reused token A should be rejected");
+
+        // Token B should also be revoked
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &token_b),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "token B should be revoked after family revocation"
+        );
+    });
+}
+
 #[test]
 #[ignore]
 fn logout() {
@@ -492,7 +682,7 @@ fn logout_all() {
 
         let (_, hash2) = jwt::generate_refresh_token();
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(86400);
-        db::store_refresh_token(&s.db, user.id, None, &hash2, expires_at, &[], None, None)
+        db::store_refresh_token(&s.db, user.id, None, &hash2, expires_at, &[], None, None, uuid::Uuid::now_v7())
             .await
             .unwrap();
 
@@ -1781,6 +1971,7 @@ fn session_list_multiple_sessions() {
             &[],
             Some("Mozilla/5.0 (iPhone)"),
             Some("10.0.0.1"),
+            uuid::Uuid::now_v7(),
         )
         .await
         .unwrap();
@@ -1824,7 +2015,7 @@ fn session_revoke_other_session() {
         let expires_at = chrono::Utc::now()
             + chrono::Duration::seconds(s.config.jwt.refresh_token_ttl_secs as i64);
         db::store_refresh_token(
-            &s.db, user.id, None, &second_hash, expires_at, &[], None, None,
+            &s.db, user.id, None, &second_hash, expires_at, &[], None, None, uuid::Uuid::now_v7(),
         )
         .await
         .unwrap();
