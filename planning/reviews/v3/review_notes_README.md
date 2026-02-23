@@ -30,3 +30,43 @@ Intentional. Database-stored scopes are out of scope for v3.
 
 ### No scope downscoping on refresh token rotation
 RFC 6749 Section 6 allows narrowing. Not supported. Out of scope for v3.
+
+## Phase 1 — Token Family Tracking
+
+### Concurrent same-token race is not a security hole
+Two concurrent requests using the same valid (not-yet-consumed) refresh token: only one wins the atomic DELETE, the other gets None. No family revocation triggered because this isn't "reuse" in the RFC 6819 sense — it's two uses of the same not-yet-consumed token. The attacker doesn't get a valid token. This was flagged by Codex and Gemini as major, but Claude's deeper analysis confirmed it's the correct behavior. Accepted.
+
+### In-flight rotation may survive family revocation (vanishingly narrow window)
+A request consuming token C could insert a new token D into a family that was just revoked by a concurrent reuse detection of token A. The window requires exact interleaving of: consume C → detect reuse of A → revoke family → insert D. The escaped token D would be caught on the next reuse detection. Fixing this would require wrapping the entire refresh flow in a single database transaction, which is disproportionate to the risk. Accepted.
+
+### Redis limiter is fail-open on backend failure
+Security/availability tradeoff. By design.
+
+### unsafe impl Sync for TestServer is acceptable for test-only code
+The struct's fields (PgPool, Arc<Keys>, Arc<Config>, SocketAddr, TempDir) are all Send + Sync. The unsafe impl exists because TempDir's Sync bound may be version-dependent. Test-only code; not a production concern.
+
+### Cross-context reuse detection is intentionally global
+`check_token_reuse` queries `consumed_refresh_tokens` without a `client_id` filter. This is correct — a replayed consumed token signals credential theft regardless of which endpoint receives the replay. Active token isolation (scoped consume functions) is a different concern from reuse detection. Codex flagged this as a major in Round 3; Claude confirmed it's correct behavior.
+
+### Logout/revoke don't record consumed tokens for reuse detection
+When a user logs out or revokes a session, the token is deleted but not recorded in `consumed_refresh_tokens`. A pre-stolen token replayed after logout fails silently (token not found) rather than triggering family revocation. Not a security hole — the attacker is still rejected. Accepted as minor gap.
+
+### delete_all_refresh_tokens is intentionally nuclear
+`/auth/logout-all` revokes both session and OAuth client tokens for the user. This is the intended "nuclear option" behavior, not a scoping bug.
+
+## Phase 2 — Webhook Reliability
+
+### Webhook HMAC secrets stored in plaintext (accepted tradeoff)
+Unlike OAuth client secrets which are hashed, webhook HMAC signing secrets are stored as plaintext. This is necessary because the secret is used for HMAC computation on every delivery — hashing it would make signing impossible. Envelope encryption (AES-GCM with server-side key) adds significant complexity for marginal benefit given: (1) secrets are admin-created, (2) admin already has DB access. Flagged by Claude as major; accepted as design tradeoff.
+
+### SSRF on webhook URLs is Phase 6 planned work
+Webhook URL validation checks scheme only (http/https). Private IP blocking and delivery-time IP validation is explicitly scoped for Phase 6 (Webhook SSRF Hardening). Not a Phase 2 bug.
+
+### Outbox cleanup scheduling is Phase 5 planned work
+`cleanup_webhook_outbox` exists but is never called. Periodic cleanup is scoped for Phase 5 (Background Cleanup Task).
+
+### Webhook signing lacks replay protection (accepted for now)
+HMAC signature covers payload only, no timestamp in signed content. Industry standard (Stripe, GitHub) includes timestamp + tolerance window. Could be added as a QoL improvement in Phase 7 or future work. Not a security-critical gap since attackers would also need the signing secret to forge.
+
+### dispatch_event_for_client is not currently used with client_id
+The `event_client_id` parameter on `dispatch_event_for_client` enables client-scoped webhook delivery but no call site currently passes a non-None client_id. The capability exists for future use (e.g., OAuth token grant events scoped to the requesting client).
