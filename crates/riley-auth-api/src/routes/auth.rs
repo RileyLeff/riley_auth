@@ -823,12 +823,13 @@ fn extract_user(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error>
 fn validate_username(username: &str, config: &Config, regex: &regex::Regex) -> Result<(), Error> {
     let rules = &config.usernames;
 
-    if username.len() < rules.min_length {
+    let char_count = username.chars().count();
+    if char_count < rules.min_length {
         return Err(Error::InvalidUsername {
             reason: format!("must be at least {} characters", rules.min_length),
         });
     }
-    if username.len() > rules.max_length {
+    if char_count > rules.max_length {
         return Err(Error::InvalidUsername {
             reason: format!("must be at most {} characters", rules.max_length),
         });

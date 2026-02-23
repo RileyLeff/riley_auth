@@ -443,9 +443,12 @@ mod redis_impl {
             response
         } else {
             let mut response = Error::RateLimited.into_response();
+            let headers = response.headers_mut();
             if let Some(wait) = retry_after {
-                headers_insert_retry_after(response.headers_mut(), wait);
+                headers_insert_retry_after(headers, wait);
             }
+            headers.insert("x-ratelimit-remaining", HeaderValue::from(0u32));
+            headers.insert("x-ratelimit-limit", HeaderValue::from(tier_limiter.burst_size));
             response
         }
     }

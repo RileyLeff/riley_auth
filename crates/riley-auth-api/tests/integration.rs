@@ -227,6 +227,10 @@ async fn clean_database(pool: &PgPool) {
         .execute(pool)
         .await
         .unwrap();
+    sqlx::query("DELETE FROM webhook_outbox")
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM webhooks")
         .execute(pool)
         .await
@@ -3524,9 +3528,10 @@ fn soft_delete_scrubs_webhook_delivery_payloads() {
         .await
         .unwrap();
 
+        // Use flat payload matching production dispatch_event calls
         let payload = serde_json::json!({
-            "event": "user.created",
-            "data": { "user_id": user.id.to_string(), "username": "scrubme" }
+            "user_id": user.id.to_string(),
+            "username": "scrubme"
         });
         db::record_webhook_delivery(
             &s.db,
@@ -3542,7 +3547,7 @@ fn soft_delete_scrubs_webhook_delivery_payloads() {
         // Verify the delivery exists with original payload
         let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0).await.unwrap();
         assert_eq!(deliveries.len(), 1);
-        assert!(deliveries[0].payload["data"]["username"].as_str().is_some());
+        assert_eq!(deliveries[0].payload["username"].as_str(), Some("scrubme"));
 
         // Soft-delete the user
         let result = db::soft_delete_user(&s.db, user.id).await.unwrap();
@@ -3551,8 +3556,9 @@ fn soft_delete_scrubs_webhook_delivery_payloads() {
         // Verify the delivery payload was scrubbed
         let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0).await.unwrap();
         assert_eq!(deliveries.len(), 1);
-        assert_eq!(deliveries[0].payload["data"]["scrubbed"], true);
+        assert_eq!(deliveries[0].payload["scrubbed"], true);
         // Original PII should be gone
-        assert!(deliveries[0].payload["data"]["username"].as_str().is_none());
+        assert!(deliveries[0].payload["username"].as_str().is_none());
+        assert!(deliveries[0].payload["user_id"].as_str().is_none());
     });
 }

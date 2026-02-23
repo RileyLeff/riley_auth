@@ -1,9 +1,20 @@
+use std::sync::LazyLock;
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::OAuthProviderConfig;
 use crate::error::{Error, Result};
+
+/// Shared HTTP client for OAuth provider communication.
+/// Separate from the webhook client which has SSRF protection and disabled redirects.
+static OAUTH_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .user_agent("riley-auth")
+        .build()
+        .expect("failed to build OAuth HTTP client")
+});
 
 /// Supported OAuth providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +140,7 @@ pub async fn exchange_code(
     let client_id = config.client_id.resolve()?;
     let client_secret = config.client_secret.resolve()?;
 
-    let client = reqwest::Client::new();
+    let client = &*OAUTH_CLIENT;
 
     let mut params = vec![
         ("client_id", client_id.as_str()),
@@ -172,16 +183,13 @@ pub async fn fetch_profile(
     provider: Provider,
     access_token: &str,
 ) -> Result<OAuthProfile> {
-    let client = reqwest::Client::new();
+    let client = &*OAUTH_CLIENT;
 
-    let mut request = client.get(provider.userinfo_url())
-        .header("Authorization", format!("Bearer {access_token}"));
-
-    if provider == Provider::GitHub {
-        request = request.header("User-Agent", "riley-auth");
-    }
-
-    let response = request.send().await.map_err(|e| Error::OAuth(e.to_string()))?;
+    let response = client.get(provider.userinfo_url())
+        .header("Authorization", format!("Bearer {access_token}"))
+        .send()
+        .await
+        .map_err(|e| Error::OAuth(e.to_string()))?;
 
     if !response.status().is_success() {
         return Err(Error::OAuth("failed to fetch user profile".to_string()));
@@ -235,11 +243,9 @@ async fn parse_github_profile(
 }
 
 async fn fetch_github_primary_email(access_token: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-    let response = client
+    let response = OAUTH_CLIENT
         .get("https://api.github.com/user/emails")
         .header("Authorization", format!("Bearer {access_token}"))
-        .header("User-Agent", "riley-auth")
         .send()
         .await
         .map_err(|e| Error::OAuth(e.to_string()))?;

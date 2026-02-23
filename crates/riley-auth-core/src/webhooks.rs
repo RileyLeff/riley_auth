@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn is_private_ip_allows_public_ips() {
-        use std::net::{Ipv4Addr, Ipv6Addr};
+        use std::net::Ipv4Addr;
 
         assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));     // Google DNS
         assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));     // Cloudflare
