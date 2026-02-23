@@ -9,6 +9,7 @@ use tower_http::trace::TraceLayer;
 
 use riley_auth_core::config::Config;
 use riley_auth_core::jwt::Keys;
+use riley_auth_core::webhooks;
 
 use crate::routes;
 
@@ -81,11 +82,13 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     };
 
     let cookie_names = CookieNames::from_prefix(&config.server.cookie_prefix);
+    let http_client = reqwest::Client::new();
+    let config = Arc::new(config);
     let state = AppState {
-        config: Arc::new(config),
-        db,
+        config: Arc::clone(&config),
+        db: db.clone(),
         keys: Arc::new(keys),
-        http_client: reqwest::Client::new(),
+        http_client: http_client.clone(),
         cookie_names,
     };
 
@@ -94,6 +97,17 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
+
+    // Shutdown coordination: signal both the HTTP server and background workers
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Start the webhook delivery worker
+    let worker_handle = tokio::spawn(webhooks::delivery_worker(
+        db,
+        http_client,
+        config.webhooks.max_concurrent_deliveries,
+        shutdown_rx,
+    ));
 
     tracing::info!(%addr, "starting server");
     let listener = TcpListener::bind(addr).await?;
@@ -104,8 +118,14 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(true);
+    })
     .await?;
+
+    // Wait for worker to finish draining
+    let _ = worker_handle.await;
 
     Ok(())
 }

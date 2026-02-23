@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use sqlx::PgPool;
+use tokio::sync::{watch, Semaphore};
 use tracing::{info, warn};
 
 use crate::db;
@@ -135,6 +138,91 @@ pub async fn deliver_outbox_entry(
             Err(error_msg)
         }
     }
+}
+
+// --- Delivery worker ---
+
+/// Background worker that polls the outbox and delivers pending webhook events.
+///
+/// Uses a semaphore to bound concurrent outbound HTTP requests. Entries that
+/// fail delivery are retried with exponential backoff (handled by
+/// `record_outbox_attempt`). Entries that exceed max_attempts are marked failed.
+///
+/// Runs until the shutdown receiver signals `true`.
+pub async fn delivery_worker(
+    pool: PgPool,
+    client: reqwest::Client,
+    max_concurrent: usize,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
+    let poll_interval = std::time::Duration::from_secs(1);
+
+    info!(max_concurrent, "webhook delivery worker started");
+
+    loop {
+        // Check shutdown before polling
+        if *shutdown.borrow() {
+            break;
+        }
+
+        // Fetch a batch of pending entries (up to semaphore capacity)
+        let batch_size = semaphore.available_permits().max(1) as i64;
+        let entries = match db::fetch_pending_outbox_entries(&pool, batch_size).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!(error = %e, "failed to fetch outbox entries");
+                tokio::select! {
+                    _ = tokio::time::sleep(poll_interval) => continue,
+                    _ = shutdown.changed() => break,
+                }
+            }
+        };
+
+        if entries.is_empty() {
+            // Nothing to deliver — wait before polling again
+            tokio::select! {
+                _ = tokio::time::sleep(poll_interval) => continue,
+                _ = shutdown.changed() => break,
+            }
+        }
+
+        // Deliver each entry concurrently, bounded by the semaphore
+        for entry in entries {
+            let permit = semaphore.clone().acquire_owned().await.expect("semaphore closed");
+            let pool = pool.clone();
+            let client = client.clone();
+
+            tokio::spawn(async move {
+                let entry_id = entry.id;
+                let result = deliver_outbox_entry(&pool, &client, &entry).await;
+
+                match result {
+                    Ok(()) => {
+                        if let Err(e) = db::mark_outbox_delivered(&pool, entry_id).await {
+                            warn!(id = %entry_id, error = %e, "failed to mark outbox entry delivered");
+                        }
+                    }
+                    Err(error) => {
+                        let next_attempt = entry.attempts + 1;
+                        if next_attempt >= entry.max_attempts {
+                            if let Err(e) = db::mark_outbox_failed(&pool, entry_id, &error).await {
+                                warn!(id = %entry_id, error = %e, "failed to mark outbox entry failed");
+                            }
+                        } else {
+                            if let Err(e) = db::record_outbox_attempt(&pool, entry_id, &error).await {
+                                warn!(id = %entry_id, error = %e, "failed to record outbox attempt");
+                            }
+                        }
+                    }
+                }
+
+                drop(permit); // Release semaphore slot
+            });
+        }
+    }
+
+    info!("webhook delivery worker stopped");
 }
 
 #[cfg(test)]
