@@ -29,6 +29,7 @@ pub struct AuthorizeQuery {
     state: Option<String>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
+    nonce: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -177,7 +178,7 @@ async fn authorize(
         &granted_scopes,
         Some(code_challenge),
         Some(method),
-        None, // nonce — wired in Step 4.2
+        query.nonce.as_deref(),
         expires_at,
     )
     .await?;
@@ -350,6 +351,7 @@ async fn token(
                 user.display_name.as_deref(),
                 user.avatar_url.as_deref(),
                 &client.client_id,
+                auth_code.nonce.as_deref(),
             )?;
 
             Ok(Json(TokenResponse {
@@ -431,6 +433,7 @@ async fn token(
                 user.display_name.as_deref(),
                 user.avatar_url.as_deref(),
                 &client.client_id,
+                None, // no nonce on refresh — only from authorization request
             )?;
 
             Ok(Json(TokenResponse {

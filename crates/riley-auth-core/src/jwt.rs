@@ -35,6 +35,8 @@ pub struct IdTokenClaims {
     pub exp: i64,
     pub iat: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub preferred_username: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +158,7 @@ impl Keys {
         display_name: Option<&str>,
         avatar_url: Option<&str>,
         audience: &str,
+        nonce: Option<&str>,
     ) -> Result<String> {
         let now = Utc::now();
         let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
@@ -166,6 +169,7 @@ impl Keys {
             aud: audience.to_string(),
             exp: exp.timestamp(),
             iat: now.timestamp(),
+            nonce: nonce.map(String::from),
             name: display_name.map(String::from),
             preferred_username: username.to_string(),
             picture: avatar_url.map(String::from),
@@ -517,11 +521,11 @@ mod tests {
             authorization_code_ttl_secs: 300,
         };
 
-        // With display name and avatar
+        // With display name, avatar, and nonce
         let token = keys.sign_id_token(
             &config, "user-123", "testuser",
             Some("Test User"), Some("https://example.com/avatar.png"),
-            "my-client",
+            "my-client", Some("test-nonce-123"),
         ).unwrap();
 
         // Decode manually to verify IdTokenClaims shape
@@ -536,12 +540,13 @@ mod tests {
         assert_eq!(claims.preferred_username, "testuser");
         assert_eq!(claims.name.as_deref(), Some("Test User"));
         assert_eq!(claims.picture.as_deref(), Some("https://example.com/avatar.png"));
+        assert_eq!(claims.nonce.as_deref(), Some("test-nonce-123"));
 
-        // Without display name and avatar (optional fields omitted)
+        // Without display name, avatar, or nonce (optional fields omitted)
         let token = keys.sign_id_token(
             &config, "user-456", "minimaluser",
             None, None,
-            "another-client",
+            "another-client", None,
         ).unwrap();
         let parts: Vec<&str> = token.split('.').collect();
         let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
@@ -551,6 +556,7 @@ mod tests {
         assert_eq!(claims.preferred_username, "minimaluser");
         assert!(claims.name.is_none());
         assert!(claims.picture.is_none());
+        assert!(claims.nonce.is_none());
     }
 
     #[test]
