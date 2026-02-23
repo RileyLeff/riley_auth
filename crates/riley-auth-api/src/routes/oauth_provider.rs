@@ -25,6 +25,7 @@ pub struct AuthorizeQuery {
     client_id: String,
     redirect_uri: String,
     response_type: String,
+    scope: Option<String>,
     state: Option<String>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
@@ -47,6 +48,8 @@ pub struct TokenResponse {
     token_type: &'static str,
     expires_in: u64,
     refresh_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +94,25 @@ async fn authorize(
         return Err(Error::InvalidRedirectUri);
     }
 
+    // Validate requested scopes
+    let granted_scopes: Vec<String> = if let Some(ref scope_str) = query.scope {
+        let requested: Vec<&str> = scope_str.split_whitespace().collect();
+        let defined_names: Vec<&str> = state.config.scopes.definitions.iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        for s in &requested {
+            if !defined_names.contains(s) {
+                return Err(Error::BadRequest(format!("unknown scope: {s}")));
+            }
+            if !client.allowed_scopes.iter().any(|a| a == s) {
+                return Err(Error::BadRequest(format!("scope not allowed for this client: {s}")));
+            }
+        }
+        requested.into_iter().map(String::from).collect()
+    } else {
+        vec![]
+    };
+
     // Enforce consent: non-auto-approve clients are not allowed (no consent UI yet)
     if !client.auto_approve {
         return Err(Error::ConsentRequired);
@@ -127,7 +149,7 @@ async fn authorize(
         user_id,
         client.id,
         &query.redirect_uri,
-        &[],
+        &granted_scopes,
         Some(code_challenge),
         Some(method),
         expires_at,
@@ -226,17 +248,24 @@ async fn token(
                 Some(client.id),
                 &refresh_hash,
                 expires_at,
-                &[],
+                &auth_code.scopes,
                 None,
                 None,
             )
             .await?;
+
+            let scope = if auth_code.scopes.is_empty() {
+                None
+            } else {
+                Some(auth_code.scopes.join(" "))
+            };
 
             Ok(Json(TokenResponse {
                 access_token,
                 token_type: "Bearer",
                 expires_in: state.config.jwt.access_token_ttl_secs,
                 refresh_token: refresh_raw,
+                scope,
             }))
         }
         "refresh_token" => {
@@ -277,17 +306,24 @@ async fn token(
                 Some(client.id),
                 &new_refresh_hash,
                 expires_at,
-                &[],
+                &token_row.scopes,
                 None,
                 None,
             )
             .await?;
+
+            let scope = if token_row.scopes.is_empty() {
+                None
+            } else {
+                Some(token_row.scopes.join(" "))
+            };
 
             Ok(Json(TokenResponse {
                 access_token,
                 token_type: "Bearer",
                 expires_in: state.config.jwt.access_token_ttl_secs,
                 refresh_token: new_refresh_raw,
+                scope,
             }))
         }
         _ => Err(Error::BadRequest(format!("unsupported grant_type: {}", body.grant_type))),
