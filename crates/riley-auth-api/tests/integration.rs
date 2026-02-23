@@ -2512,27 +2512,38 @@ fn webhook_delivery_recorded_on_event() {
         .await
         .unwrap();
 
-        // Dispatch an event
+        // Dispatch an event (enqueues to outbox)
         riley_auth_core::webhooks::dispatch_event(
             s.db.clone(),
-            reqwest::Client::new(),
             "user.created",
             serde_json::json!({ "user_id": "test-user-id" }),
+            s.config.webhooks.max_retry_attempts,
         );
 
-        // Poll for the delivery record instead of a fixed sleep — retries every 250ms,
-        // gives up after 10s. Much faster in the common case, still tolerant of slow CI.
-        let mut deliveries = vec![];
-        for _ in 0..40 {
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0)
-                .await
-                .unwrap();
-            if !deliveries.is_empty() {
-                break;
-            }
-        }
-        assert!(!deliveries.is_empty(), "delivery should be recorded after dispatch");
+        // Give the spawned enqueue task a moment to write
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify outbox entry was created
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert!(!entries.is_empty(), "outbox entry should be created after dispatch");
+        let entry = &entries[0];
+        assert_eq!(entry.event_type, "user.created");
+        assert_eq!(entry.webhook_id, webhook.id);
+
+        // Manually process the outbox entry (simulating the delivery worker)
+        let http_client = reqwest::Client::new();
+        let result = riley_auth_core::webhooks::deliver_outbox_entry(
+            &s.db, &http_client, entry,
+        ).await;
+
+        // Delivery should fail since the URL is unreachable
+        assert!(result.is_err(), "delivery to unreachable URL should fail");
+
+        // Verify the delivery record was written
+        let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0)
+            .await
+            .unwrap();
+        assert!(!deliveries.is_empty(), "delivery should be recorded after processing");
         assert_eq!(deliveries[0].event_type, "user.created");
         // Should have an error since the URL is unreachable
         assert!(deliveries[0].error.is_some());

@@ -174,12 +174,12 @@ async fn update_role(
         db::RoleUpdateResult::Updated(_) => {
             webhooks::dispatch_event(
                 state.db.clone(),
-                state.http_client.clone(),
                 webhooks::USER_ROLE_CHANGED,
                 serde_json::json!({
                     "user_id": id.to_string(),
                     "new_role": body.role,
                 }),
+                state.config.webhooks.max_retry_attempts,
             );
             Ok(StatusCode::OK)
         }
@@ -201,9 +201,9 @@ async fn delete_user(
         db::DeleteUserResult::Deleted => {
             webhooks::dispatch_event(
                 state.db.clone(),
-                state.http_client.clone(),
                 webhooks::USER_DELETED,
                 serde_json::json!({ "user_id": id.to_string() }),
+                state.config.webhooks.max_retry_attempts,
             );
             Ok(StatusCode::OK)
         }

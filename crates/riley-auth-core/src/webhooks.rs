@@ -45,128 +45,95 @@ pub fn sign_payload(secret: &str, payload: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-// --- Dispatch ---
+// --- Dispatch (outbox-based) ---
 
-const MAX_DELIVERY_ATTEMPTS: u32 = 3;
-
-/// Dispatch a webhook event to all matching subscribers.
+/// Enqueue a webhook event for all matching subscribers via the outbox.
 ///
-/// When `event_client_id` is `Some`, only webhooks with a matching `client_id`
-/// or a NULL `client_id` (global) are notified. When `None`, all matching
-/// webhooks receive the event.
-///
-/// Spawns a background task per webhook — delivery failures are recorded but
-/// never bubble up to the caller.
-pub fn dispatch_event(pool: PgPool, client: reqwest::Client, event_type: &str, payload: serde_json::Value) {
-    dispatch_event_for_client(pool, client, event_type, payload, None);
+/// Events are written to the database; a background worker delivers them.
+/// This replaces the old fire-and-forget dispatch with durable delivery.
+pub fn dispatch_event(pool: PgPool, event_type: &str, payload: serde_json::Value, max_retry_attempts: u32) {
+    dispatch_event_for_client(pool, event_type, payload, max_retry_attempts, None);
 }
 
 /// Like `dispatch_event`, but scoped to a specific client.
 pub fn dispatch_event_for_client(
     pool: PgPool,
-    client: reqwest::Client,
     event_type: &str,
     payload: serde_json::Value,
+    max_retry_attempts: u32,
     event_client_id: Option<uuid::Uuid>,
 ) {
     let event_type = event_type.to_owned();
-    let pool = pool.clone();
 
     tokio::spawn(async move {
-        let webhooks = match db::find_webhooks_for_event(&pool, &event_type, event_client_id).await {
-            Ok(hooks) => hooks,
-            Err(e) => {
-                warn!(event = %event_type, error = %e, "failed to query webhooks");
-                return;
+        match db::enqueue_webhook_events(&pool, &event_type, &payload, max_retry_attempts, event_client_id).await {
+            Ok(0) => {}
+            Ok(count) => {
+                info!(event = %event_type, count, "enqueued webhook events");
             }
-        };
-
-        if webhooks.is_empty() {
-            return;
-        }
-
-        info!(event = %event_type, count = webhooks.len(), "dispatching webhook event");
-
-        for webhook in webhooks {
-            let pool = pool.clone();
-            let client = client.clone();
-            let event_type = event_type.clone();
-            let payload = payload.clone();
-
-            tokio::spawn(async move {
-                deliver_webhook(&pool, &client, &webhook, &event_type, &payload).await;
-            });
+            Err(e) => {
+                warn!(event = %event_type, error = %e, "failed to enqueue webhook events");
+            }
         }
     });
 }
 
-/// Attempt delivery to a single webhook with retries and exponential backoff.
-async fn deliver_webhook(
+/// Deliver a single outbox entry. Called by the background worker.
+///
+/// Returns Ok(true) if delivered successfully, Ok(false) if delivery failed
+/// (caller should handle retry/failure logic).
+pub async fn deliver_outbox_entry(
     pool: &PgPool,
     client: &reqwest::Client,
-    webhook: &db::Webhook,
-    event_type: &str,
-    payload: &serde_json::Value,
-) {
+    entry: &db::OutboxEntry,
+) -> std::result::Result<(), String> {
+    // Look up the webhook to get URL and secret
+    let webhook = db::find_webhook(pool, entry.webhook_id)
+        .await
+        .map_err(|e| format!("db error: {e}"))?
+        .ok_or_else(|| "webhook not found (deleted?)".to_string())?;
+
+    if !webhook.active {
+        return Err("webhook is inactive".to_string());
+    }
+
     let body = serde_json::json!({
-        "event": event_type,
+        "event": entry.event_type,
         "timestamp": Utc::now().to_rfc3339(),
-        "data": payload,
+        "data": entry.payload,
     });
     let body_bytes = serde_json::to_vec(&body).expect("JSON serialization cannot fail");
     let signature = sign_payload(&webhook.secret, &body_bytes);
 
-    let mut last_status: Option<i16> = None;
-    let mut last_error: Option<String> = None;
+    let result = client
+        .post(&webhook.url)
+        .header("Content-Type", "application/json")
+        .header("X-Webhook-Signature", &signature)
+        .header("X-Webhook-Event", &entry.event_type)
+        .body(body_bytes.clone())
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
 
-    for attempt in 0..MAX_DELIVERY_ATTEMPTS {
-        if attempt > 0 {
-            let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1));
-            tokio::time::sleep(delay).await;
+    match result {
+        Ok(resp) => {
+            let status = resp.status();
+            let error_msg = if status.is_success() { None } else { Some(format!("HTTP {}", status.as_u16())) };
+            let _ = db::record_webhook_delivery(
+                pool, webhook.id, &entry.event_type, &body,
+                Some(status.as_u16() as i16), error_msg.as_deref(),
+            ).await;
+
+            if status.is_success() { Ok(()) } else { Err(format!("HTTP {}", status.as_u16())) }
         }
-
-        match client
-            .post(&webhook.url)
-            .header("Content-Type", "application/json")
-            .header("X-Webhook-Signature", &signature)
-            .header("X-Webhook-Event", event_type)
-            .body(body_bytes.clone())
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let status = resp.status().as_u16() as i16;
-                last_status = Some(status);
-                if resp.status().is_success() {
-                    last_error = None;
-                    break;
-                }
-                last_error = Some(format!("HTTP {status}"));
-            }
-            Err(e) => {
-                last_status = None;
-                last_error = Some(e.to_string());
-            }
+        Err(e) => {
+            let error_msg = e.to_string();
+            let _ = db::record_webhook_delivery(
+                pool, webhook.id, &entry.event_type, &body,
+                None, Some(&error_msg),
+            ).await;
+            Err(error_msg)
         }
-    }
-
-    if let Err(e) = db::record_webhook_delivery(
-        pool,
-        webhook.id,
-        event_type,
-        &body,
-        last_status,
-        last_error.as_deref(),
-    )
-    .await
-    {
-        warn!(
-            webhook_id = %webhook.id,
-            event = %event_type,
-            error = %e,
-            "failed to record webhook delivery"
-        );
     }
 }
 

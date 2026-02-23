@@ -180,9 +180,9 @@ async fn auth_callback(
         let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
         webhooks::dispatch_event(
             state.db.clone(),
-            state.http_client.clone(),
             webhooks::SESSION_CREATED,
             serde_json::json!({ "user_id": user.id.to_string() }),
+            state.config.webhooks.max_retry_attempts,
         );
         return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
     }
@@ -264,15 +264,15 @@ async fn auth_setup(
 
     webhooks::dispatch_event(
         state.db.clone(),
-        state.http_client.clone(),
         webhooks::USER_CREATED,
         serde_json::json!({ "user_id": user.id.to_string(), "username": user.username }),
+        state.config.webhooks.max_retry_attempts,
     );
     webhooks::dispatch_event(
         state.db.clone(),
-        state.http_client.clone(),
         webhooks::SESSION_CREATED,
         serde_json::json!({ "user_id": user.id.to_string() }),
+        state.config.webhooks.max_retry_attempts,
     );
 
     Ok((jar, Json(user_to_me(&user))))
@@ -495,9 +495,9 @@ async fn update_display_name(
 
     webhooks::dispatch_event(
         state.db.clone(),
-        state.http_client.clone(),
         webhooks::USER_UPDATED,
         serde_json::json!({ "user_id": user.id.to_string(), "display_name": user.display_name }),
+        state.config.webhooks.max_retry_attempts,
     );
 
     Ok(Json(user_to_me(&user)))
@@ -570,13 +570,13 @@ async fn update_username(
 
     webhooks::dispatch_event(
         state.db.clone(),
-        state.http_client.clone(),
         webhooks::USER_USERNAME_CHANGED,
         serde_json::json!({
             "user_id": user.id.to_string(),
             "old_username": current_user.username,
             "new_username": user.username,
         }),
+        state.config.webhooks.max_retry_attempts,
     );
 
     Ok((jar, Json(user_to_me(&user))))
@@ -602,9 +602,9 @@ async fn delete_account(
 
     webhooks::dispatch_event(
         state.db.clone(),
-        state.http_client.clone(),
         webhooks::USER_DELETED,
         serde_json::json!({ "user_id": user_id.to_string() }),
+        state.config.webhooks.max_retry_attempts,
     );
 
     let jar = jar
@@ -739,12 +739,12 @@ async fn link_callback(
 
     webhooks::dispatch_event(
         state.db.clone(),
-        state.http_client.clone(),
         webhooks::LINK_CREATED,
         serde_json::json!({
             "user_id": user_id.to_string(),
             "provider": profile.provider,
         }),
+        state.config.webhooks.max_retry_attempts,
     );
 
     let jar = jar
@@ -768,12 +768,12 @@ async fn unlink_provider(
         db::UnlinkResult::Deleted => {
             webhooks::dispatch_event(
                 state.db.clone(),
-                state.http_client.clone(),
                 webhooks::LINK_DELETED,
                 serde_json::json!({
                     "user_id": user_id.to_string(),
                     "provider": provider_name,
                 }),
+                state.config.webhooks.max_retry_attempts,
             );
             Ok(StatusCode::OK)
         }
