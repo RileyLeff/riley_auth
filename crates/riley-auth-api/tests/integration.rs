@@ -62,6 +62,7 @@ impl TestServer {
         let db_config = DatabaseConfig {
             url: ConfigValue::Literal(database_url),
             max_connections: 10,
+            schema: None,
         };
 
         let pool = db::connect(&db_config)
@@ -89,6 +90,7 @@ impl TestServer {
             database: DatabaseConfig {
                 url: ConfigValue::Literal("unused".to_string()),
                 max_connections: 10,
+                schema: None,
             },
             jwt: JwtConfig {
                 private_key_path: private_path,

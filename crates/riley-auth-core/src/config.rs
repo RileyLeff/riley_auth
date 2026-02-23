@@ -36,6 +36,9 @@ pub struct DatabaseConfig {
     pub url: ConfigValue,
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+    /// Optional PostgreSQL schema. When set, each connection runs
+    /// `SET search_path TO <schema>` on connect.
+    pub schema: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

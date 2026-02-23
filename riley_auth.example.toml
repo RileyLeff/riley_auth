@@ -23,6 +23,7 @@ behind_proxy = false                       # Trust X-Forwarded-For headers (defa
 [database]
 url = "env:DATABASE_URL"                   # PostgreSQL connection string (supports env: syntax)
 max_connections = 10                       # Connection pool size (default: 10)
+# schema = "riley_auth"                    # Optional: SET search_path TO <schema> on each connection
 
 [jwt]
 private_key_path = "/data/keys/private.pem"  # RS256 private key (signs tokens)

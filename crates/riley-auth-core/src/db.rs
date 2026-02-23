@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{FromRow, PgPool};
+use sqlx::{Executor, FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
@@ -11,10 +11,21 @@ use crate::config::DatabaseConfig;
 
 pub async fn connect(config: &DatabaseConfig) -> Result<PgPool> {
     let url = config.url.resolve()?;
-    let pool = PgPoolOptions::new()
-        .max_connections(config.max_connections)
-        .connect(&url)
-        .await?;
+    let mut opts = PgPoolOptions::new().max_connections(config.max_connections);
+
+    if let Some(schema) = &config.schema {
+        let schema = schema.clone();
+        opts = opts.after_connect(move |conn, _meta| {
+            let schema = schema.clone();
+            Box::pin(async move {
+                conn.execute(format!("SET search_path TO {}", schema).as_str())
+                    .await?;
+                Ok(())
+            })
+        });
+    }
+
+    let pool = opts.connect(&url).await?;
     Ok(pool)
 }
 
