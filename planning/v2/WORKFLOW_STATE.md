@@ -1,8 +1,8 @@
 # v2 Workflow State
 
-**Current Phase:** 1 — Scopes & Permissions (REVIEW)
-**Current Step:** Exhaustive review — round 2
-**Status:** Round 1 fixes committed (cf0740e). 17 unit + 32 integration tests pass. Round 2 in progress (Gemini + Claude).
+**Current Phase:** 1 — Scopes & Permissions (COMPLETE)
+**Current Step:** Phase 1 exhaustive review converged
+**Status:** Phase 1 complete. 3 review rounds, converged with 2 consecutive clean rounds. 17 unit + 32 integration tests pass. Ready for Phase 2.
 
 ## Progress
 
@@ -18,7 +18,8 @@
 | 1 | fix | Fix integration test rate limiting | Done (1a39a98) |
 | 1 | review R1 | Exhaustive review round 1 (Gemini + Claude) | Done — 5 major, 9 minor, 9 notes |
 | 1 | fixes R1 | Round 1 fixes | Done (cf0740e) — 5 major + 1 minor fixed |
-| 1 | review R2 | Exhaustive review round 2 (Gemini + Claude) | In Progress |
+| 1 | review R2 | Exhaustive review round 2 (Gemini + Claude) | Done — 0 major (first clean round) |
+| 1 | review R3 | Exhaustive review round 3 (Gemini + Claude) | Done — 0 major (converged) |
 | 2 | 2.1 | OIDC discovery endpoint | Not Started |
 | 2 | 2.2 | ID token issuance | Not Started |
 | 2 | 2.3 | Tests — OIDC | Not Started |
@@ -49,7 +50,9 @@ None.
 ## Recent Activity
 
 - Phase 1 steps 1.1–1.7 implemented with 8 commits (6c83956..1a39a98)
-- Review round 1: Gemini + Claude (Codex rate-limited). 5 major, 9 minor, 9 notes.
+- Review round 1: Gemini + Claude. 5 major, 9 minor, 9 notes.
 - Round 1 fixes committed (cf0740e): scope validation, dedup, constant-time state, consent errors
-- Review artifacts filed: planning/reviews/v2/01-02 + review_notes_README.md (c9653ef)
-- Review round 2 in progress
+- Review artifacts filed (c9653ef)
+- Review round 2 (b744be2): 0 major bugs — first clean round
+- Review round 3: 0 major bugs — convergence achieved
+- Phase 1 complete, ready for Phase 2
