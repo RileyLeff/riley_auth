@@ -1,10 +1,10 @@
-# v4 Architecture: OAuth Provider Compliance & Operational Polish
+# v4 Architecture: OAuth Provider Compliance, Ecosystem Features & Operational Polish
 
-v3 hardened the internals — token families, webhook reliability, SSRF protection, tiered rate limiting, OIDC basics, PII scrubbing. v4 completes the OAuth provider story so riley_auth works correctly as an identity provider for third-party clients, not just first-party auto-approve apps. It also closes the remaining operational gaps surfaced during v3's exhaustive review process.
+v3 hardened the internals — token families, webhook reliability, SSRF protection, tiered rate limiting, OIDC basics, PII scrubbing. v4 completes the OAuth provider story so riley_auth works correctly as an identity provider for third-party clients, not just first-party auto-approve apps. It also adds ecosystem features (token introspection, back-channel logout, multi-provider account merging) and closes operational gaps from v3.
 
 ## Theme
 
-**Make riley_auth a correct, spec-compliant OAuth/OIDC provider that third-party developers can integrate against without surprises.** v3 got the security right; v4 gets the contracts right.
+**Make riley_auth a correct, spec-compliant OAuth/OIDC provider that third-party developers can integrate against without surprises — and give the "cinematic universe" of apps the infrastructure to work as a cohesive ecosystem.** v3 got the security right; v4 gets the contracts and the ecosystem right.
 
 ---
 
@@ -234,18 +234,176 @@ ALTER TABLE refresh_tokens ADD COLUMN nonce text;
 
 ---
 
+## 9. Token Introspection (RFC 7662)
+
+### Problem
+
+Downstream apps currently validate tokens by fetching the JWKS and verifying JWTs locally. This works but has two drawbacks: (1) every app implements JWT validation slightly differently, and (2) token revocations (user deletion, session termination) aren't visible until the JWT expires. The soul doc's ethos is "roll all the auth stuff into one safe, simple place" — token validation should be no exception.
+
+### Design
+
+**New endpoint:** `POST /oauth/introspect`
+
+- Accepts `token` parameter (form-encoded, per RFC 7662)
+- Authenticated via client credentials (client_id + client_secret in Basic auth or POST body)
+- Returns:
+  ```json
+  {
+    "active": true,
+    "sub": "user-uuid",
+    "client_id": "requesting-client-id",
+    "scope": "profile email",
+    "aud": "target-client-id",
+    "iss": "https://auth.example.com",
+    "exp": 1234567890,
+    "iat": 1234567800,
+    "username": "riley",
+    "token_type": "Bearer"
+  }
+  ```
+- If the token is expired, revoked, or invalid: `{ "active": false }`
+- The introspecting client must be registered (client credentials verified)
+- A client can introspect tokens issued for any audience (resource server pattern), or this can be restricted — configurable
+
+**Revocation visibility:** Because introspection checks the database (user exists, not soft-deleted, session not revoked), revocations take effect immediately — unlike JWT-only validation which waits for expiry.
+
+**Coexistence with JWKS:** Both approaches remain available. High-throughput apps use JWKS for local validation. Apps needing instant revocation use introspection. Deployer chooses per-app.
+
+**Discovery document update:**
+- Add `introspection_endpoint: "{issuer}/oauth/introspect"`
+
+---
+
+## 10. OIDC Back-Channel Logout
+
+### Problem
+
+When a user logs out of riley_auth (or their session is revoked), downstream apps don't know until their cached tokens expire. In the "cinematic universe" where multiple apps share one identity, a user who clicks "log out" expects to be logged out everywhere — not just from the app they're looking at.
+
+### Design
+
+**Standards-compliant OIDC Back-Channel Logout (OpenID Connect Back-Channel Logout 1.0).**
+
+**Database change:**
+```sql
+ALTER TABLE clients ADD COLUMN backchannel_logout_uri text;
+ALTER TABLE clients ADD COLUMN backchannel_logout_session_required boolean NOT NULL DEFAULT false;
+```
+
+**Logout token format:**
+A signed JWT (same RS256 key as ID tokens) with claims:
+```json
+{
+  "iss": "https://auth.example.com",
+  "sub": "user-uuid",
+  "aud": "client-id",
+  "iat": 1234567890,
+  "jti": "unique-token-id",
+  "events": {
+    "http://schemas.openid.net/event/backchannel-logout": {}
+  },
+  "sid": "session-id"  // if backchannel_logout_session_required
+}
+```
+
+**Dispatch triggers:**
+- `POST /auth/logout` (single session)
+- `POST /auth/logout-all` (all sessions for user)
+- `DELETE /admin/users/{id}` (user deletion)
+- Session revocation via admin
+
+**Delivery mechanism:**
+Reuse the webhook outbox infrastructure. When a logout event fires:
+1. Find all clients with a `backchannel_logout_uri` that the user has active tokens for
+2. For each client, enqueue a logout token delivery to the outbox
+3. The delivery worker POSTs the logout token as `application/x-www-form-urlencoded` with `logout_token=<jwt>` (per spec)
+
+This piggybacks on the existing outbox reliability (retries, bounded concurrency, delivery logging) without building a separate delivery system.
+
+**Discovery document update:**
+- Add `backchannel_logout_supported: true`
+- Add `backchannel_logout_session_supported: true`
+
+**Config:**
+```toml
+[oauth]
+backchannel_logout_max_retry_attempts = 3
+```
+
+---
+
+## 11. Multi-Provider Account Merging
+
+### Problem
+
+A user signs in with GitHub, creates an account. Months later, they sign in with Google using the same email. Currently `auth_callback` detects the email collision and redirects to `/link-accounts`, but the user has no session — they're trying to sign in, not link. The flow dead-ends.
+
+### Design
+
+**Configurable trust-based merging.** The deployer controls how aggressively riley_auth merges accounts based on email matching.
+
+**Config:**
+```toml
+[auth]
+# "none" — never auto-merge, always redirect to link-accounts (current behavior)
+# "verified_email" — auto-merge if the OAuth provider reports the email as verified
+# Default: "none"
+account_merge_policy = "verified_email"
+```
+
+**Flow when `account_merge_policy = "verified_email"`:**
+
+1. User signs in with Google. `auth_callback` gets profile with `email = "riley@example.com"`.
+2. No existing oauth_link for this Google ID.
+3. Find existing user(s) with matching email via oauth_links.
+4. If exactly one match AND the provider reports email as verified:
+   - Auto-create the oauth_link between the existing user and the new provider
+   - Issue session tokens for the existing user
+   - Dispatch `provider.linked` webhook event
+   - Redirect to success URL
+5. If multiple matches or email not verified:
+   - Fall back to current behavior (redirect to `/link-accounts` with setup token)
+
+**Provider email verification:**
+- GitHub: Check `email_verified` field from user API (need to fetch this — currently not stored)
+- Google: The `email_verified` claim is in the ID token / userinfo response
+- Other providers: Add an `email_verified` field to the provider profile struct
+
+**Database change:**
+```sql
+ALTER TABLE oauth_links ADD COLUMN email_verified boolean NOT NULL DEFAULT false;
+```
+
+Store the verification status at link creation time so we have it for future merge decisions.
+
+**Security consideration:** Email-trust merging assumes OAuth providers correctly verify email ownership. Google and GitHub do. For less-trusted providers, the deployer sets `account_merge_policy = "none"`. The merge only fires when the new provider reports `email_verified = true` — if the provider doesn't confirm verification, no merge.
+
+**Webhook event:** `provider.linked` — dispatched when an account merge auto-links a new provider.
+
+---
+
 ## Implementation Order
 
-1. **UserInfo Endpoint** — highest value, unblocks OIDC conformance
-2. **Authorize Error Redirects** — prerequisite for third-party clients working correctly
-3. **Consent UI Support** — completes the third-party OAuth flow
-4. **Scope Downscoping** — small change, improves spec compliance
-5. **Nonce Preservation** — small schema change, improves OIDC compliance
-6. **Webhook Replay Protection** — breaking change, do it before anyone integrates
-7. **Stuck Outbox Recovery** — small maintenance worker addition
-8. **Account Linking Confirmation** — completes the link suggestion flow
+1. **Stuck Outbox Recovery** — tiny change, clears operational debt first
+2. **Nonce Preservation on Refresh** — small schema change, clears spec debt
+3. **Scope Downscoping on Refresh** — small token endpoint change
+4. **Webhook Replay Protection** — breaking change, do early before anyone integrates
+5. **Account Linking Confirmation** — completes the link suggestion flow
+6. **UserInfo Endpoint** — unblocks OIDC conformance, needed before back-channel logout
+7. **Authorize Error Redirects** — prerequisite for third-party clients
+8. **Consent UI Support** — completes the third-party OAuth flow
+9. **Token Introspection** — centralizes token validation for the ecosystem
+10. **OIDC Back-Channel Logout** — depends on outbox infra + client schema changes
+11. **Multi-Provider Account Merging** — biggest design surface, benefits from all prior work being stable
 
-Phases 1-3 form the "third-party client" track. Phases 4-5 are spec compliance. Phases 6-8 are operational polish. These tracks are independent and could be parallelized.
+**Grouping:**
+- Phases 1-5: Quick wins and operational polish (clear accumulated debt)
+- Phases 6-8: Third-party OAuth provider compliance
+- Phases 9-11: Ecosystem features (the "cinematic universe" infrastructure)
+
+**Review strategy:**
+- Standard review after each phase
+- Exhaustive review at phase 5 (debt cleared), phase 8 (OAuth compliance), and phase 11 (final)
 
 ---
 
@@ -255,7 +413,9 @@ Still not in v4:
 - **Email/password auth** — violates the soul doc
 - **MFA/TOTP** — delegated to OAuth providers
 - **Built-in frontend/UI** — riley_auth provides APIs, deployer builds UI
+- **Dynamic client registration (RFC 7591)** — against the soul doc's API-only approach
 - **Database-stored scope definitions** — config-only is working
 - **Account recovery** — OAuth provider's problem
 - **Trusted proxy list** — current leftmost-with-overwrite approach is documented and sufficient
 - **CLI webhook dispatch** — CLI remains an out-of-band maintenance tool
+- **Observability/metrics** — revisit when there's production load to observe
