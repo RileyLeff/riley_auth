@@ -41,6 +41,7 @@ pub struct TokenRequest {
     client_secret: String,
     code_verifier: Option<String>,
     refresh_token: Option<String>,
+    scope: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -402,10 +403,23 @@ async fn token(
             // "openid" is protocol-level and passes through unconditionally.
             // If an admin revoked a resource scope from the client since the token
             // was issued, the refreshed token will no longer carry that scope.
-            let effective_scopes: Vec<String> = token_row.scopes.iter()
+            let mut effective_scopes: Vec<String> = token_row.scopes.iter()
                 .filter(|s| s.as_str() == "openid" || client.allowed_scopes.contains(s))
                 .cloned()
                 .collect();
+
+            // Scope downscoping (RFC 6749 §6): if the client requests a narrower
+            // scope set, validate it's a subset of the effective scopes and narrow.
+            if let Some(ref requested_scope) = body.scope {
+                let requested: BTreeSet<&str> = requested_scope.split_whitespace().collect();
+                let effective_set: BTreeSet<&str> = effective_scopes.iter().map(|s| s.as_str()).collect();
+                for s in &requested {
+                    if !effective_set.contains(s) {
+                        return Err(Error::InvalidScope);
+                    }
+                }
+                effective_scopes = requested.into_iter().map(String::from).collect();
+            }
 
             let scope_str = if effective_scopes.is_empty() {
                 None

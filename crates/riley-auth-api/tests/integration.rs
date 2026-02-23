@@ -3750,3 +3750,142 @@ fn nonce_preserved_across_refresh() {
         assert_eq!(claims["nonce"], "preserve-me-nonce-xyz", "nonce should survive multiple refresh rotations");
     });
 }
+
+#[test]
+#[ignore]
+fn refresh_scope_downscoping() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("downscope", "user").await;
+
+        // Register client with both scopes allowed
+        let client_id_str = "downscope-client";
+        let client_secret = "downscope-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Downscope Client",
+            client_id_str,
+            &secret_hash,
+            &["https://downscope.example.com/callback".to_string()],
+            &["read:profile".to_string(), "write:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Authorize with both scopes
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://downscope.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid read:profile write:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange for tokens — should have all scopes
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://downscope.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let scope_str = token_resp["scope"].as_str().unwrap();
+        assert!(scope_str.contains("read:profile"));
+        assert!(scope_str.contains("write:profile"));
+        assert!(scope_str.contains("openid"));
+
+        let refresh_token = token_resp["refresh_token"].as_str().unwrap().to_string();
+
+        // Refresh with narrowed scope — only read:profile
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("scope", "openid read:profile"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp: serde_json::Value = resp.json().await.unwrap();
+        let narrowed_scope = refresh_resp["scope"].as_str().unwrap();
+        assert!(narrowed_scope.contains("openid"), "openid should be preserved");
+        assert!(narrowed_scope.contains("read:profile"), "read:profile should be in narrowed scope");
+        assert!(!narrowed_scope.contains("write:profile"), "write:profile should be dropped");
+
+        // The new refresh token should also carry the narrowed scopes
+        let refresh_token2 = refresh_resp["refresh_token"].as_str().unwrap().to_string();
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token2),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp2: serde_json::Value = resp.json().await.unwrap();
+        let scope_after = refresh_resp2["scope"].as_str().unwrap();
+        assert!(scope_after.contains("read:profile"));
+        assert!(!scope_after.contains("write:profile"), "narrowed scope should persist");
+
+        // Attempting to re-widen scope should fail with invalid_scope
+        let refresh_token3 = refresh_resp2["refresh_token"].as_str().unwrap().to_string();
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token3),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("scope", "openid read:profile write:profile"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let err: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(err["error"], "invalid_scope");
+    });
+}

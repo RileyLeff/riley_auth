@@ -82,6 +82,9 @@ pub enum Error {
     #[error("invalid grant")]
     InvalidGrant,
 
+    #[error("invalid scope")]
+    InvalidScope,
+
     #[error("consent required")]
     ConsentRequired,
 
@@ -141,6 +144,7 @@ impl Error {
             | Self::InvalidRedirectUri
             | Self::InvalidAuthorizationCode
             | Self::InvalidGrant
+            | Self::InvalidScope
             | Self::ConsentRequired
             | Self::BadRequest(_) => StatusCode::BAD_REQUEST,
 
@@ -175,6 +179,7 @@ impl Error {
             Self::InvalidRedirectUri => "invalid_redirect_uri",
             Self::InvalidAuthorizationCode => "invalid_authorization_code",
             Self::InvalidGrant => "invalid_grant",
+            Self::InvalidScope => "invalid_scope",
             Self::ConsentRequired => "consent_required",
             Self::BadRequest(_) => "bad_request",
             Self::NotFound => "not_found",
