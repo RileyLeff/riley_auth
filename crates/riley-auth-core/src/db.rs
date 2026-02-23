@@ -14,6 +14,16 @@ pub async fn connect(config: &DatabaseConfig) -> Result<PgPool> {
     let mut opts = PgPoolOptions::new().max_connections(config.max_connections);
 
     if let Some(schema) = &config.schema {
+        // Validate schema name to prevent SQL injection — only allow safe identifiers.
+        if schema.is_empty()
+            || schema.starts_with(|c: char| c.is_ascii_digit())
+            || !schema.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(Error::Config(format!(
+                "invalid schema name '{}': must match [a-zA-Z_][a-zA-Z0-9_]*",
+                schema
+            )));
+        }
         let schema = schema.clone();
         opts = opts.after_connect(move |conn, _meta| {
             let schema = schema.clone();

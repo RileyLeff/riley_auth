@@ -31,8 +31,9 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         keys: Arc::new(keys),
     };
 
+    let behind_proxy = state.config.server.behind_proxy;
     let app = Router::new()
-        .merge(routes::router())
+        .merge(routes::router(behind_proxy))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

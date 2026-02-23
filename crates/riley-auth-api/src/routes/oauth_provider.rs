@@ -304,7 +304,9 @@ async fn revoke(
 
     // Revoke the token, scoped to this client (RFC 7009 says always return 200)
     let token_hash = jwt::hash_token(&body.token);
-    let _ = db::delete_refresh_token_for_client(&state.db, &token_hash, client.id).await;
+    if let Err(e) = db::delete_refresh_token_for_client(&state.db, &token_hash, client.id).await {
+        tracing::warn!(error = %e, client_id = %body.client_id, "token revocation failed");
+    }
 
     Ok(StatusCode::OK)
 }

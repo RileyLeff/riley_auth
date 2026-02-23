@@ -8,6 +8,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
 use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_governor::GovernorLayer;
 
 use riley_auth_core::error::Error;
@@ -56,15 +57,11 @@ async fn require_csrf_header(
 }
 
 /// Build the application router.
-pub fn router() -> Router<AppState> {
-    // Rate limiting: 30 requests per 60 seconds per IP on auth endpoints.
-    // Prevents brute-force attacks on login, token exchange, and setup flows.
-    let rate_limit_config = GovernorConfigBuilder::default()
-        .per_second(2)
-        .burst_size(30)
-        .finish()
-        .expect("invalid rate limit config");
-
+///
+/// When `behind_proxy` is true, rate limiting extracts client IP from
+/// `X-Forwarded-For` / `X-Real-IP` / `Forwarded` headers (falling back to
+/// peer IP). When false, rate limiting uses the peer IP directly.
+pub fn router(behind_proxy: bool) -> Router<AppState> {
     // Cookie-authenticated routes get CSRF protection + rate limiting.
     // The OAuth provider router (client-credential authenticated) is CSRF-exempt
     // but still rate-limited.
@@ -73,10 +70,28 @@ pub fn router() -> Router<AppState> {
         .merge(admin::router())
         .layer(middleware::from_fn(require_csrf_header));
 
-    Router::new()
+    let base = Router::new()
         .route("/health", get(health))
         .route("/.well-known/jwks.json", get(jwks))
         .merge(csrf_protected)
-        .merge(oauth_provider::router())
-        .layer(GovernorLayer::new(Arc::new(rate_limit_config)))
+        .merge(oauth_provider::router());
+
+    // Rate limiting: 30 requests per 60 seconds per IP.
+    // Use proxy-aware extraction when behind a reverse proxy.
+    if behind_proxy {
+        let config = GovernorConfigBuilder::default()
+            .per_second(2)
+            .burst_size(30)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("invalid rate limit config");
+        base.layer(GovernorLayer::new(Arc::new(config)))
+    } else {
+        let config = GovernorConfigBuilder::default()
+            .per_second(2)
+            .burst_size(30)
+            .finish()
+            .expect("invalid rate limit config");
+        base.layer(GovernorLayer::new(Arc::new(config)))
+    }
 }
