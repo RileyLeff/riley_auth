@@ -347,6 +347,7 @@ async fn token(
                 None,
                 None,
                 family_id,
+                auth_code.nonce.as_deref(),
             )
             .await?;
 
@@ -435,10 +436,13 @@ async fn token(
                 None,
                 None,
                 token_row.family_id,
+                token_row.nonce.as_deref(),
             )
             .await?;
 
-            // Only issue ID token when openid scope is in the effective scopes
+            // Only issue ID token when openid scope is in the effective scopes.
+            // Nonce is preserved from the original authorization request across
+            // refresh rotations (OIDC Core 1.0 §12.2).
             let id_token = if effective_scopes.iter().any(|s| s == "openid") {
                 Some(state.keys.sign_id_token(
                     &state.config.jwt,
@@ -447,7 +451,7 @@ async fn token(
                     user.display_name.as_deref(),
                     user.avatar_url.as_deref(),
                     &client.client_id,
-                    None, // no nonce on refresh — only from authorization request
+                    token_row.nonce.as_deref(),
                 )?)
             } else {
                 None
