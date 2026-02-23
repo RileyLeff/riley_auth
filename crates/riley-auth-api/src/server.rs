@@ -104,10 +104,18 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Start the webhook delivery worker
+    let delivery_shutdown = shutdown_rx.clone();
     let worker_handle = tokio::spawn(webhooks::delivery_worker(
-        db,
+        db.clone(),
         http_client,
         config.webhooks.max_concurrent_deliveries,
+        delivery_shutdown,
+    ));
+
+    // Start the maintenance cleanup worker
+    let cleanup_handle = tokio::spawn(maintenance_worker(
+        db,
+        Arc::clone(&config),
         shutdown_rx,
     ));
 
@@ -126,10 +134,69 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     })
     .await?;
 
-    // Wait for worker to finish draining
+    // Wait for workers to finish draining
     let _ = worker_handle.await;
+    let _ = cleanup_handle.await;
 
     Ok(())
+}
+
+/// Background maintenance worker that periodically cleans up expired data.
+async fn maintenance_worker(
+    pool: PgPool,
+    config: Arc<Config>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let interval = std::time::Duration::from_secs(config.maintenance.cleanup_interval_secs);
+    let retention_days = config.maintenance.webhook_delivery_retention_days as i64;
+    let consumed_token_cutoff_secs = config.jwt.refresh_token_ttl_secs * 2;
+
+    tracing::info!(
+        interval_secs = config.maintenance.cleanup_interval_secs,
+        "maintenance worker started"
+    );
+
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = shutdown.changed() => {
+                tracing::info!("maintenance worker shutting down");
+                return;
+            }
+        }
+
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(consumed_token_cutoff_secs as i64);
+
+        match riley_auth_core::db::cleanup_expired_tokens(&pool).await {
+            Ok(n) if n > 0 => tracing::info!(count = n, "cleaned up expired refresh tokens"),
+            Err(e) => tracing::warn!("cleanup_expired_tokens failed: {e}"),
+            _ => {}
+        }
+
+        match riley_auth_core::db::cleanup_expired_auth_codes(&pool).await {
+            Ok(n) if n > 0 => tracing::info!(count = n, "cleaned up expired auth codes"),
+            Err(e) => tracing::warn!("cleanup_expired_auth_codes failed: {e}"),
+            _ => {}
+        }
+
+        match riley_auth_core::db::cleanup_consumed_refresh_tokens(&pool, cutoff).await {
+            Ok(n) if n > 0 => tracing::info!(count = n, "cleaned up consumed refresh tokens"),
+            Err(e) => tracing::warn!("cleanup_consumed_refresh_tokens failed: {e}"),
+            _ => {}
+        }
+
+        match riley_auth_core::db::cleanup_webhook_deliveries(&pool, retention_days).await {
+            Ok(n) if n > 0 => tracing::info!(count = n, "cleaned up old webhook deliveries"),
+            Err(e) => tracing::warn!("cleanup_webhook_deliveries failed: {e}"),
+            _ => {}
+        }
+
+        match riley_auth_core::db::cleanup_webhook_outbox(&pool, retention_days).await {
+            Ok(n) if n > 0 => tracing::info!(count = n, "cleaned up old outbox entries"),
+            Err(e) => tracing::warn!("cleanup_webhook_outbox failed: {e}"),
+            _ => {}
+        }
+    }
 }
 
 fn build_cors(config: &Config) -> CorsLayer {
