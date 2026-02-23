@@ -808,8 +808,9 @@ async fn issue_tokens(
         &state.config.jwt.issuer,
     )?;
 
-    // Truncate user_agent to prevent storage bloat from oversized headers
-    let ua_truncated = user_agent.map(|ua| if ua.len() > 512 { &ua[..512] } else { ua });
+    // Truncate user_agent to prevent storage bloat from oversized headers.
+    // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 sequences.
+    let ua_truncated = user_agent.map(|ua| &ua[..ua.floor_char_boundary(512)]);
 
     let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
