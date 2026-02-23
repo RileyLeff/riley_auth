@@ -17,6 +17,7 @@ use riley_auth_core::db;
 use riley_auth_core::error::Error;
 use riley_auth_core::jwt::{self, Keys};
 use riley_auth_core::oauth::{self, Provider};
+use riley_auth_core::webhooks;
 
 use crate::server::AppState;
 
@@ -184,6 +185,12 @@ async fn auth_callback(
         let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
         let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
         let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
+        webhooks::dispatch_event(
+            state.db.clone(),
+            state.http_client.clone(),
+            webhooks::SESSION_CREATED,
+            serde_json::json!({ "user_id": user.id.to_string() }),
+        );
         return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
     }
 
@@ -261,6 +268,19 @@ async fn auth_setup(
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
     let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
     let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
+
+    webhooks::dispatch_event(
+        state.db.clone(),
+        state.http_client.clone(),
+        webhooks::USER_CREATED,
+        serde_json::json!({ "user_id": user.id.to_string(), "username": user.username }),
+    );
+    webhooks::dispatch_event(
+        state.db.clone(),
+        state.http_client.clone(),
+        webhooks::SESSION_CREATED,
+        serde_json::json!({ "user_id": user.id.to_string() }),
+    );
 
     Ok((jar, Json(user_to_me(&user))))
 }
@@ -454,6 +474,13 @@ async fn update_display_name(
     )
     .await?;
 
+    webhooks::dispatch_event(
+        state.db.clone(),
+        state.http_client.clone(),
+        webhooks::USER_UPDATED,
+        serde_json::json!({ "user_id": user.id.to_string(), "display_name": user.display_name }),
+    );
+
     Ok(Json(user_to_me(&user)))
 }
 
@@ -522,6 +549,17 @@ async fn update_username(
 
     let jar = jar.add(build_access_cookie(&access_token, &state.config));
 
+    webhooks::dispatch_event(
+        state.db.clone(),
+        state.http_client.clone(),
+        webhooks::USER_USERNAME_CHANGED,
+        serde_json::json!({
+            "user_id": user.id.to_string(),
+            "old_username": current_user.username,
+            "new_username": user.username,
+        }),
+    );
+
     Ok((jar, Json(user_to_me(&user))))
 }
 
@@ -542,6 +580,13 @@ async fn delete_account(
             return Err(Error::UserNotFound);
         }
     }
+
+    webhooks::dispatch_event(
+        state.db.clone(),
+        state.http_client.clone(),
+        webhooks::USER_DELETED,
+        serde_json::json!({ "user_id": user_id.to_string() }),
+    );
 
     let jar = jar
         .remove(removal_cookie(ACCESS_TOKEN_COOKIE, "/", &state.config))
@@ -673,6 +718,16 @@ async fn link_callback(
         e
     })?;
 
+    webhooks::dispatch_event(
+        state.db.clone(),
+        state.http_client.clone(),
+        webhooks::LINK_CREATED,
+        serde_json::json!({
+            "user_id": user_id.to_string(),
+            "provider": profile.provider,
+        }),
+    );
+
     let jar = jar
         .remove(removal_cookie(OAUTH_STATE_COOKIE, "/", &state.config))
         .remove(removal_cookie(PKCE_COOKIE, "/", &state.config));
@@ -691,7 +746,18 @@ async fn unlink_provider(
     let user_id = claims.sub_uuid()?;
 
     match db::delete_oauth_link_if_not_last(&state.db, user_id, &provider_name).await? {
-        db::UnlinkResult::Deleted => Ok(StatusCode::OK),
+        db::UnlinkResult::Deleted => {
+            webhooks::dispatch_event(
+                state.db.clone(),
+                state.http_client.clone(),
+                webhooks::LINK_DELETED,
+                serde_json::json!({
+                    "user_id": user_id.to_string(),
+                    "provider": provider_name,
+                }),
+            );
+            Ok(StatusCode::OK)
+        }
         db::UnlinkResult::LastProvider => Err(Error::LastProvider),
         db::UnlinkResult::NotFound => Err(Error::NotFound),
     }

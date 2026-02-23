@@ -121,6 +121,7 @@ impl TestServer {
             config: Arc::new(config.clone()),
             db: pool.clone(),
             keys: Arc::new(keys.clone()),
+            http_client: reqwest::Client::new(),
         };
 
         let app = axum::Router::new()
@@ -217,6 +218,14 @@ impl TestServer {
 }
 
 async fn clean_database(pool: &PgPool) {
+    sqlx::query("DELETE FROM webhook_deliveries")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM webhooks")
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM authorization_codes")
         .execute(pool)
         .await
@@ -1997,5 +2006,241 @@ fn session_requires_authentication() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
+
+// --- Webhook tests ---
+
+#[test]
+#[ignore]
+fn webhook_register_list_remove() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("webhookadmin", "admin").await;
+
+        // Register a webhook
+        let resp = client
+            .post(s.url("/admin/webhooks"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "url": "https://example.com/hook",
+                "events": ["user.created", "user.deleted"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let webhook: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(webhook["url"], "https://example.com/hook");
+        assert!(!webhook["secret"].as_str().unwrap().is_empty());
+        assert_eq!(webhook["active"], true);
+        let webhook_id = webhook["id"].as_str().unwrap().to_string();
+
+        // List webhooks
+        let resp = client
+            .get(s.url("/admin/webhooks"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let hooks: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["url"], "https://example.com/hook");
+
+        // Remove webhook
+        let resp = client
+            .delete(s.url(&format!("/admin/webhooks/{webhook_id}")))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify removed
+        let resp = client
+            .get(s.url("/admin/webhooks"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .send()
+            .await
+            .unwrap();
+        let hooks: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert!(hooks.is_empty());
+    });
+}
+
+#[test]
+#[ignore]
+fn webhook_rejects_unknown_event_type() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("webhookadmin2", "admin").await;
+
+        let resp = client
+            .post(s.url("/admin/webhooks"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "url": "https://example.com/hook",
+                "events": ["user.nonexistent"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
+fn webhook_requires_admin() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, user_token, _) = s.create_user_with_session("webhookuser", "user").await;
+
+        // Regular user cannot register webhooks
+        let resp = client
+            .post(s.url("/admin/webhooks"))
+            .header("cookie", format!("riley_auth_access={user_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "url": "https://example.com/hook",
+                "events": ["user.created"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // Regular user cannot list webhooks
+        let resp = client
+            .get(s.url("/admin/webhooks"))
+            .header("cookie", format!("riley_auth_access={user_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    });
+}
+
+#[test]
+#[ignore]
+fn webhook_delivery_recorded_on_event() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Register a webhook directly in the DB pointing to a URL that won't resolve
+        // (delivery will fail, but the attempt should be recorded)
+        let webhook = db::create_webhook(
+            &s.db,
+            None,
+            "http://localhost:1/nonexistent",
+            &["user.created".to_string()],
+            "test-secret",
+        )
+        .await
+        .unwrap();
+
+        // Dispatch an event
+        riley_auth_core::webhooks::dispatch_event(
+            s.db.clone(),
+            reqwest::Client::new(),
+            "user.created",
+            serde_json::json!({ "user_id": "test-user-id" }),
+        );
+
+        // Give the background task time to attempt delivery and retries
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        // Check delivery was recorded
+        let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10)
+            .await
+            .unwrap();
+        assert!(!deliveries.is_empty(), "delivery should be recorded after dispatch");
+        assert_eq!(deliveries[0].event_type, "user.created");
+        // Should have an error since the URL is unreachable
+        assert!(deliveries[0].error.is_some());
+    });
+}
+
+#[test]
+#[ignore]
+fn webhook_deliveries_endpoint() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("webhookadmin3", "admin").await;
+
+        // Register a webhook
+        let resp = client
+            .post(s.url("/admin/webhooks"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "url": "https://example.com/hook",
+                "events": ["user.created"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let webhook: serde_json::Value = resp.json().await.unwrap();
+        let webhook_id = webhook["id"].as_str().unwrap();
+
+        // Deliveries should be empty initially
+        let resp = client
+            .get(s.url(&format!("/admin/webhooks/{webhook_id}/deliveries")))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let deliveries: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert!(deliveries.is_empty());
+
+        // Deliveries for non-existent webhook returns 404
+        let resp = client
+            .get(s.url("/admin/webhooks/00000000-0000-0000-0000-000000000000/deliveries"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    });
+}
+
+#[test]
+#[ignore]
+fn webhook_remove_nonexistent_returns_404() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("webhookadmin4", "admin").await;
+
+        let resp = client
+            .delete(s.url("/admin/webhooks/00000000-0000-0000-0000-000000000000"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     });
 }

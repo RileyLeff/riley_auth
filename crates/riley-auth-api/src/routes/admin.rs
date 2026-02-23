@@ -10,6 +10,7 @@ use riley_auth_core::config::validate_scope_name;
 use riley_auth_core::db;
 use riley_auth_core::error::Error;
 use riley_auth_core::jwt;
+use riley_auth_core::webhooks;
 
 use crate::server::AppState;
 
@@ -23,6 +24,9 @@ pub fn router() -> Router<AppState> {
         .route("/admin/users/{id}", axum::routing::delete(delete_user))
         .route("/admin/clients", get(list_clients).post(register_client))
         .route("/admin/clients/{id}", axum::routing::delete(remove_client))
+        .route("/admin/webhooks", get(list_webhooks).post(register_webhook))
+        .route("/admin/webhooks/{id}", axum::routing::delete(remove_webhook))
+        .route("/admin/webhooks/{id}/deliveries", get(list_deliveries))
 }
 
 // --- Types ---
@@ -169,7 +173,18 @@ async fn update_role(
     }
 
     match db::update_user_role(&state.db, id, &body.role).await? {
-        db::RoleUpdateResult::Updated(_) => Ok(StatusCode::OK),
+        db::RoleUpdateResult::Updated(_) => {
+            webhooks::dispatch_event(
+                state.db.clone(),
+                state.http_client.clone(),
+                webhooks::USER_ROLE_CHANGED,
+                serde_json::json!({
+                    "user_id": id.to_string(),
+                    "new_role": body.role,
+                }),
+            );
+            Ok(StatusCode::OK)
+        }
         db::RoleUpdateResult::LastAdmin => {
             Err(Error::BadRequest("cannot demote the last admin".to_string()))
         }
@@ -185,7 +200,15 @@ async fn delete_user(
     require_admin(&state, &jar).await?;
 
     match db::soft_delete_user(&state.db, id).await? {
-        db::DeleteUserResult::Deleted => Ok(StatusCode::OK),
+        db::DeleteUserResult::Deleted => {
+            webhooks::dispatch_event(
+                state.db.clone(),
+                state.http_client.clone(),
+                webhooks::USER_DELETED,
+                serde_json::json!({ "user_id": id.to_string() }),
+            );
+            Ok(StatusCode::OK)
+        }
         db::DeleteUserResult::LastAdmin => {
             Err(Error::BadRequest("cannot delete the last admin".to_string()))
         }
@@ -284,4 +307,147 @@ async fn remove_client(
     }
 
     Ok(StatusCode::OK)
+}
+
+// --- Webhook admin endpoints ---
+
+#[derive(Deserialize)]
+struct RegisterWebhookRequest {
+    url: String,
+    events: Vec<String>,
+    #[serde(default)]
+    client_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct WebhookResponse {
+    id: String,
+    client_id: Option<String>,
+    url: String,
+    events: Vec<String>,
+    secret: String,
+    active: bool,
+    created_at: String,
+}
+
+impl From<db::Webhook> for WebhookResponse {
+    fn from(w: db::Webhook) -> Self {
+        Self {
+            id: w.id.to_string(),
+            client_id: w.client_id.map(|id| id.to_string()),
+            url: w.url,
+            events: w.events,
+            secret: w.secret,
+            active: w.active,
+            created_at: w.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DeliveryResponse {
+    id: String,
+    webhook_id: String,
+    event_type: String,
+    payload: serde_json::Value,
+    status_code: Option<i16>,
+    error: Option<String>,
+    attempted_at: String,
+}
+
+impl From<db::WebhookDelivery> for DeliveryResponse {
+    fn from(d: db::WebhookDelivery) -> Self {
+        Self {
+            id: d.id.to_string(),
+            webhook_id: d.webhook_id.to_string(),
+            event_type: d.event_type,
+            payload: d.payload,
+            status_code: d.status_code,
+            error: d.error,
+            attempted_at: d.attempted_at.to_rfc3339(),
+        }
+    }
+}
+
+async fn register_webhook(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(body): Json<RegisterWebhookRequest>,
+) -> Result<(StatusCode, Json<WebhookResponse>), Error> {
+    require_admin(&state, &jar).await?;
+
+    if body.url.is_empty() {
+        return Err(Error::BadRequest("url is required".to_string()));
+    }
+    if body.events.is_empty() {
+        return Err(Error::BadRequest("at least one event type required".to_string()));
+    }
+    for event in &body.events {
+        if !webhooks::is_valid_event_type(event) {
+            return Err(Error::BadRequest(format!("unknown event type: {event}")));
+        }
+    }
+
+    // If client_id is provided, verify the client exists
+    if let Some(cid) = body.client_id {
+        if db::find_client_by_id(&state.db, cid).await?.is_none() {
+            return Err(Error::BadRequest("client not found".to_string()));
+        }
+    }
+
+    // Generate a random HMAC signing secret
+    let mut secret_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut secret_bytes);
+    let secret = hex::encode(secret_bytes);
+
+    let webhook = db::create_webhook(&state.db, body.client_id, &body.url, &body.events, &secret).await?;
+
+    Ok((StatusCode::CREATED, Json(webhook.into())))
+}
+
+async fn list_webhooks(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<WebhookResponse>>, Error> {
+    require_admin(&state, &jar).await?;
+
+    let hooks = db::list_webhooks(&state.db).await?;
+    let response: Vec<WebhookResponse> = hooks.into_iter().map(Into::into).collect();
+
+    Ok(Json(response))
+}
+
+async fn remove_webhook(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    jar: CookieJar,
+) -> Result<StatusCode, Error> {
+    require_admin(&state, &jar).await?;
+
+    let deleted = db::delete_webhook(&state.db, id).await?;
+    if !deleted {
+        return Err(Error::NotFound);
+    }
+
+    Ok(StatusCode::OK)
+}
+
+async fn list_deliveries(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<PaginationQuery>,
+    jar: CookieJar,
+) -> Result<Json<Vec<DeliveryResponse>>, Error> {
+    require_admin(&state, &jar).await?;
+
+    // Verify webhook exists
+    if db::find_webhook(&state.db, id).await?.is_none() {
+        return Err(Error::NotFound);
+    }
+
+    let limit = query.limit.max(0).min(MAX_LIMIT);
+    let deliveries = db::list_webhook_deliveries(&state.db, id, limit).await?;
+    let response: Vec<DeliveryResponse> = deliveries.into_iter().map(Into::into).collect();
+
+    Ok(Json(response))
 }

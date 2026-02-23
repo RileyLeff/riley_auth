@@ -1891,6 +1891,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -1903,6 +1904,7 @@ dependencies = [
  "chrono",
  "dirs",
  "hex",
+ "hmac",
  "jsonwebtoken",
  "rand 0.9.2",
  "regex",

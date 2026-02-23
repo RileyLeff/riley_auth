@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 
 use riley_auth_core::db;
 use riley_auth_core::jwt::{self, Keys};
+use riley_auth_core::webhooks;
 
 #[derive(Parser)]
 #[command(name = "riley-auth", about = "OAuth-only identity service")]
@@ -72,6 +73,24 @@ enum Command {
     RemoveClient {
         /// Client ID to remove
         client_id: String,
+    },
+    /// List registered webhooks
+    ListWebhooks,
+    /// Register a new webhook
+    RegisterWebhook {
+        /// URL to deliver events to
+        url: String,
+        /// Event types to subscribe to (e.g. user.created user.deleted)
+        #[arg(required = true, num_args = 1..)]
+        events: Vec<String>,
+        /// Optional client ID to scope webhook to
+        #[arg(long)]
+        client_id: Option<uuid::Uuid>,
+    },
+    /// Remove a webhook
+    RemoveWebhook {
+        /// Webhook ID to remove
+        id: uuid::Uuid,
     },
 }
 
@@ -237,6 +256,53 @@ async fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("client '{}' not found", client_id))?;
             db::delete_client(&pool, client.id).await?;
             println!("Client '{}' ({}) removed", client.name, client_id);
+        }
+        Command::ListWebhooks => {
+            let hooks = db::list_webhooks(&pool).await?;
+            if hooks.is_empty() {
+                println!("No webhooks registered.");
+            } else {
+                println!("{:<38} {:<40} {:<8} {}", "ID", "URL", "Active", "Events");
+                println!("{}", "-".repeat(100));
+                for hook in &hooks {
+                    println!(
+                        "{:<38} {:<40} {:<8} {}",
+                        hook.id,
+                        if hook.url.len() > 38 { &hook.url[..38] } else { &hook.url },
+                        hook.active,
+                        hook.events.join(", "),
+                    );
+                }
+                println!("\n{} webhook(s)", hooks.len());
+            }
+        }
+        Command::RegisterWebhook { url, events, client_id } => {
+            for event in &events {
+                if !webhooks::is_valid_event_type(event) {
+                    anyhow::bail!("unknown event type: {}", event);
+                }
+            }
+
+            let mut secret_bytes = [0u8; 32];
+            rand::RngCore::fill_bytes(&mut rand::rng(), &mut secret_bytes);
+            let secret = hex::encode(secret_bytes);
+
+            let hook = db::create_webhook(&pool, client_id, &url, &events, &secret).await?;
+
+            println!("Webhook registered:");
+            println!("  ID:     {}", hook.id);
+            println!("  URL:    {}", hook.url);
+            println!("  Events: {:?}", hook.events);
+            println!("  Secret: {}", secret);
+            println!("\nSave the secret — it cannot be retrieved later.");
+        }
+        Command::RemoveWebhook { id } => {
+            let deleted = db::delete_webhook(&pool, id).await?;
+            if deleted {
+                println!("Webhook {} removed", id);
+            } else {
+                anyhow::bail!("webhook {} not found", id);
+            }
         }
         Command::GenerateKeys { .. } => unreachable!(),
     }

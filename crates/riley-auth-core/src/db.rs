@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, FromRow, PgPool};
 use uuid::Uuid;
@@ -908,4 +908,127 @@ pub async fn cleanup_expired_auth_codes(pool: &PgPool) -> Result<u64> {
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+// --- Webhook queries ---
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct Webhook {
+    pub id: Uuid,
+    pub client_id: Option<Uuid>,
+    pub url: String,
+    pub events: Vec<String>,
+    pub secret: String,
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct WebhookDelivery {
+    pub id: Uuid,
+    pub webhook_id: Uuid,
+    pub event_type: String,
+    pub payload: serde_json::Value,
+    pub status_code: Option<i16>,
+    pub error: Option<String>,
+    pub attempted_at: DateTime<Utc>,
+}
+
+pub async fn create_webhook(
+    pool: &PgPool,
+    client_id: Option<Uuid>,
+    url: &str,
+    events: &[String],
+    secret: &str,
+) -> Result<Webhook> {
+    let row = sqlx::query_as::<_, Webhook>(
+        "INSERT INTO webhooks (client_id, url, events, secret)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *"
+    )
+    .bind(client_id)
+    .bind(url)
+    .bind(events)
+    .bind(secret)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn list_webhooks(pool: &PgPool) -> Result<Vec<Webhook>> {
+    let rows = sqlx::query_as::<_, Webhook>(
+        "SELECT * FROM webhooks ORDER BY created_at DESC"
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn find_webhook(pool: &PgPool, id: Uuid) -> Result<Option<Webhook>> {
+    let row = sqlx::query_as::<_, Webhook>(
+        "SELECT * FROM webhooks WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn delete_webhook(pool: &PgPool, id: Uuid) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM webhooks WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Find all active webhooks subscribed to a given event type.
+pub async fn find_webhooks_for_event(pool: &PgPool, event_type: &str) -> Result<Vec<Webhook>> {
+    let rows = sqlx::query_as::<_, Webhook>(
+        "SELECT * FROM webhooks WHERE active = true AND $1 = ANY(events)"
+    )
+    .bind(event_type)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn record_webhook_delivery(
+    pool: &PgPool,
+    webhook_id: Uuid,
+    event_type: &str,
+    payload: &serde_json::Value,
+    status_code: Option<i16>,
+    error: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO webhook_deliveries (webhook_id, event_type, payload, status_code, error)
+         VALUES ($1, $2, $3, $4, $5)"
+    )
+    .bind(webhook_id)
+    .bind(event_type)
+    .bind(payload)
+    .bind(status_code)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_webhook_deliveries(
+    pool: &PgPool,
+    webhook_id: Uuid,
+    limit: i64,
+) -> Result<Vec<WebhookDelivery>> {
+    let rows = sqlx::query_as::<_, WebhookDelivery>(
+        "SELECT * FROM webhook_deliveries
+         WHERE webhook_id = $1
+         ORDER BY attempted_at DESC
+         LIMIT $2"
+    )
+    .bind(webhook_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }

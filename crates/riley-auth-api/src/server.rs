@@ -18,6 +18,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: PgPool,
     pub keys: Arc<Keys>,
+    pub http_client: reqwest::Client,
 }
 
 pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()> {
@@ -29,6 +30,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         config: Arc::new(config),
         db,
         keys: Arc::new(keys),
+        http_client: reqwest::Client::new(),
     };
 
     let behind_proxy = state.config.server.behind_proxy;

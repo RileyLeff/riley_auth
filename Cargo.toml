@@ -52,6 +52,7 @@ jsonwebtoken = "9"
 
 # Crypto
 rand = "0.9"
+hmac = "0.12"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
