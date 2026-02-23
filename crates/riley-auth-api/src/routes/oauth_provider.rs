@@ -325,6 +325,7 @@ async fn token(
             )?;
 
             let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
+            let family_id = uuid::Uuid::now_v7();
             let expires_at = Utc::now() + Duration::seconds(
                 state.config.jwt.refresh_token_ttl_secs as i64,
             );
@@ -337,6 +338,7 @@ async fn token(
                 &auth_code.scopes,
                 None,
                 None,
+                family_id,
             )
             .await?;
 
@@ -364,7 +366,13 @@ async fn token(
 
             let refresh_hash = jwt::hash_token(refresh_raw);
 
-            // Atomically consume the refresh token (prevents TOCTOU race)
+            // Check for token reuse — if this hash was already consumed, revoke the family
+            if let Some(family_id) = db::check_token_reuse(&state.db, &refresh_hash).await? {
+                db::revoke_token_family(&state.db, family_id).await?;
+                return Err(Error::InvalidGrant);
+            }
+
+            // Atomically consume the refresh token (moves to consumed table for reuse detection)
             let token_row = db::consume_refresh_token(&state.db, &refresh_hash)
                 .await?
                 .ok_or(Error::InvalidGrant)?;
@@ -414,6 +422,7 @@ async fn token(
                 &effective_scopes,
                 None,
                 None,
+                token_row.family_id,
             )
             .await?;
 
