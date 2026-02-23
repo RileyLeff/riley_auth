@@ -13,10 +13,11 @@ use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request};
 use axum::response::{IntoResponse, Response};
 
 use riley_auth_core::config::RateLimitTiersConfig;
+use riley_auth_core::error::Error;
 
 // --- Tier classification ---
 
@@ -32,18 +33,51 @@ pub enum RateLimitTier {
 }
 
 /// Classify a request path into a rate limit tier.
+///
+/// Routes are matched against the actual Axum route patterns in `routes/auth.rs`
+/// and `routes/oauth_provider.rs`. Trailing slashes are normalized before matching.
 pub fn classify_path(path: &str) -> RateLimitTier {
-    // Auth tier: sensitive authentication endpoints
-    if path == "/oauth/token"
-        || path == "/oauth/authorize"
-        || path == "/auth/setup"
-        || path.starts_with("/auth/callback/")
-    {
+    // Normalize: strip trailing slash (keep root "/")
+    let path = if path.len() > 1 && path.ends_with('/') {
+        &path[..path.len() - 1]
+    } else {
+        path
+    };
+
+    // Auth tier: exact matches for sensitive endpoints
+    if matches!(
+        path,
+        "/oauth/token"
+            | "/oauth/authorize"
+            | "/oauth/revoke"
+            | "/auth/setup"
+            | "/auth/refresh"
+    ) {
         return RateLimitTier::Auth;
     }
 
+    // Auth tier: /auth/link/{provider} and /auth/link/{provider}/callback
+    if let Some(rest) = path.strip_prefix("/auth/link/") {
+        if !rest.is_empty() {
+            return RateLimitTier::Auth;
+        }
+    }
+
+    // Auth tier: /auth/{provider} and /auth/{provider}/callback
+    // Exclude known non-provider path segments
+    if let Some(rest) = path.strip_prefix("/auth/") {
+        let segment = rest.split('/').next().unwrap_or("");
+        if !matches!(
+            segment,
+            "me" | "logout" | "logout-all" | "sessions" | "link"
+                | "setup" | "refresh" | ""
+        ) {
+            return RateLimitTier::Auth;
+        }
+    }
+
     // Public tier: high-traffic read-only endpoints
-    if path == "/health" || path.starts_with("/.well-known/") {
+    if path == "/health" || path.starts_with("/.well-known/") || path == "/.well-known" {
         return RateLimitTier::Public;
     }
 
@@ -54,12 +88,15 @@ pub fn classify_path(path: &str) -> RateLimitTier {
 // --- IP extraction ---
 
 /// Extract client IP from the request, with proxy header support.
+///
+/// When `behind_proxy` is true, the reverse proxy **must** overwrite (not append
+/// to) the `X-Forwarded-For` header with the actual peer IP. See
+/// `riley_auth.example.toml` for proxy configuration requirements.
 pub fn extract_ip<B>(req: &Request<B>, behind_proxy: bool) -> Option<IpAddr> {
     if behind_proxy {
         // Try X-Forwarded-For first, then X-Real-IP
         if let Some(xff) = req.headers().get("x-forwarded-for") {
             if let Ok(val) = xff.to_str() {
-                // Take the first (leftmost) IP — the one the proxy saw
                 if let Some(ip_str) = val.split(',').next() {
                     if let Ok(ip) = ip_str.trim().parse::<IpAddr>() {
                         return Some(ip);
@@ -90,9 +127,15 @@ struct WindowEntry {
     window_start: Instant,
 }
 
+/// State behind the tier lock, including eviction tracking.
+struct TierState {
+    windows: HashMap<IpAddr, WindowEntry>,
+    last_prune: Instant,
+}
+
 /// In-memory fixed-window rate limiter for a single tier.
 struct InMemoryTierLimiter {
-    windows: Mutex<HashMap<IpAddr, WindowEntry>>,
+    state: Mutex<TierState>,
     burst_size: u32,
     window_secs: u64,
 }
@@ -100,18 +143,30 @@ struct InMemoryTierLimiter {
 impl InMemoryTierLimiter {
     fn new(burst_size: u32, window_secs: u64) -> Self {
         Self {
-            windows: Mutex::new(HashMap::new()),
+            state: Mutex::new(TierState {
+                windows: HashMap::new(),
+                last_prune: Instant::now(),
+            }),
             burst_size,
             window_secs,
         }
     }
 
-    /// Check a request. Returns (allowed, remaining, window_secs).
+    /// Check a request. Returns (allowed, remaining, retry_after_secs).
     fn check(&self, ip: &IpAddr) -> (bool, u64, u64) {
-        let mut windows = self.windows.lock().expect("rate limit lock poisoned");
+        let mut state = self.state.lock().expect("rate limit lock poisoned");
         let now = Instant::now();
 
-        let entry = windows.entry(*ip).or_insert(WindowEntry {
+        // Evict expired entries periodically (every window_secs)
+        if now.duration_since(state.last_prune).as_secs() >= self.window_secs {
+            let window_secs = self.window_secs;
+            state.windows.retain(|_, entry| {
+                now.duration_since(entry.window_start).as_secs() < window_secs
+            });
+            state.last_prune = now;
+        }
+
+        let entry = state.windows.entry(*ip).or_insert(WindowEntry {
             count: 0,
             window_start: now,
         });
@@ -129,7 +184,12 @@ impl InMemoryTierLimiter {
         } else {
             0
         };
-        (allowed, remaining, self.window_secs)
+
+        // Retry-After = time remaining in the current window (at least 1 second)
+        let elapsed = now.duration_since(entry.window_start).as_secs();
+        let retry_after = self.window_secs.saturating_sub(elapsed).max(1);
+
+        (allowed, remaining, retry_after)
     }
 }
 
@@ -184,7 +244,7 @@ pub async fn memory_rate_limit_middleware(
     };
 
     let tier = classify_path(req.uri().path());
-    let (allowed, remaining, window_secs) = limiter.check(tier, &ip);
+    let (allowed, remaining, retry_after) = limiter.check(tier, &ip);
 
     if allowed {
         let mut response = next.run(req).await;
@@ -193,12 +253,11 @@ pub async fn memory_rate_limit_middleware(
         headers.insert("x-ratelimit-limit", HeaderValue::from(limiter.burst_size(tier)));
         response
     } else {
-        let mut headers = HeaderMap::new();
-        let val = HeaderValue::from(window_secs);
+        let mut response = Error::RateLimited.into_response();
+        let headers = response.headers_mut();
+        let val = HeaderValue::from(retry_after);
         headers.insert("x-ratelimit-after", val.clone());
         headers.insert("retry-after", val);
-        let mut response = (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
-        response.headers_mut().extend(headers);
         response
     }
 }
@@ -254,33 +313,36 @@ mod redis_impl {
 
         /// Check if a request from the given IP is allowed.
         ///
-        /// Returns `Ok(count)` with the current request count in the window,
-        /// or `Err` if Redis is unavailable.
-        pub async fn check(&self, ip: &IpAddr) -> Result<u64, redis::RedisError> {
+        /// Returns `Ok((count, ttl))` with the current request count and the
+        /// remaining TTL (seconds) on the window key, or `Err` if Redis is
+        /// unavailable.
+        pub async fn check(&self, ip: &IpAddr) -> Result<(u64, u64), redis::RedisError> {
             let script = Script::new(
                 r"
                 local current = redis.call('INCR', KEYS[1])
                 if current == 1 then
                     redis.call('EXPIRE', KEYS[1], ARGV[1])
                 end
-                return current
+                local ttl = redis.call('TTL', KEYS[1])
+                if ttl < 0 then ttl = tonumber(ARGV[1]) end
+                return {current, ttl}
                 ",
             );
 
             let key = format!("{}:{}", self.key_prefix, ip);
             let mut conn = self.conn.clone();
-            let count: u64 = script
+            let (count, ttl): (u64, u64) = script
                 .key(&key)
                 .arg(self.window_secs)
                 .invoke_async(&mut conn)
                 .await?;
-            Ok(count)
+            Ok((count, ttl))
         }
 
         /// Returns true if the request count is within the burst limit.
         pub async fn is_allowed(&self, ip: &IpAddr) -> bool {
             match self.check(ip).await {
-                Ok(count) => count <= self.burst_size as u64,
+                Ok((count, _)) => count <= self.burst_size as u64,
                 Err(e) => {
                     tracing::warn!(error = %e, "Redis rate limiter unavailable, allowing request");
                     true
@@ -288,21 +350,21 @@ mod redis_impl {
             }
         }
 
-        /// Returns (allowed, remaining, wait_time) for rate limit headers.
+        /// Returns (allowed, remaining, retry_after) for rate limit headers.
         pub async fn check_with_headers(
             &self,
             ip: &IpAddr,
         ) -> (bool, Option<u64>, Option<u64>) {
             match self.check(ip).await {
-                Ok(count) => {
+                Ok((count, ttl)) => {
                     let allowed = count <= self.burst_size as u64;
                     let remaining = if allowed {
                         Some(self.burst_size as u64 - count)
                     } else {
                         Some(0)
                     };
-                    let wait_time = if allowed { None } else { Some(self.window_secs) };
-                    (allowed, remaining, wait_time)
+                    let retry_after = if allowed { None } else { Some(ttl.max(1)) };
+                    (allowed, remaining, retry_after)
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Redis rate limiter unavailable, allowing request");
@@ -382,7 +444,7 @@ mod redis_impl {
 
         let tier = classify_path(req.uri().path());
         let tier_limiter = limiter.tier_limiter(tier);
-        let (allowed, remaining, wait_time) = tier_limiter.check_with_headers(&ip).await;
+        let (allowed, remaining, retry_after) = tier_limiter.check_with_headers(&ip).await;
 
         if allowed {
             let mut response = next.run(req).await;
@@ -393,15 +455,13 @@ mod redis_impl {
             }
             response
         } else {
-            let mut headers = HeaderMap::new();
-            if let Some(wait) = wait_time {
+            let mut response = Error::RateLimited.into_response();
+            let headers = response.headers_mut();
+            if let Some(wait) = retry_after {
                 let val = HeaderValue::from(wait);
                 headers.insert("x-ratelimit-after", val.clone());
                 headers.insert("retry-after", val);
             }
-            let mut response =
-                (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
-            response.headers_mut().extend(headers);
             response
         }
     }
@@ -417,12 +477,42 @@ mod tests {
     // --- Path classification tests ---
 
     #[test]
-    fn classify_auth_endpoints() {
+    fn classify_auth_exact_matches() {
         assert_eq!(classify_path("/oauth/token"), RateLimitTier::Auth);
         assert_eq!(classify_path("/oauth/authorize"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/oauth/revoke"), RateLimitTier::Auth);
         assert_eq!(classify_path("/auth/setup"), RateLimitTier::Auth);
-        assert_eq!(classify_path("/auth/callback/google"), RateLimitTier::Auth);
-        assert_eq!(classify_path("/auth/callback/github"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/refresh"), RateLimitTier::Auth);
+    }
+
+    #[test]
+    fn classify_auth_provider_routes() {
+        // /auth/{provider} — OAuth redirect
+        assert_eq!(classify_path("/auth/google"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/github"), RateLimitTier::Auth);
+
+        // /auth/{provider}/callback — OAuth callback
+        assert_eq!(classify_path("/auth/google/callback"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/github/callback"), RateLimitTier::Auth);
+    }
+
+    #[test]
+    fn classify_auth_link_routes() {
+        // /auth/link/{provider}
+        assert_eq!(classify_path("/auth/link/google"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/link/github"), RateLimitTier::Auth);
+
+        // /auth/link/{provider}/callback
+        assert_eq!(classify_path("/auth/link/google/callback"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/link/github/callback"), RateLimitTier::Auth);
+    }
+
+    #[test]
+    fn classify_auth_trailing_slash() {
+        assert_eq!(classify_path("/oauth/token/"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/setup/"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/google/"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/link/google/"), RateLimitTier::Auth);
     }
 
     #[test]
@@ -435,11 +525,15 @@ mod tests {
     #[test]
     fn classify_standard_endpoints() {
         assert_eq!(classify_path("/auth/me"), RateLimitTier::Standard);
-        assert_eq!(classify_path("/auth/refresh"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/auth/logout"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/auth/logout-all"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/auth/sessions"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/auth/sessions/some-id"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/auth/me/links"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/auth/me/username"), RateLimitTier::Standard);
         assert_eq!(classify_path("/admin/users"), RateLimitTier::Standard);
         assert_eq!(classify_path("/admin/webhooks"), RateLimitTier::Standard);
         assert_eq!(classify_path("/oauth/consent"), RateLimitTier::Standard);
-        assert_eq!(classify_path("/oauth/revoke"), RateLimitTier::Standard);
     }
 
     // --- IP extraction tests ---
@@ -538,5 +632,22 @@ mod tests {
         // ip2 should still have its own limit
         let (allowed, _, _) = limiter.check(RateLimitTier::Auth, &ip2);
         assert!(allowed);
+    }
+
+    #[test]
+    fn in_memory_retry_after_less_than_window() {
+        let tiers = RateLimitTiersConfig::default();
+        let limiter = InMemoryRateLimiter::new(&tiers);
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+
+        // Exhaust auth tier (15 requests)
+        for _ in 0..15 {
+            limiter.check(RateLimitTier::Auth, &ip);
+        }
+        let (allowed, _, retry_after) = limiter.check(RateLimitTier::Auth, &ip);
+        assert!(!allowed);
+        // retry_after should be <= window_secs (60), not more
+        assert!(retry_after <= 60, "retry_after {retry_after} should be <= 60");
+        assert!(retry_after >= 1, "retry_after should be at least 1");
     }
 }

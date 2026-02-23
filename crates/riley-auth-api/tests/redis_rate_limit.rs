@@ -97,7 +97,7 @@ async fn redis_rate_limiter_window_expires() {
 
 #[tokio::test]
 #[ignore]
-async fn redis_rate_limiter_check_returns_count() {
+async fn redis_rate_limiter_check_returns_count_and_ttl() {
     let limiter = RedisRateLimiter::new(REDIS_URL, 10, 60)
         .await
         .expect("failed to connect to Redis");
@@ -105,13 +105,14 @@ async fn redis_rate_limiter_check_returns_count() {
 
     let ip: IpAddr = "10.0.0.4".parse().unwrap();
 
-    let count = limiter.check(&ip).await.unwrap();
+    let (count, ttl) = limiter.check(&ip).await.unwrap();
     assert_eq!(count, 1);
+    assert!(ttl > 0 && ttl <= 60, "ttl should be between 1 and 60, got {ttl}");
 
-    let count = limiter.check(&ip).await.unwrap();
+    let (count, _) = limiter.check(&ip).await.unwrap();
     assert_eq!(count, 2);
 
-    let count = limiter.check(&ip).await.unwrap();
+    let (count, _) = limiter.check(&ip).await.unwrap();
     assert_eq!(count, 3);
 }
 
@@ -126,10 +127,10 @@ async fn redis_rate_limiter_headers_info() {
     let ip: IpAddr = "10.0.0.5".parse().unwrap();
 
     // First request: 2 remaining
-    let (allowed, remaining, wait_time) = limiter.check_with_headers(&ip).await;
+    let (allowed, remaining, retry_after) = limiter.check_with_headers(&ip).await;
     assert!(allowed);
     assert_eq!(remaining, Some(2));
-    assert_eq!(wait_time, None);
+    assert_eq!(retry_after, None);
 
     // Second request: 1 remaining
     let (allowed, remaining, _) = limiter.check_with_headers(&ip).await;
@@ -141,11 +142,14 @@ async fn redis_rate_limiter_headers_info() {
     assert!(allowed);
     assert_eq!(remaining, Some(0));
 
-    // Fourth request: rate limited
-    let (allowed, remaining, wait_time) = limiter.check_with_headers(&ip).await;
+    // Fourth request: rate limited with TTL-based retry_after
+    let (allowed, remaining, retry_after) = limiter.check_with_headers(&ip).await;
     assert!(!allowed);
     assert_eq!(remaining, Some(0));
-    assert_eq!(wait_time, Some(60));
+    // retry_after is now the TTL from Redis, not the full window_secs
+    assert!(retry_after.is_some());
+    let wait = retry_after.unwrap();
+    assert!(wait >= 1 && wait <= 60, "retry_after should be between 1 and 60, got {wait}");
 }
 
 // --- Tiered rate limiter tests ---

@@ -114,7 +114,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     tracing::info!(%addr, "starting server");
     let listener = TcpListener::bind(addr).await?;
 
-    // Use into_make_service_with_connect_info so tower_governor / redis middleware
+    // Use into_make_service_with_connect_info so rate limit middleware
     // can extract peer IP
     axum::serve(
         listener,

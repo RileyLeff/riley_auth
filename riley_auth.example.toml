@@ -80,6 +80,26 @@ client_secret = "env:GITHUB_CLIENT_SECRET"
 # max_concurrent_deliveries = 10             # Max parallel outbound webhook requests (default: 10)
 # max_retry_attempts = 5                     # Retries before marking delivery as failed (default: 5)
 
+# Optional: Rate limiting tier configuration.
+# Three tiers: auth (sensitive endpoints), standard (general API), public (discovery/health).
+# Omit for defaults shown below.
+
+# [rate_limiting]
+# backend = "memory"                         # "memory" (default) or "redis"
+# redis_url = "env:REDIS_URL"               # Required when backend = "redis"
+#
+# [rate_limiting.tiers.auth]
+# requests = 15                              # Max requests per window (default: 15)
+# window_secs = 60                           # Window size in seconds (default: 60)
+#
+# [rate_limiting.tiers.standard]
+# requests = 60                              # Default: 60
+# window_secs = 60                           # Default: 60
+#
+# [rate_limiting.tiers.public]
+# requests = 300                             # Default: 300
+# window_secs = 60                           # Default: 60
+
 [usernames]
 min_length = 3                             # Minimum username length (default: 3)
 max_length = 24                            # Maximum username length (default: 24)
