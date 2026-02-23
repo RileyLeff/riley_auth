@@ -100,6 +100,13 @@ client_secret = "env:GITHUB_CLIENT_SECRET"
 # requests = 300                             # Default: 300
 # window_secs = 60                           # Default: 60
 
+# Optional: Background maintenance / cleanup configuration.
+# Omit for defaults shown below.
+
+# [maintenance]
+# cleanup_interval_secs = 3600                 # How often to run cleanup tasks (default: 3600 = 1 hour)
+# webhook_delivery_retention_days = 7          # Days to keep webhook delivery records (default: 7)
+
 [usernames]
 min_length = 3                             # Minimum username length (default: 3)
 max_length = 24                            # Maximum username length (default: 24)

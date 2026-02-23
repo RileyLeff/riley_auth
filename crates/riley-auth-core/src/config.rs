@@ -21,6 +21,8 @@ pub struct Config {
     pub rate_limiting: RateLimitingConfig,
     #[serde(default)]
     pub webhooks: WebhooksConfig,
+    #[serde(default)]
+    pub maintenance: MaintenanceConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -201,6 +203,26 @@ impl Default for WebhooksConfig {
 
 fn default_max_concurrent_deliveries() -> usize { 10 }
 fn default_max_retry_attempts() -> u32 { 5 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MaintenanceConfig {
+    #[serde(default = "default_cleanup_interval")]
+    pub cleanup_interval_secs: u64,
+    #[serde(default = "default_delivery_retention")]
+    pub webhook_delivery_retention_days: u32,
+}
+
+impl Default for MaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            cleanup_interval_secs: default_cleanup_interval(),
+            webhook_delivery_retention_days: default_delivery_retention(),
+        }
+    }
+}
+
+fn default_cleanup_interval() -> u64 { 3600 }      // 1 hour
+fn default_delivery_retention() -> u32 { 7 }        // 7 days
 
 /// Validate that a scope name uses only safe characters.
 /// Allowed: lowercase ASCII letters, digits, colons, dots, underscores, hyphens.
@@ -435,6 +457,9 @@ public_key_path = "/tmp/public.pem"
         assert_eq!(config.rate_limiting.tiers.auth.window_secs, 60);
         assert_eq!(config.rate_limiting.tiers.standard.requests, 60);
         assert_eq!(config.rate_limiting.tiers.public.requests, 300);
+        // Maintenance defaults
+        assert_eq!(config.maintenance.cleanup_interval_secs, 3600);
+        assert_eq!(config.maintenance.webhook_delivery_retention_days, 7);
     }
 
     #[test]
