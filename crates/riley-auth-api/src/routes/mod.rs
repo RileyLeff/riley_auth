@@ -36,6 +36,29 @@ async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(state.keys.jwks())
 }
 
+/// OpenID Connect Discovery document (per OpenID Connect Discovery 1.0).
+async fn openid_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let base = state.config.server.public_url.trim_end_matches('/');
+    let scope_names: Vec<&str> = state.config.scopes.definitions.iter()
+        .map(|d| d.name.as_str())
+        .collect();
+
+    Json(serde_json::json!({
+        "issuer": state.config.jwt.issuer,
+        "authorization_endpoint": format!("{base}/oauth/authorize"),
+        "token_endpoint": format!("{base}/oauth/token"),
+        "jwks_uri": format!("{base}/.well-known/jwks.json"),
+        "revocation_endpoint": format!("{base}/oauth/revoke"),
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["RS256"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+        "scopes_supported": scope_names,
+        "code_challenge_methods_supported": ["S256"],
+    }))
+}
+
 /// CSRF protection: require `X-Requested-With` header on non-safe HTTP methods.
 /// Simple form submissions and cross-origin requests cannot set custom headers
 /// without a CORS preflight, so this blocks CSRF from subdomains or foreign origins.
@@ -85,6 +108,7 @@ pub fn router_with_rate_limit(behind_proxy: bool, rate_limit: bool) -> Router<Ap
     let base = Router::new()
         .route("/health", get(health))
         .route("/.well-known/jwks.json", get(jwks))
+        .route("/.well-known/openid-configuration", get(openid_configuration))
         .merge(csrf_protected)
         .merge(oauth_provider::router());
 

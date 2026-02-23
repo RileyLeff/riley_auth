@@ -26,6 +26,21 @@ pub struct Claims {
     pub scope: Option<String>,
 }
 
+/// OIDC ID Token claims (per OpenID Connect Core 1.0 Section 2).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IdTokenClaims {
+    pub sub: String,
+    pub iss: String,
+    pub aud: String,
+    pub exp: i64,
+    pub iat: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub preferred_username: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+}
+
 /// Loaded key material for signing and verification.
 #[derive(Clone)]
 pub struct Keys {
@@ -130,6 +145,37 @@ impl Keys {
     /// Decoding key for verification.
     pub fn decoding_key(&self) -> &DecodingKey {
         &self.decoding
+    }
+
+    /// Create a signed OIDC ID token.
+    pub fn sign_id_token(
+        &self,
+        config: &JwtConfig,
+        user_id: &str,
+        username: &str,
+        display_name: Option<&str>,
+        avatar_url: Option<&str>,
+        audience: &str,
+    ) -> Result<String> {
+        let now = Utc::now();
+        let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
+
+        let claims = IdTokenClaims {
+            sub: user_id.to_string(),
+            iss: config.issuer.clone(),
+            aud: audience.to_string(),
+            exp: exp.timestamp(),
+            iat: now.timestamp(),
+            name: display_name.map(String::from),
+            preferred_username: username.to_string(),
+            picture: avatar_url.map(String::from),
+        };
+
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(self.kid.clone());
+
+        encode(&header, &claims, &self.encoding)
+            .map_err(|e| Error::Config(format!("failed to sign id token: {e}")))
     }
 
     /// JWKS response body.

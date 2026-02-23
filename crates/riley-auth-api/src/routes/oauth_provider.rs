@@ -51,6 +51,8 @@ pub struct TokenResponse {
     expires_in: u64,
     refresh_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    id_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
 }
 
@@ -333,11 +335,21 @@ async fn token(
             )
             .await?;
 
+            let id_token = state.keys.sign_id_token(
+                &state.config.jwt,
+                &user.id.to_string(),
+                &user.username,
+                user.display_name.as_deref(),
+                user.avatar_url.as_deref(),
+                &client.client_id,
+            )?;
+
             Ok(Json(TokenResponse {
                 access_token,
                 token_type: "Bearer",
                 expires_in: state.config.jwt.access_token_ttl_secs,
                 refresh_token: refresh_raw,
+                id_token: Some(id_token),
                 scope: scope_str,
             }))
         }
@@ -392,11 +404,21 @@ async fn token(
             )
             .await?;
 
+            let id_token = state.keys.sign_id_token(
+                &state.config.jwt,
+                &user.id.to_string(),
+                &user.username,
+                user.display_name.as_deref(),
+                user.avatar_url.as_deref(),
+                &client.client_id,
+            )?;
+
             Ok(Json(TokenResponse {
                 access_token,
                 token_type: "Bearer",
                 expires_in: state.config.jwt.access_token_ttl_secs,
                 refresh_token: new_refresh_raw,
+                id_token: Some(id_token),
                 scope: scope_str,
             }))
         }
