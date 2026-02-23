@@ -1,118 +1,62 @@
-//! Redis-backed rate limiting middleware.
+//! Tiered rate limiting middleware.
 //!
-//! When the `redis` feature is enabled, this module provides a fixed-window
-//! rate limiter backed by Redis. Each client IP gets a key with a TTL matching
-//! the rate window; the counter is atomically incremented via a Lua script.
+//! Classifies request paths into three tiers (auth, standard, public) and
+//! applies per-tier rate limits. Supports in-memory and Redis backends.
 //!
-//! When Redis is unavailable, the middleware falls back to allowing the request
-//! through (fail-open), logging a warning.
+//! OPTIONS requests bypass rate limiting entirely to avoid breaking CORS
+//! preflights (429 responses lack CORS headers, causing browser failures).
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
-use redis::aio::ConnectionManager;
-use redis::Script;
 
-/// Redis-backed rate limiter.
-#[derive(Clone)]
-pub struct RedisRateLimiter {
-    conn: ConnectionManager,
-    /// Maximum requests allowed per window.
-    burst_size: u32,
-    /// Window duration in seconds.
-    window_secs: u64,
-    /// Key prefix in Redis.
-    key_prefix: String,
+use riley_auth_core::config::RateLimitTiersConfig;
+
+// --- Tier classification ---
+
+/// Rate limit tier for a request path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RateLimitTier {
+    /// Sensitive auth endpoints: login, token exchange, callbacks.
+    Auth,
+    /// General API endpoints: admin, user profile, OAuth management.
+    Standard,
+    /// High-traffic read-only endpoints: health, JWKS, discovery.
+    Public,
 }
 
-impl RedisRateLimiter {
-    /// Connect to Redis and create a rate limiter.
-    pub async fn new(
-        redis_url: &str,
-        burst_size: u32,
-        window_secs: u64,
-    ) -> Result<Self, redis::RedisError> {
-        let client = redis::Client::open(redis_url)?;
-        let conn = ConnectionManager::new(client).await?;
-        Ok(Self {
-            conn,
-            burst_size,
-            window_secs,
-            key_prefix: "rate_limit".to_string(),
-        })
+/// Classify a request path into a rate limit tier.
+pub fn classify_path(path: &str) -> RateLimitTier {
+    // Auth tier: sensitive authentication endpoints
+    if path == "/oauth/token"
+        || path == "/oauth/authorize"
+        || path == "/auth/setup"
+        || path.starts_with("/auth/callback/")
+    {
+        return RateLimitTier::Auth;
     }
 
-    /// Check if a request from the given IP is allowed.
-    ///
-    /// Returns `Ok(count)` with the current request count in the window,
-    /// or `Err` if Redis is unavailable.
-    pub async fn check(&self, ip: &IpAddr) -> Result<u64, redis::RedisError> {
-        // Lua script: atomically INCR and set EXPIRE on first access.
-        // This ensures the window starts when the first request arrives.
-        let script = Script::new(
-            r"
-            local current = redis.call('INCR', KEYS[1])
-            if current == 1 then
-                redis.call('EXPIRE', KEYS[1], ARGV[1])
-            end
-            return current
-            ",
-        );
-
-        let key = format!("{}:{}", self.key_prefix, ip);
-        let mut conn = self.conn.clone();
-        let count: u64 = script
-            .key(&key)
-            .arg(self.window_secs)
-            .invoke_async(&mut conn)
-            .await?;
-        Ok(count)
+    // Public tier: high-traffic read-only endpoints
+    if path == "/health" || path.starts_with("/.well-known/") {
+        return RateLimitTier::Public;
     }
 
-    /// Returns true if the request count is within the burst limit.
-    pub async fn is_allowed(&self, ip: &IpAddr) -> bool {
-        match self.check(ip).await {
-            Ok(count) => count <= self.burst_size as u64,
-            Err(e) => {
-                // Fail-open: if Redis is down, allow the request
-                tracing::warn!(error = %e, "Redis rate limiter unavailable, allowing request");
-                true
-            }
-        }
-    }
-
-    /// Returns the remaining count and wait time for rate limit headers.
-    pub async fn check_with_headers(
-        &self,
-        ip: &IpAddr,
-    ) -> (bool, Option<u64>, Option<u64>) {
-        match self.check(ip).await {
-            Ok(count) => {
-                let allowed = count <= self.burst_size as u64;
-                let remaining = if allowed {
-                    Some(self.burst_size as u64 - count)
-                } else {
-                    Some(0)
-                };
-                let wait_time = if allowed { None } else { Some(self.window_secs) };
-                (allowed, remaining, wait_time)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Redis rate limiter unavailable, allowing request");
-                (true, None, None)
-            }
-        }
-    }
+    // Everything else: standard tier
+    RateLimitTier::Standard
 }
+
+// --- IP extraction ---
 
 /// Extract client IP from the request, with proxy header support.
 pub fn extract_ip<B>(req: &Request<B>, behind_proxy: bool) -> Option<IpAddr> {
     if behind_proxy {
-        // Try X-Forwarded-For first, then X-Real-IP, then Forwarded header
+        // Try X-Forwarded-For first, then X-Real-IP
         if let Some(xff) = req.headers().get("x-forwarded-for") {
             if let Ok(val) = xff.to_str() {
                 // Take the first (leftmost) IP — the one the proxy saw
@@ -138,53 +82,363 @@ pub fn extract_ip<B>(req: &Request<B>, behind_proxy: bool) -> Option<IpAddr> {
         .map(|ci| ci.0.ip())
 }
 
-/// Axum middleware that enforces rate limiting via Redis.
-pub async fn redis_rate_limit_middleware(
-    limiter: Arc<RedisRateLimiter>,
+// --- In-memory rate limiter ---
+
+/// Fixed-window rate limiter entry.
+struct WindowEntry {
+    count: u64,
+    window_start: Instant,
+}
+
+/// In-memory fixed-window rate limiter for a single tier.
+struct InMemoryTierLimiter {
+    windows: Mutex<HashMap<IpAddr, WindowEntry>>,
+    burst_size: u32,
+    window_secs: u64,
+}
+
+impl InMemoryTierLimiter {
+    fn new(burst_size: u32, window_secs: u64) -> Self {
+        Self {
+            windows: Mutex::new(HashMap::new()),
+            burst_size,
+            window_secs,
+        }
+    }
+
+    /// Check a request. Returns (allowed, remaining, window_secs).
+    fn check(&self, ip: &IpAddr) -> (bool, u64, u64) {
+        let mut windows = self.windows.lock().expect("rate limit lock poisoned");
+        let now = Instant::now();
+
+        let entry = windows.entry(*ip).or_insert(WindowEntry {
+            count: 0,
+            window_start: now,
+        });
+
+        // Reset if window expired
+        if now.duration_since(entry.window_start).as_secs() >= self.window_secs {
+            entry.count = 0;
+            entry.window_start = now;
+        }
+
+        entry.count += 1;
+        let allowed = entry.count <= self.burst_size as u64;
+        let remaining = if allowed {
+            self.burst_size as u64 - entry.count
+        } else {
+            0
+        };
+        (allowed, remaining, self.window_secs)
+    }
+}
+
+/// Tiered in-memory rate limiter.
+pub struct InMemoryRateLimiter {
+    auth: InMemoryTierLimiter,
+    standard: InMemoryTierLimiter,
+    public: InMemoryTierLimiter,
+}
+
+impl InMemoryRateLimiter {
+    pub fn new(tiers: &RateLimitTiersConfig) -> Self {
+        Self {
+            auth: InMemoryTierLimiter::new(tiers.auth.requests, tiers.auth.window_secs),
+            standard: InMemoryTierLimiter::new(tiers.standard.requests, tiers.standard.window_secs),
+            public: InMemoryTierLimiter::new(tiers.public.requests, tiers.public.window_secs),
+        }
+    }
+
+    fn tier_limiter(&self, tier: RateLimitTier) -> &InMemoryTierLimiter {
+        match tier {
+            RateLimitTier::Auth => &self.auth,
+            RateLimitTier::Standard => &self.standard,
+            RateLimitTier::Public => &self.public,
+        }
+    }
+
+    fn burst_size(&self, tier: RateLimitTier) -> u32 {
+        self.tier_limiter(tier).burst_size
+    }
+
+    fn check(&self, tier: RateLimitTier, ip: &IpAddr) -> (bool, u64, u64) {
+        self.tier_limiter(tier).check(ip)
+    }
+}
+
+/// Axum middleware for in-memory tiered rate limiting.
+pub async fn memory_rate_limit_middleware(
+    limiter: Arc<InMemoryRateLimiter>,
     behind_proxy: bool,
     req: Request<Body>,
     next: axum::middleware::Next,
 ) -> Response {
+    // CORS preflight exemption: OPTIONS bypass rate limiting
+    if req.method() == Method::OPTIONS {
+        return next.run(req).await;
+    }
+
     let ip = match extract_ip(&req, behind_proxy) {
         Some(ip) => ip,
-        None => {
-            // Can't determine client IP — allow through
-            return next.run(req).await;
-        }
+        None => return next.run(req).await,
     };
 
-    let (allowed, remaining, wait_time) = limiter.check_with_headers(&ip).await;
+    let tier = classify_path(req.uri().path());
+    let (allowed, remaining, window_secs) = limiter.check(tier, &ip);
 
     if allowed {
         let mut response = next.run(req).await;
-        if let Some(remaining) = remaining {
-            let headers = response.headers_mut();
-            headers.insert(
-                "x-ratelimit-remaining",
-                HeaderValue::from(remaining as u64),
-            );
-            headers.insert(
-                "x-ratelimit-limit",
-                HeaderValue::from(limiter.burst_size),
-            );
-        }
+        let headers = response.headers_mut();
+        headers.insert("x-ratelimit-remaining", HeaderValue::from(remaining));
+        headers.insert("x-ratelimit-limit", HeaderValue::from(limiter.burst_size(tier)));
         response
     } else {
         let mut headers = HeaderMap::new();
-        if let Some(wait) = wait_time {
-            let val = HeaderValue::from(wait);
-            headers.insert("x-ratelimit-after", val.clone());
-            headers.insert("retry-after", val);
-        }
+        let val = HeaderValue::from(window_secs);
+        headers.insert("x-ratelimit-after", val.clone());
+        headers.insert("retry-after", val);
         let mut response = (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
         response.headers_mut().extend(headers);
         response
     }
 }
 
+// --- Redis rate limiter ---
+
+#[cfg(feature = "redis")]
+mod redis_impl {
+    use super::*;
+    use redis::aio::ConnectionManager;
+    use redis::Script;
+
+    /// Redis-backed rate limiter for a single tier.
+    #[derive(Clone)]
+    pub struct RedisRateLimiter {
+        conn: ConnectionManager,
+        burst_size: u32,
+        window_secs: u64,
+        key_prefix: String,
+    }
+
+    impl RedisRateLimiter {
+        /// Connect to Redis and create a rate limiter.
+        pub async fn new(
+            redis_url: &str,
+            burst_size: u32,
+            window_secs: u64,
+        ) -> Result<Self, redis::RedisError> {
+            let client = redis::Client::open(redis_url)?;
+            let conn = ConnectionManager::new(client).await?;
+            Ok(Self {
+                conn,
+                burst_size,
+                window_secs,
+                key_prefix: "rate_limit".to_string(),
+            })
+        }
+
+        /// Create a rate limiter with a specific key prefix.
+        pub fn with_prefix(
+            conn: ConnectionManager,
+            burst_size: u32,
+            window_secs: u64,
+            key_prefix: String,
+        ) -> Self {
+            Self {
+                conn,
+                burst_size,
+                window_secs,
+                key_prefix,
+            }
+        }
+
+        /// Check if a request from the given IP is allowed.
+        ///
+        /// Returns `Ok(count)` with the current request count in the window,
+        /// or `Err` if Redis is unavailable.
+        pub async fn check(&self, ip: &IpAddr) -> Result<u64, redis::RedisError> {
+            let script = Script::new(
+                r"
+                local current = redis.call('INCR', KEYS[1])
+                if current == 1 then
+                    redis.call('EXPIRE', KEYS[1], ARGV[1])
+                end
+                return current
+                ",
+            );
+
+            let key = format!("{}:{}", self.key_prefix, ip);
+            let mut conn = self.conn.clone();
+            let count: u64 = script
+                .key(&key)
+                .arg(self.window_secs)
+                .invoke_async(&mut conn)
+                .await?;
+            Ok(count)
+        }
+
+        /// Returns true if the request count is within the burst limit.
+        pub async fn is_allowed(&self, ip: &IpAddr) -> bool {
+            match self.check(ip).await {
+                Ok(count) => count <= self.burst_size as u64,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Redis rate limiter unavailable, allowing request");
+                    true
+                }
+            }
+        }
+
+        /// Returns (allowed, remaining, wait_time) for rate limit headers.
+        pub async fn check_with_headers(
+            &self,
+            ip: &IpAddr,
+        ) -> (bool, Option<u64>, Option<u64>) {
+            match self.check(ip).await {
+                Ok(count) => {
+                    let allowed = count <= self.burst_size as u64;
+                    let remaining = if allowed {
+                        Some(self.burst_size as u64 - count)
+                    } else {
+                        Some(0)
+                    };
+                    let wait_time = if allowed { None } else { Some(self.window_secs) };
+                    (allowed, remaining, wait_time)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Redis rate limiter unavailable, allowing request");
+                    (true, None, None)
+                }
+            }
+        }
+    }
+
+    /// Tiered Redis-backed rate limiter.
+    #[derive(Clone)]
+    pub struct TieredRedisRateLimiter {
+        auth: RedisRateLimiter,
+        standard: RedisRateLimiter,
+        public: RedisRateLimiter,
+    }
+
+    impl TieredRedisRateLimiter {
+        /// Connect to Redis and create tiered rate limiters.
+        pub async fn new(
+            redis_url: &str,
+            tiers: &RateLimitTiersConfig,
+        ) -> Result<Self, redis::RedisError> {
+            let client = redis::Client::open(redis_url)?;
+            let conn = ConnectionManager::new(client).await?;
+            Ok(Self {
+                auth: RedisRateLimiter::with_prefix(
+                    conn.clone(),
+                    tiers.auth.requests,
+                    tiers.auth.window_secs,
+                    "rate:auth".to_string(),
+                ),
+                standard: RedisRateLimiter::with_prefix(
+                    conn.clone(),
+                    tiers.standard.requests,
+                    tiers.standard.window_secs,
+                    "rate:standard".to_string(),
+                ),
+                public: RedisRateLimiter::with_prefix(
+                    conn,
+                    tiers.public.requests,
+                    tiers.public.window_secs,
+                    "rate:public".to_string(),
+                ),
+            })
+        }
+
+        fn tier_limiter(&self, tier: RateLimitTier) -> &RedisRateLimiter {
+            match tier {
+                RateLimitTier::Auth => &self.auth,
+                RateLimitTier::Standard => &self.standard,
+                RateLimitTier::Public => &self.public,
+            }
+        }
+    }
+
+    /// Axum middleware for Redis-backed tiered rate limiting.
+    pub async fn redis_rate_limit_middleware(
+        limiter: Arc<TieredRedisRateLimiter>,
+        behind_proxy: bool,
+        req: Request<Body>,
+        next: axum::middleware::Next,
+    ) -> Response {
+        // CORS preflight exemption: OPTIONS bypass rate limiting
+        if req.method() == Method::OPTIONS {
+            return next.run(req).await;
+        }
+
+        let ip = match extract_ip(&req, behind_proxy) {
+            Some(ip) => ip,
+            None => return next.run(req).await,
+        };
+
+        let tier = classify_path(req.uri().path());
+        let tier_limiter = limiter.tier_limiter(tier);
+        let (allowed, remaining, wait_time) = tier_limiter.check_with_headers(&ip).await;
+
+        if allowed {
+            let mut response = next.run(req).await;
+            if let Some(remaining) = remaining {
+                let headers = response.headers_mut();
+                headers.insert("x-ratelimit-remaining", HeaderValue::from(remaining));
+                headers.insert("x-ratelimit-limit", HeaderValue::from(tier_limiter.burst_size));
+            }
+            response
+        } else {
+            let mut headers = HeaderMap::new();
+            if let Some(wait) = wait_time {
+                let val = HeaderValue::from(wait);
+                headers.insert("x-ratelimit-after", val.clone());
+                headers.insert("retry-after", val);
+            }
+            let mut response =
+                (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+            response.headers_mut().extend(headers);
+            response
+        }
+    }
+}
+
+#[cfg(feature = "redis")]
+pub use redis_impl::{RedisRateLimiter, TieredRedisRateLimiter, redis_rate_limit_middleware};
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Path classification tests ---
+
+    #[test]
+    fn classify_auth_endpoints() {
+        assert_eq!(classify_path("/oauth/token"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/oauth/authorize"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/setup"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/callback/google"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/auth/callback/github"), RateLimitTier::Auth);
+    }
+
+    #[test]
+    fn classify_public_endpoints() {
+        assert_eq!(classify_path("/health"), RateLimitTier::Public);
+        assert_eq!(classify_path("/.well-known/jwks.json"), RateLimitTier::Public);
+        assert_eq!(classify_path("/.well-known/openid-configuration"), RateLimitTier::Public);
+    }
+
+    #[test]
+    fn classify_standard_endpoints() {
+        assert_eq!(classify_path("/auth/me"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/auth/refresh"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/admin/users"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/admin/webhooks"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/oauth/consent"), RateLimitTier::Standard);
+        assert_eq!(classify_path("/oauth/revoke"), RateLimitTier::Standard);
+    }
+
+    // --- IP extraction tests ---
 
     #[test]
     fn extract_ip_direct() {
@@ -192,7 +446,6 @@ mod tests {
             .uri("/test")
             .body(())
             .unwrap();
-        // No ConnectInfo extension — returns None
         assert!(extract_ip(&req, false).is_none());
     }
 
@@ -203,7 +456,6 @@ mod tests {
             .header("x-forwarded-for", "203.0.113.50, 70.41.3.18, 150.172.238.178")
             .body(())
             .unwrap();
-        // When behind proxy, extract first IP from X-Forwarded-For
         let ip = extract_ip(&req, true).unwrap();
         assert_eq!(ip, "203.0.113.50".parse::<IpAddr>().unwrap());
     }
@@ -226,7 +478,61 @@ mod tests {
             .header("x-forwarded-for", "203.0.113.50")
             .body(())
             .unwrap();
-        // Not behind proxy — ignore proxy headers
         assert!(extract_ip(&req, false).is_none());
+    }
+
+    // --- In-memory rate limiter tests ---
+
+    #[test]
+    fn in_memory_limiter_allows_within_burst() {
+        let tiers = RateLimitTiersConfig::default();
+        let limiter = InMemoryRateLimiter::new(&tiers);
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+
+        // Auth tier has 15 requests/60s
+        for i in 1..=15 {
+            let (allowed, _, _) = limiter.check(RateLimitTier::Auth, &ip);
+            assert!(allowed, "request {i} should be allowed");
+        }
+        let (allowed, remaining, _) = limiter.check(RateLimitTier::Auth, &ip);
+        assert!(!allowed, "request 16 should be rate-limited");
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn in_memory_limiter_tiers_are_independent() {
+        let tiers = RateLimitTiersConfig::default();
+        let limiter = InMemoryRateLimiter::new(&tiers);
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+
+        // Exhaust auth tier
+        for _ in 0..15 {
+            limiter.check(RateLimitTier::Auth, &ip);
+        }
+        let (allowed, _, _) = limiter.check(RateLimitTier::Auth, &ip);
+        assert!(!allowed, "auth should be exhausted");
+
+        // Standard tier should still work
+        let (allowed, _, _) = limiter.check(RateLimitTier::Standard, &ip);
+        assert!(allowed, "standard should still be available");
+    }
+
+    #[test]
+    fn in_memory_limiter_different_ips_independent() {
+        let tiers = RateLimitTiersConfig::default();
+        let limiter = InMemoryRateLimiter::new(&tiers);
+        let ip1: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip2: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // Exhaust ip1's auth limit
+        for _ in 0..15 {
+            limiter.check(RateLimitTier::Auth, &ip1);
+        }
+        let (allowed, _, _) = limiter.check(RateLimitTier::Auth, &ip1);
+        assert!(!allowed);
+
+        // ip2 should still have its own limit
+        let (allowed, _, _) = limiter.check(RateLimitTier::Auth, &ip2);
+        assert!(allowed);
     }
 }

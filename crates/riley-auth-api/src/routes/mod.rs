@@ -1,22 +1,20 @@
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::http::Request;
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
-use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
-use tower_governor::GovernorLayer;
 
+use riley_auth_core::config::RateLimitTiersConfig;
 use riley_auth_core::error::Error;
 
 pub mod admin;
 pub mod auth;
 pub mod oauth_provider;
 
+use crate::rate_limit::{InMemoryRateLimiter, memory_rate_limit_middleware};
 use crate::server::AppState;
 
 #[derive(Serialize)]
@@ -25,19 +23,19 @@ struct HealthResponse {
     version: &'static str,
 }
 
-async fn health(State(_state): State<AppState>) -> Json<HealthResponse> {
+async fn health(axum::extract::State(_state): axum::extract::State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
     })
 }
 
-async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
     Json(state.keys.jwks())
 }
 
 /// OpenID Connect Discovery document (per OpenID Connect Discovery 1.0).
-async fn openid_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn openid_configuration(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
     let base = state.config.server.public_url.trim_end_matches('/');
     let mut scope_names: Vec<&str> = vec!["openid"];
     scope_names.extend(state.config.scopes.definitions.iter().map(|d| d.name.as_str()));
@@ -78,11 +76,25 @@ async fn require_csrf_header(
     Ok(next.run(request).await)
 }
 
-/// Build the application router.
+/// Build the base router without rate limiting (shared by all backends).
+fn base_router() -> Router<AppState> {
+    let csrf_protected = Router::new()
+        .merge(auth::router())
+        .merge(admin::router())
+        .layer(middleware::from_fn(require_csrf_header));
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/.well-known/jwks.json", get(jwks))
+        .route("/.well-known/openid-configuration", get(openid_configuration))
+        .merge(csrf_protected)
+        .merge(oauth_provider::router())
+}
+
+/// Build the application router with in-memory tiered rate limiting.
 ///
 /// When `behind_proxy` is true, rate limiting extracts client IP from
-/// `X-Forwarded-For` / `X-Real-IP` / `Forwarded` headers (falling back to
-/// peer IP). When false, rate limiting uses the peer IP directly.
+/// `X-Forwarded-For` / `X-Real-IP` headers (falling back to peer IP).
 ///
 /// # Security: proxy header spoofing
 ///
@@ -90,72 +102,27 @@ async fn require_csrf_header(
 /// append to) the `X-Forwarded-For` header with the actual peer IP.
 /// Otherwise, malicious clients can bypass rate limiting by sending a
 /// spoofed `X-Forwarded-For` header with a random IP.
-pub fn router(behind_proxy: bool) -> Router<AppState> {
-    router_with_rate_limit(behind_proxy, true)
+pub fn router(behind_proxy: bool, tiers: &RateLimitTiersConfig) -> Router<AppState> {
+    let limiter = Arc::new(InMemoryRateLimiter::new(tiers));
+    base_router().layer(middleware::from_fn(move |req, next| {
+        let limiter = limiter.clone();
+        memory_rate_limit_middleware(limiter, behind_proxy, req, next)
+    }))
 }
 
-/// Build the application router, optionally with rate limiting.
-pub fn router_with_rate_limit(behind_proxy: bool, rate_limit: bool) -> Router<AppState> {
-    // Cookie-authenticated routes get CSRF protection + rate limiting.
-    // The OAuth provider router (client-credential authenticated) is CSRF-exempt
-    // but still rate-limited.
-    let csrf_protected = Router::new()
-        .merge(auth::router())
-        .merge(admin::router())
-        .layer(middleware::from_fn(require_csrf_header));
-
-    let base = Router::new()
-        .route("/health", get(health))
-        .route("/.well-known/jwks.json", get(jwks))
-        .route("/.well-known/openid-configuration", get(openid_configuration))
-        .merge(csrf_protected)
-        .merge(oauth_provider::router());
-
-    if !rate_limit {
-        return base;
-    }
-
-    // Rate limiting: 30 requests per 60 seconds per IP (in-memory via tower_governor).
-    // Use proxy-aware extraction when behind a reverse proxy.
-    if behind_proxy {
-        let config = GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(30)
-            .key_extractor(SmartIpKeyExtractor)
-            .finish()
-            .expect("invalid rate limit config");
-        base.layer(GovernorLayer::new(Arc::new(config)))
-    } else {
-        let config = GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(30)
-            .finish()
-            .expect("invalid rate limit config");
-        base.layer(GovernorLayer::new(Arc::new(config)))
-    }
+/// Build the application router without rate limiting (for tests).
+pub fn router_without_rate_limit() -> Router<AppState> {
+    base_router()
 }
 
-/// Build the application router with Redis-backed rate limiting.
+/// Build the application router with Redis-backed tiered rate limiting.
 #[cfg(feature = "redis")]
 pub fn router_with_redis_rate_limit(
     behind_proxy: bool,
-    limiter: Arc<crate::rate_limit::RedisRateLimiter>,
+    limiter: Arc<crate::rate_limit::TieredRedisRateLimiter>,
 ) -> Router<AppState> {
-    let csrf_protected = Router::new()
-        .merge(auth::router())
-        .merge(admin::router())
-        .layer(middleware::from_fn(require_csrf_header));
-
-    let base = Router::new()
-        .route("/health", get(health))
-        .route("/.well-known/jwks.json", get(jwks))
-        .route("/.well-known/openid-configuration", get(openid_configuration))
-        .merge(csrf_protected)
-        .merge(oauth_provider::router());
-
-    let limiter_clone = limiter.clone();
-    base.layer(middleware::from_fn(move |req, next| {
-        let limiter = limiter_clone.clone();
+    base_router().layer(middleware::from_fn(move |req, next| {
+        let limiter = limiter.clone();
         crate::rate_limit::redis_rate_limit_middleware(limiter, behind_proxy, req, next)
     }))
 }

@@ -130,7 +130,7 @@ impl TestServer {
         };
 
         let app = axum::Router::new()
-            .merge(routes::router_with_rate_limit(false, false))
+            .merge(routes::router_without_rate_limit())
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .with_state(state);
 

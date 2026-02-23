@@ -130,6 +130,8 @@ pub struct RateLimitingConfig {
     #[serde(default = "default_rate_limit_backend")]
     pub backend: String,
     pub redis_url: Option<ConfigValue>,
+    #[serde(default)]
+    pub tiers: RateLimitTiersConfig,
 }
 
 impl Default for RateLimitingConfig {
@@ -137,8 +139,47 @@ impl Default for RateLimitingConfig {
         Self {
             backend: default_rate_limit_backend(),
             redis_url: None,
+            tiers: RateLimitTiersConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitTiersConfig {
+    #[serde(default = "default_auth_tier")]
+    pub auth: RateLimitTierConfig,
+    #[serde(default = "default_standard_tier")]
+    pub standard: RateLimitTierConfig,
+    #[serde(default = "default_public_tier")]
+    pub public: RateLimitTierConfig,
+}
+
+impl Default for RateLimitTiersConfig {
+    fn default() -> Self {
+        Self {
+            auth: default_auth_tier(),
+            standard: default_standard_tier(),
+            public: default_public_tier(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitTierConfig {
+    pub requests: u32,
+    pub window_secs: u64,
+}
+
+fn default_auth_tier() -> RateLimitTierConfig {
+    RateLimitTierConfig { requests: 15, window_secs: 60 }
+}
+
+fn default_standard_tier() -> RateLimitTierConfig {
+    RateLimitTierConfig { requests: 60, window_secs: 60 }
+}
+
+fn default_public_tier() -> RateLimitTierConfig {
+    RateLimitTierConfig { requests: 300, window_secs: 60 }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -244,6 +285,23 @@ impl Config {
             other => {
                 return Err(Error::Config(format!(
                     "unknown rate_limiting.backend: \"{other}\" (expected \"memory\" or \"redis\")"
+                )));
+            }
+        }
+        // Validate rate limit tiers
+        for (name, tier) in [
+            ("auth", &config.rate_limiting.tiers.auth),
+            ("standard", &config.rate_limiting.tiers.standard),
+            ("public", &config.rate_limiting.tiers.public),
+        ] {
+            if tier.requests == 0 {
+                return Err(Error::Config(format!(
+                    "rate_limiting.tiers.{name}.requests must be at least 1"
+                )));
+            }
+            if tier.window_secs == 0 {
+                return Err(Error::Config(format!(
+                    "rate_limiting.tiers.{name}.window_secs must be at least 1"
                 )));
             }
         }
@@ -372,6 +430,11 @@ public_key_path = "/tmp/public.pem"
         assert!(config.oauth.google.is_none());
         assert_eq!(config.rate_limiting.backend, "memory");
         assert!(config.rate_limiting.redis_url.is_none());
+        // Tier defaults
+        assert_eq!(config.rate_limiting.tiers.auth.requests, 15);
+        assert_eq!(config.rate_limiting.tiers.auth.window_secs, 60);
+        assert_eq!(config.rate_limiting.tiers.standard.requests, 60);
+        assert_eq!(config.rate_limiting.tiers.public.requests, 300);
     }
 
     #[test]
@@ -424,6 +487,11 @@ description = "Update your profile information"
 [rate_limiting]
 backend = "redis"
 redis_url = "redis://localhost:6379"
+
+[rate_limiting.tiers]
+auth = { requests = 10, window_secs = 30 }
+standard = { requests = 100, window_secs = 120 }
+public = { requests = 500, window_secs = 60 }
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.server.port, 9000);
@@ -439,6 +507,12 @@ redis_url = "redis://localhost:6379"
             config.rate_limiting.redis_url.as_ref().unwrap().resolve().unwrap(),
             "redis://localhost:6379"
         );
+        // Custom tiers
+        assert_eq!(config.rate_limiting.tiers.auth.requests, 10);
+        assert_eq!(config.rate_limiting.tiers.auth.window_secs, 30);
+        assert_eq!(config.rate_limiting.tiers.standard.requests, 100);
+        assert_eq!(config.rate_limiting.tiers.standard.window_secs, 120);
+        assert_eq!(config.rate_limiting.tiers.public.requests, 500);
     }
 
     #[test]

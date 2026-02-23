@@ -63,9 +63,11 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
                 .as_ref()
                 .expect("redis_url validated at config load")
                 .resolve()?;
-            let limiter = crate::rate_limit::RedisRateLimiter::new(&redis_url, 30, 60).await?;
+            let limiter =
+                crate::rate_limit::TieredRedisRateLimiter::new(&redis_url, &config.rate_limiting.tiers)
+                    .await?;
             let limiter = Arc::new(limiter);
-            tracing::info!("rate limiting backend: redis");
+            tracing::info!("rate limiting backend: redis (tiered)");
             routes::router_with_redis_rate_limit(behind_proxy, limiter)
         }
         #[cfg(not(feature = "redis"))]
@@ -76,8 +78,8 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
             );
         }
         _ => {
-            tracing::info!("rate limiting backend: in-memory");
-            routes::router(behind_proxy)
+            tracing::info!("rate limiting backend: in-memory (tiered)");
+            routes::router(behind_proxy, &config.rate_limiting.tiers)
         }
     };
 

@@ -30,7 +30,6 @@ hex = "0.4"
 url.workspace = true
 reqwest.workspace = true
 subtle = "2"
-tower_governor = "0.8"
 redis = { workspace = true, optional = true }
 
 [features]
