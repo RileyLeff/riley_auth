@@ -1585,9 +1585,10 @@ fn oidc_discovery_document() {
             serde_json::json!(["client_secret_post"])
         );
 
-        // Scopes from config
+        // Scopes: "openid" always present + config-defined scopes
         let scopes = doc["scopes_supported"].as_array().unwrap();
-        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes.len(), 3);
+        assert!(scopes.contains(&serde_json::json!("openid")));
         assert!(scopes.contains(&serde_json::json!("read:profile")));
         assert!(scopes.contains(&serde_json::json!("write:profile")));
     });
@@ -1885,6 +1886,89 @@ fn session_cannot_revoke_current() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
+fn session_revoke_nonexistent_returns_404() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        let (_, access_token, refresh_token) =
+            s.create_user_with_session("revoke404_user", "user").await;
+
+        let client = s.client();
+
+        // Try to revoke a session that doesn't exist
+        let resp = client
+            .delete(s.url("/auth/sessions/00000000-0000-7000-8000-000000000001"))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    });
+}
+
+#[test]
+#[ignore]
+fn session_refresh_populates_last_used_at() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, refresh_token) =
+            s.create_user_with_session("refresh_last_used", "user").await;
+
+        // Before refresh, last_used_at should be null
+        let resp = client
+            .get(s.url("/auth/sessions"))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        let sessions: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0]["last_used_at"].is_null(), "last_used_at should be null before refresh");
+
+        // Refresh the session
+        let resp = client
+            .post(s.url("/auth/refresh"))
+            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("x-requested-with", "test")
+            .header("user-agent", "TestBrowser/1.0")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Extract new tokens from Set-Cookie headers
+        let new_access = resp.cookies().find(|c| c.name() == "riley_auth_access")
+            .map(|c| c.value().to_string())
+            .expect("expected new access token cookie");
+        let new_refresh = resp.cookies().find(|c| c.name() == "riley_auth_refresh")
+            .map(|c| c.value().to_string())
+            .expect("expected new refresh token cookie");
+
+        // After refresh, the new session should have last_used_at set
+        let resp = client
+            .get(s.url("/auth/sessions"))
+            .header("cookie", format!("riley_auth_access={new_access}; riley_auth_refresh={new_refresh}"))
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        let sessions: Vec<serde_json::Value> = resp.json().await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(
+            sessions[0]["last_used_at"].as_str().is_some(),
+            "last_used_at should be set after refresh"
+        );
     });
 }
 

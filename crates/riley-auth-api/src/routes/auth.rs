@@ -183,7 +183,7 @@ async fn auth_callback(
 
         let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
         let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
-        let jar = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
+        let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
         return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
     }
 
@@ -260,7 +260,7 @@ async fn auth_setup(
     let jar = jar.remove(removal_cookie(SETUP_TOKEN_COOKIE, "/", &state.config));
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
     let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
-    let jar = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
+    let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
 
     Ok((jar, Json(user_to_me(&user))))
 }
@@ -297,7 +297,10 @@ async fn auth_refresh(
 
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
     let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
-    let jar = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
+    let (jar, new_hash) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
+
+    // Mark the new token as just used (session was actively refreshed)
+    db::touch_refresh_token(&state.db, &new_hash).await?;
 
     Ok((jar, StatusCode::OK))
 }
@@ -412,7 +415,7 @@ async fn revoke_session(
 
     let deleted = db::revoke_session(&state.db, session_uuid, user_id).await?;
     if !deleted {
-        return Err(Error::BadRequest("session not found".to_string()));
+        return Err(Error::NotFound);
     }
 
     Ok(StatusCode::OK)
@@ -763,19 +766,24 @@ fn validate_username(username: &str, config: &Config) -> Result<(), Error> {
 /// When `behind_proxy` is true, checks X-Forwarded-For and X-Real-IP headers
 /// first (the proxy must overwrite these with the real client IP).
 /// Falls back to the peer socket address.
+///
+/// The extracted value is validated through `std::net::IpAddr` to ensure only
+/// real IP addresses are stored. If parsing fails, falls back to peer address.
 fn extract_client_ip(headers: &HeaderMap, addr: SocketAddr, behind_proxy: bool) -> String {
     if behind_proxy {
+        // Try X-Forwarded-For first (first entry = original client)
         if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
             if let Some(first) = forwarded.split(',').next() {
                 let ip = first.trim();
-                if !ip.is_empty() {
+                if ip.parse::<std::net::IpAddr>().is_ok() {
                     return ip.to_string();
                 }
             }
         }
+        // Try X-Real-IP
         if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
             let ip = real_ip.trim();
-            if !ip.is_empty() {
+            if ip.parse::<std::net::IpAddr>().is_ok() {
                 return ip.to_string();
             }
         }
@@ -783,13 +791,15 @@ fn extract_client_ip(headers: &HeaderMap, addr: SocketAddr, behind_proxy: bool) 
     addr.ip().to_string()
 }
 
+/// Issue new access and refresh tokens, storing the refresh token in the DB.
+/// Returns the cookie jar and the new refresh token hash (for touch_refresh_token).
 async fn issue_tokens(
     state: &AppState,
     jar: CookieJar,
     user: &db::User,
     user_agent: Option<&str>,
     ip_address: Option<&str>,
-) -> Result<CookieJar, Error> {
+) -> Result<(CookieJar, String), Error> {
     let access_token = state.keys.sign_access_token(
         &state.config.jwt,
         &user.id.to_string(),
@@ -798,15 +808,18 @@ async fn issue_tokens(
         &state.config.jwt.issuer,
     )?;
 
+    // Truncate user_agent to prevent storage bloat from oversized headers
+    let ua_truncated = user_agent.map(|ua| if ua.len() > 512 { &ua[..512] } else { ua });
+
     let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
-    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], user_agent, ip_address).await?;
+    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], ua_truncated, ip_address).await?;
 
     let jar = jar
         .add(build_access_cookie(&access_token, &state.config))
         .add(build_refresh_cookie(&refresh_raw, &state.config));
 
-    Ok(jar)
+    Ok((jar, refresh_hash))
 }
 
 fn build_access_cookie(token: &str, config: &Config) -> Cookie<'static> {

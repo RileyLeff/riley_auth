@@ -39,9 +39,8 @@ async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
 /// OpenID Connect Discovery document (per OpenID Connect Discovery 1.0).
 async fn openid_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
     let base = state.config.server.public_url.trim_end_matches('/');
-    let scope_names: Vec<&str> = state.config.scopes.definitions.iter()
-        .map(|d| d.name.as_str())
-        .collect();
+    let mut scope_names: Vec<&str> = vec!["openid"];
+    scope_names.extend(state.config.scopes.definitions.iter().map(|d| d.name.as_str()));
 
     Json(serde_json::json!({
         "issuer": state.config.jwt.issuer,
