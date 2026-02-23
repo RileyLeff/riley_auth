@@ -72,3 +72,7 @@ This file records architectural tradeoffs flagged during review that are intenti
 ## Integration test coverage gaps
 **Flagged by**: Consensus Phase 8 R1 (minor)
 **Decision**: 21 tests cover happy paths and key security scenarios. Missing tests for rate limiting, PKCE failure, auth code replay, unlink/last-provider, admin self-deletion, expired refresh tokens. Tracked for future improvement.
+
+## Redirect URI scheme validation on client registration
+**Flagged by**: Claude Phase 8 R2 (minor)
+**Decision**: Admin-only operation. The admin is a trusted party who creates clients. Adding `https://` enforcement is good hygiene but not a security boundary issue. Noted for future improvement.

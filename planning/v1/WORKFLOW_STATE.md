@@ -1,8 +1,8 @@
 # v1 Workflow State
 
-**Current Phase:** Phase 8 — Integration Testing & Deploy
-**Current Step:** Phase 8 exhaustive review R2
-**Status:** Phase 8 R1 findings fixed. Running R2 for convergence.
+**Current Phase:** COMPLETE
+**Current Step:** N/A
+**Status:** All phases complete. Phase 8 exhaustive review converged (R2+R3 clean). Ready for user review.
 
 ## Progress
 
@@ -21,9 +21,11 @@
 | 8 | 8.4 | Example config | Done (3ab6772) |
 | 8 | 8.5 | Rate limiting | Done (de240ba) |
 | 8 | - | DB schema config | Done (c469b00) |
-| 8 | review-R1 | Phase 8 exhaustive review R1 (Claude+Gemini+Codex) | Done |
-| 8 | review-R1-fix | Fix: SQL injection, behind_proxy, Dockerfile, revoke logging | Done |
-| 8 | review-R2 | Phase 8 exhaustive review R2 | In Progress |
+| 8 | review-R1 | Phase 8 exhaustive R1 (Claude+Gemini+Codex) | Done |
+| 8 | review-R1-fix | Fix: SQL injection, behind_proxy, Dockerfile, revoke logging | Done (752b939) |
+| 8 | review-R2 | Phase 8 exhaustive R2 (Claude+Gemini) — CLEAN | Done |
+| 8 | review-R3 | Phase 8 exhaustive R3 (Claude+Gemini) — CLEAN | Done |
+| 8 | - | **CONVERGED** (2 consecutive clean rounds) | Done |
 
 ## Blockers
 
@@ -31,8 +33,7 @@ None.
 
 ## Recent Activity
 
-- Phase 8 R1: 3 models, 1 major (SQL injection via schema), 3 minor fixes
-- Fixed SQL injection via schema name validation
-- Wired `behind_proxy` to SmartIpKeyExtractor for rate limiting
-- Dockerfile now runs as non-root user (appuser)
-- Token revocation errors now logged via tracing::warn
+- Phase 8 R1: 1 major (SQL injection via schema) + 3 minor, all fixed (752b939)
+- Phase 8 R2: 0 new major, 0 actionable minor — clean
+- Phase 8 R3: 0 new major, 0 actionable minor — clean
+- Exhaustive review converged. Project complete.
