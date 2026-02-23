@@ -73,6 +73,13 @@ client_secret = "env:GITHUB_CLIENT_SECRET"
 # name = "write:profile"
 # description = "Update your profile information"
 
+# Optional: Webhook delivery tuning.
+# Omit for defaults (10 concurrent, 5 retry attempts).
+
+# [webhooks]
+# max_concurrent_deliveries = 10             # Max parallel outbound webhook requests (default: 10)
+# max_retry_attempts = 5                     # Retries before marking delivery as failed (default: 5)
+
 [usernames]
 min_length = 3                             # Minimum username length (default: 3)
 max_length = 24                            # Maximum username length (default: 24)

@@ -18,7 +18,7 @@ use riley_auth_api::routes;
 use riley_auth_api::server::AppState;
 use riley_auth_core::config::{
     Config, ConfigValue, DatabaseConfig, JwtConfig, OAuthProvidersConfig, RateLimitingConfig,
-    ScopeDefinition, ScopesConfig, ServerConfig, UsernameConfig,
+    ScopeDefinition, ScopesConfig, ServerConfig, UsernameConfig, WebhooksConfig,
 };
 use riley_auth_core::db;
 use riley_auth_core::jwt::{self, Keys};
@@ -117,6 +117,7 @@ impl TestServer {
                 ],
             },
             rate_limiting: RateLimitingConfig::default(),
+            webhooks: WebhooksConfig::default(),
         };
 
         let cookie_names = riley_auth_api::server::CookieNames::from_prefix(&config.server.cookie_prefix);

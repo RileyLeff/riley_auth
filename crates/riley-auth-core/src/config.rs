@@ -19,6 +19,8 @@ pub struct Config {
     pub scopes: ScopesConfig,
     #[serde(default)]
     pub rate_limiting: RateLimitingConfig,
+    #[serde(default)]
+    pub webhooks: WebhooksConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,6 +140,26 @@ impl Default for RateLimitingConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhooksConfig {
+    #[serde(default = "default_max_concurrent_deliveries")]
+    pub max_concurrent_deliveries: usize,
+    #[serde(default = "default_max_retry_attempts")]
+    pub max_retry_attempts: u32,
+}
+
+impl Default for WebhooksConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_deliveries: default_max_concurrent_deliveries(),
+            max_retry_attempts: default_max_retry_attempts(),
+        }
+    }
+}
+
+fn default_max_concurrent_deliveries() -> usize { 10 }
+fn default_max_retry_attempts() -> u32 { 5 }
 
 /// Validate that a scope name uses only safe characters.
 /// Allowed: lowercase ASCII letters, digits, colons, dots, underscores, hyphens.
