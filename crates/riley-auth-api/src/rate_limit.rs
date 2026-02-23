@@ -4,7 +4,8 @@
 //! applies per-tier rate limits. Supports in-memory and Redis backends.
 //!
 //! OPTIONS requests bypass rate limiting entirely to avoid breaking CORS
-//! preflights (429 responses lack CORS headers, causing browser failures).
+//! preflights (browsers treat 429 on preflight as a network error regardless
+//! of CORS headers).
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -240,7 +241,10 @@ pub async fn memory_rate_limit_middleware(
 
     let ip = match extract_ip(&req, behind_proxy) {
         Some(ip) => ip,
-        None => return next.run(req).await,
+        None => {
+            tracing::warn!("rate limiter: could not extract client IP, bypassing rate limit");
+            return next.run(req).await;
+        }
     };
 
     let tier = classify_path(req.uri().path());
@@ -254,12 +258,14 @@ pub async fn memory_rate_limit_middleware(
         response
     } else {
         let mut response = Error::RateLimited.into_response();
-        let headers = response.headers_mut();
-        let val = HeaderValue::from(retry_after);
-        headers.insert("x-ratelimit-after", val.clone());
-        headers.insert("retry-after", val);
+        headers_insert_retry_after(response.headers_mut(), retry_after);
         response
     }
+}
+
+/// Insert retry-after header on a rate-limited response.
+fn headers_insert_retry_after(headers: &mut axum::http::HeaderMap, retry_after: u64) {
+    headers.insert("retry-after", HeaderValue::from(retry_after));
 }
 
 // --- Redis rate limiter ---
@@ -439,7 +445,10 @@ mod redis_impl {
 
         let ip = match extract_ip(&req, behind_proxy) {
             Some(ip) => ip,
-            None => return next.run(req).await,
+            None => {
+                tracing::warn!("rate limiter: could not extract client IP, bypassing rate limit");
+                return next.run(req).await;
+            }
         };
 
         let tier = classify_path(req.uri().path());
@@ -456,11 +465,8 @@ mod redis_impl {
             response
         } else {
             let mut response = Error::RateLimited.into_response();
-            let headers = response.headers_mut();
             if let Some(wait) = retry_after {
-                let val = HeaderValue::from(wait);
-                headers.insert("x-ratelimit-after", val.clone());
-                headers.insert("retry-after", val);
+                headers_insert_retry_after(response.headers_mut(), wait);
             }
             response
         }
