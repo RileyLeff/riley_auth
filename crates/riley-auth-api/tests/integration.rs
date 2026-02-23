@@ -3239,6 +3239,57 @@ fn cleanup_expired_tokens_removes_old() {
 
 #[test]
 #[ignore]
+fn cleanup_expired_auth_codes_removes_old() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        let (user, _, _) = s.create_user_with_session("authcodecleanup", "user").await;
+
+        // Register a client (needed for FK)
+        let secret_hash = jwt::hash_token("cleanup-secret");
+        let client = db::create_client(
+            &s.db, "Cleanup Client", "cleanup-client-id", &secret_hash,
+            &["https://cleanup.example.com/callback".to_string()],
+            &[], false,
+        ).await.unwrap();
+
+        // Insert an expired auth code
+        sqlx::query(
+            "INSERT INTO authorization_codes (code_hash, user_id, client_id, redirect_uri, expires_at)
+             VALUES ('expired-code', $1, $2, 'https://cleanup.example.com/callback', now() - interval '1 hour')"
+        )
+        .bind(user.id)
+        .bind(client.id)
+        .execute(&s.db)
+        .await
+        .unwrap();
+
+        // Insert a valid auth code
+        sqlx::query(
+            "INSERT INTO authorization_codes (code_hash, user_id, client_id, redirect_uri, expires_at)
+             VALUES ('valid-code', $1, $2, 'https://cleanup.example.com/callback', now() + interval '1 hour')"
+        )
+        .bind(user.id)
+        .bind(client.id)
+        .execute(&s.db)
+        .await
+        .unwrap();
+
+        let deleted = db::cleanup_expired_auth_codes(&s.db).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Valid code should still exist
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM authorization_codes WHERE code_hash = 'valid-code'")
+            .fetch_one(&s.db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1);
+    });
+}
+
+#[test]
+#[ignore]
 fn cleanup_consumed_tokens_respects_cutoff() {
     let s = server();
     runtime().block_on(async {

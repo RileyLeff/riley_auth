@@ -288,6 +288,17 @@ impl Config {
         for def in &config.scopes.definitions {
             validate_scope_name(&def.name)?;
         }
+        // Validate maintenance config
+        if config.maintenance.cleanup_interval_secs == 0 {
+            return Err(Error::Config(
+                "maintenance.cleanup_interval_secs must be at least 1".to_string(),
+            ));
+        }
+        if config.maintenance.webhook_delivery_retention_days == 0 {
+            return Err(Error::Config(
+                "maintenance.webhook_delivery_retention_days must be at least 1".to_string(),
+            ));
+        }
         // Validate webhook config
         if config.webhooks.max_concurrent_deliveries == 0 {
             return Err(Error::Config(
