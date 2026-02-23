@@ -44,7 +44,6 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "issuer": state.config.jwt.issuer,
         "authorization_endpoint": format!("{base}/oauth/authorize"),
         "token_endpoint": format!("{base}/oauth/token"),
-        "userinfo_endpoint": format!("{base}/auth/me"),
         "jwks_uri": format!("{base}/.well-known/jwks.json"),
         "revocation_endpoint": format!("{base}/oauth/revoke"),
         "response_types_supported": ["code"],

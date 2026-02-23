@@ -109,7 +109,7 @@ pub enum Error {
 struct ErrorBody {
     error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
+    error_description: Option<String>,
 }
 
 impl Error {
@@ -191,7 +191,7 @@ impl IntoResponse for Error {
         let status = self.status_code();
 
         // Log internal errors, don't expose details to client
-        let detail = if status.is_server_error() {
+        let error_description = if status.is_server_error() {
             tracing::error!(error = %self, "internal error");
             None
         } else {
@@ -200,7 +200,7 @@ impl IntoResponse for Error {
 
         let body = ErrorBody {
             error: self.error_code().to_string(),
-            detail,
+            error_description,
         };
 
         (status, axum::Json(body)).into_response()

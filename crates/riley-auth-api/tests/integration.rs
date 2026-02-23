@@ -1286,7 +1286,7 @@ fn last_admin_protection() {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert!(body["detail"].as_str().unwrap().contains("last admin"));
+        assert!(body["error_description"].as_str().unwrap().contains("last admin"));
     });
 }
 
@@ -1955,12 +1955,6 @@ fn oidc_discovery_document() {
         assert!(scopes.contains(&serde_json::json!("openid")));
         assert!(scopes.contains(&serde_json::json!("read:profile")));
         assert!(scopes.contains(&serde_json::json!("write:profile")));
-
-        // userinfo_endpoint
-        assert_eq!(
-            doc["userinfo_endpoint"],
-            "http://localhost:3000/auth/me"
-        );
 
         // claims_supported
         assert_eq!(
