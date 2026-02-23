@@ -40,12 +40,18 @@ pub fn is_valid_event_type(event_type: &str) -> bool {
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Compute HMAC-SHA256 of `payload` using `secret`, returned as a hex string.
-pub fn sign_payload(secret: &str, payload: &[u8]) -> String {
+/// Compute HMAC-SHA256 of `"{timestamp}.{payload}"` using `secret`.
+///
+/// Returns the signature header value in the format `t={timestamp},sha256={hex}`.
+/// Consumers can parse the timestamp to reject stale deliveries (replay protection).
+pub fn sign_payload(secret: &str, payload: &[u8], timestamp: i64) -> String {
     let mut mac =
         HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
     mac.update(payload);
-    hex::encode(mac.finalize().into_bytes())
+    let hex_sig = hex::encode(mac.finalize().into_bytes());
+    format!("t={timestamp},sha256={hex_sig}")
 }
 
 // --- Dispatch (outbox-based) ---
@@ -133,7 +139,8 @@ pub async fn deliver_outbox_entry(
         "data": entry.payload,
     });
     let body_bytes = serde_json::to_vec(&body).expect("JSON serialization cannot fail");
-    let signature = sign_payload(&webhook.secret, &body_bytes);
+    let timestamp = chrono::Utc::now().timestamp();
+    let signature = sign_payload(&webhook.secret, &body_bytes, timestamp);
 
     let result = client
         .post(&webhook.url)
@@ -342,15 +349,25 @@ mod tests {
 
     #[test]
     fn test_sign_payload() {
-        let sig = sign_payload("test-secret", b"hello world");
-        // Deterministic — same input always produces same output
-        assert_eq!(sig, sign_payload("test-secret", b"hello world"));
+        let ts = 1700000000i64;
+        let sig = sign_payload("test-secret", b"hello world", ts);
+
+        // Format: t={timestamp},sha256={hex}
+        assert!(sig.starts_with("t=1700000000,sha256="), "wrong format: {sig}");
+        let hex_part = sig.strip_prefix("t=1700000000,sha256=").unwrap();
+        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()), "hex part should be hex");
+
+        // Deterministic — same inputs produce same output
+        assert_eq!(sig, sign_payload("test-secret", b"hello world", ts));
+
         // Different secret → different signature
-        assert_ne!(sig, sign_payload("other-secret", b"hello world"));
+        assert_ne!(sig, sign_payload("other-secret", b"hello world", ts));
+
         // Different payload → different signature
-        assert_ne!(sig, sign_payload("test-secret", b"goodbye"));
-        // Output is hex-encoded
-        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(sig, sign_payload("test-secret", b"goodbye", ts));
+
+        // Different timestamp → different signature
+        assert_ne!(sig, sign_payload("test-secret", b"hello world", ts + 1));
     }
 
     #[test]

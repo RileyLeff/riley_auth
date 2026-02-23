@@ -3889,3 +3889,85 @@ fn refresh_scope_downscoping() {
         assert_eq!(err["error"], "invalid_scope");
     });
 }
+
+#[test]
+#[ignore]
+fn webhook_signature_includes_timestamp() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Start a local TCP listener to capture the webhook delivery
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let webhook_url = format!("http://127.0.0.1:{port}/hook");
+
+        // Register a webhook pointing to our local listener
+        let _webhook = db::create_webhook(
+            &s.db,
+            None,
+            &webhook_url,
+            &["user.created".to_string()],
+            "replay-test-secret",
+        )
+        .await
+        .unwrap();
+
+        // Dispatch event
+        riley_auth_core::webhooks::dispatch_event(
+            &s.db,
+            "user.created",
+            serde_json::json!({ "user_id": "sig-test-user" }),
+            s.config.webhooks.max_retry_attempts,
+        ).await;
+
+        // Claim and deliver the outbox entry
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+
+        // Accept the incoming connection in background
+        let accept_handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+
+            // Send a 200 response
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+            tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes()).await.unwrap();
+
+            request
+        });
+
+        // Deliver (allow private IPs since we're using localhost)
+        let http_client = reqwest::Client::new();
+        let result = riley_auth_core::webhooks::deliver_outbox_entry(
+            &s.db, &http_client, &entries[0], false,
+        ).await;
+        assert!(result.is_ok(), "delivery should succeed: {:?}", result);
+
+        // Inspect the captured request
+        let request = accept_handle.await.unwrap();
+
+        // Find the X-Webhook-Signature header
+        let sig_line = request
+            .lines()
+            .find(|l| l.to_lowercase().starts_with("x-webhook-signature:"))
+            .expect("X-Webhook-Signature header missing");
+        let sig_value = sig_line.split_once(':').unwrap().1.trim();
+
+        // Verify format: t={digits},sha256={hex}
+        assert!(sig_value.starts_with("t="), "signature should start with t=: {sig_value}");
+        assert!(sig_value.contains(",sha256="), "signature should contain sha256=: {sig_value}");
+
+        let parts: Vec<&str> = sig_value.splitn(2, ',').collect();
+        let ts_str = parts[0].strip_prefix("t=").unwrap();
+        let ts: i64 = ts_str.parse().expect("timestamp should be numeric");
+        let now = chrono::Utc::now().timestamp();
+        assert!((now - ts).abs() < 10, "timestamp should be recent (within 10s)");
+
+        let hex_part = parts[1].strip_prefix("sha256=").unwrap();
+        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()), "hash should be hex");
+        assert_eq!(hex_part.len(), 64, "SHA-256 hex should be 64 chars");
+    });
+}
