@@ -2590,7 +2590,7 @@ fn webhook_delivery_recorded_on_event() {
         // Manually process the outbox entry (simulating the delivery worker)
         let http_client = reqwest::Client::new();
         let result = riley_auth_core::webhooks::deliver_outbox_entry(
-            &s.db, &http_client, entry,
+            &s.db, &http_client, entry, false,
         ).await;
 
         // Delivery should fail since the URL is unreachable
@@ -2786,7 +2786,7 @@ fn outbox_max_attempts_marks_failed() {
 
         // Deliver to unreachable URL — will fail
         let http_client = reqwest::Client::new();
-        let result = riley_auth_core::webhooks::deliver_outbox_entry(&s.db, &http_client, entry).await;
+        let result = riley_auth_core::webhooks::deliver_outbox_entry(&s.db, &http_client, entry, false).await;
         assert!(result.is_err());
 
         // Since attempts (0) + 1 >= max_attempts (1), mark as failed
@@ -3367,5 +3367,96 @@ fn cleanup_webhook_deliveries_respects_retention() {
         .await
         .unwrap();
         assert_eq!(count.0, 1);
+    });
+}
+
+// --- SSRF protection tests ---
+
+#[test]
+#[ignore]
+fn ssrf_safe_client_blocks_localhost_delivery() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Register a webhook pointing to localhost
+        let webhook = db::create_webhook(
+            &s.db,
+            None,
+            "http://127.0.0.1:1/hook",
+            &["user.created".to_string()],
+            "test-secret",
+        )
+        .await
+        .unwrap();
+
+        // Enqueue an event
+        riley_auth_core::webhooks::dispatch_event(
+            &s.db,
+            "user.created",
+            serde_json::json!({ "user_id": "test" }),
+            s.config.webhooks.max_retry_attempts,
+        ).await;
+
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert!(!entries.is_empty());
+
+        // Build SSRF-safe client (allow_private_ips = false) + block_private_ips = true
+        let ssrf_client = riley_auth_core::webhooks::build_webhook_client(false);
+        let result = riley_auth_core::webhooks::deliver_outbox_entry(
+            &s.db, &ssrf_client, &entries[0], true,
+        ).await;
+
+        // Should fail with private IP error
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("private") || err.contains("reserved"),
+            "error should mention private/reserved IP, got: {err}"
+        );
+    });
+}
+
+#[test]
+#[ignore]
+fn ssrf_allow_private_ips_permits_localhost() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Register a webhook pointing to localhost (unreachable port, but DNS resolves)
+        let webhook = db::create_webhook(
+            &s.db,
+            None,
+            "http://127.0.0.1:1/hook",
+            &["user.created".to_string()],
+            "test-secret",
+        )
+        .await
+        .unwrap();
+
+        riley_auth_core::webhooks::dispatch_event(
+            &s.db,
+            "user.created",
+            serde_json::json!({ "user_id": "test" }),
+            s.config.webhooks.max_retry_attempts,
+        ).await;
+
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert!(!entries.is_empty());
+
+        // Build permissive client (allow_private_ips = true) + block_private_ips = false
+        let permissive_client = riley_auth_core::webhooks::build_webhook_client(true);
+        let result = riley_auth_core::webhooks::deliver_outbox_entry(
+            &s.db, &permissive_client, &entries[0], false,
+        ).await;
+
+        // Should fail with connection error (not SSRF error) — port 1 is unreachable
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            !err.contains("private") && !err.contains("reserved"),
+            "error should be a connection error, not SSRF block, got: {err}"
+        );
     });
 }

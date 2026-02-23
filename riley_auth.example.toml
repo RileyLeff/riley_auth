@@ -74,11 +74,13 @@ client_secret = "env:GITHUB_CLIENT_SECRET"
 # description = "Update your profile information"
 
 # Optional: Webhook delivery tuning.
-# Omit for defaults (10 concurrent, 5 retry attempts).
+# Omit for defaults (10 concurrent, 5 retry attempts, private IPs blocked).
 
 # [webhooks]
 # max_concurrent_deliveries = 10             # Max parallel outbound webhook requests (default: 10)
 # max_retry_attempts = 5                     # Retries before marking delivery as failed (default: 5)
+# allow_private_ips = false                  # Allow delivery to private/loopback IPs (default: false)
+                                             # Set to true for development/testing with local webhook receivers
 
 # Optional: Rate limiting tier configuration.
 # Three tiers: auth (sensitive endpoints), standard (general API), public (discovery/health).

@@ -84,7 +84,10 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     };
 
     let cookie_names = CookieNames::from_prefix(&config.server.cookie_prefix);
-    let http_client = reqwest::Client::new();
+    let http_client = webhooks::build_webhook_client(config.webhooks.allow_private_ips);
+    if !config.webhooks.allow_private_ips {
+        tracing::info!("SSRF protection enabled for webhook delivery");
+    }
     let config = Arc::new(config);
     let state = AppState {
         config: Arc::clone(&config),
@@ -105,10 +108,12 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
 
     // Start the webhook delivery worker
     let delivery_shutdown = shutdown_rx.clone();
+    let block_private_ips = !config.webhooks.allow_private_ips;
     let worker_handle = tokio::spawn(webhooks::delivery_worker(
         db.clone(),
         http_client,
         config.webhooks.max_concurrent_deliveries,
+        block_private_ips,
         delivery_shutdown,
     ));
 

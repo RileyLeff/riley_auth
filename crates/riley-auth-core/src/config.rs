@@ -190,6 +190,10 @@ pub struct WebhooksConfig {
     pub max_concurrent_deliveries: usize,
     #[serde(default = "default_max_retry_attempts")]
     pub max_retry_attempts: u32,
+    /// When false (default), webhook delivery blocks URLs that resolve to
+    /// private/loopback/link-local IP addresses (SSRF protection).
+    #[serde(default)]
+    pub allow_private_ips: bool,
 }
 
 impl Default for WebhooksConfig {
@@ -197,6 +201,7 @@ impl Default for WebhooksConfig {
         Self {
             max_concurrent_deliveries: default_max_concurrent_deliveries(),
             max_retry_attempts: default_max_retry_attempts(),
+            allow_private_ips: false,
         }
     }
 }

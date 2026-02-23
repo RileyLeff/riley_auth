@@ -1,3 +1,4 @@
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use hmac::{Hmac, Mac};
@@ -76,14 +77,38 @@ pub async fn dispatch_event_for_client(
     }
 }
 
+/// Check whether a webhook URL's host is a private IP literal.
+///
+/// This complements the `SsrfSafeResolver` (which blocks hostnames that resolve
+/// to private IPs) by catching direct IP literal URLs like `http://127.0.0.1/`.
+fn check_url_ip_literal(url: &str) -> std::result::Result<(), String> {
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(host) = parsed.host_str() {
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                if is_private_ip(&ip) {
+                    return Err(format!(
+                        "webhook URL resolved to private/reserved IP: {ip}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Deliver a single outbox entry. Called by the background worker.
 ///
 /// Returns `Ok(())` on successful delivery, `Err(message)` on failure.
 /// Returns `Err("permanent:...")` for non-retryable errors (deleted/inactive webhook).
+///
+/// When `block_private_ips` is true, URLs with private IP literals are rejected
+/// before any network request is made. Hostname-based URLs are protected by the
+/// `SsrfSafeResolver` on the client instead.
 pub async fn deliver_outbox_entry(
     pool: &PgPool,
     client: &reqwest::Client,
     entry: &db::OutboxEntry,
+    block_private_ips: bool,
 ) -> std::result::Result<(), String> {
     // Look up the webhook to get URL and secret
     let webhook = db::find_webhook(pool, entry.webhook_id)
@@ -93,6 +118,11 @@ pub async fn deliver_outbox_entry(
 
     if !webhook.active {
         return Err("permanent: webhook is inactive".to_string());
+    }
+
+    // SSRF check: block private IP literals in the URL
+    if block_private_ips {
+        check_url_ip_literal(&webhook.url)?;
     }
 
     let body = serde_json::json!({
@@ -150,6 +180,7 @@ pub async fn delivery_worker(
     pool: PgPool,
     client: reqwest::Client,
     max_concurrent: usize,
+    block_private_ips: bool,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
@@ -192,7 +223,7 @@ pub async fn delivery_worker(
 
             tokio::spawn(async move {
                 let entry_id = entry.id;
-                let result = deliver_outbox_entry(&pool, &client, &entry).await;
+                let result = deliver_outbox_entry(&pool, &client, &entry, block_private_ips).await;
 
                 match result {
                     Ok(()) => {
@@ -223,6 +254,76 @@ pub async fn delivery_worker(
     info!("webhook delivery worker stopped");
 }
 
+// --- SSRF protection ---
+
+/// Check whether an IP address is in a private/reserved range that should be
+/// blocked for SSRF protection.
+pub fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()       // 127.0.0.0/8
+            || v4.is_private()     // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+            || v4.is_link_local()  // 169.254.0.0/16
+            || v4.is_broadcast()   // 255.255.255.255
+            || v4.is_unspecified() // 0.0.0.0
+            || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // 100.64.0.0/10 (CGNAT)
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()       // ::1
+            || v6.is_unspecified() // ::
+            || (v6.segments()[0] & 0xFE00) == 0xFC00  // fc00::/7 (unique local)
+            || (v6.segments()[0] & 0xFFC0) == 0xFE80  // fe80::/10 (link-local)
+        }
+    }
+}
+
+/// DNS resolver that blocks private/reserved IPs (SSRF protection).
+///
+/// Used as a `reqwest::dns::Resolve` implementation to prevent webhook
+/// delivery to internal network addresses.
+pub struct SsrfSafeResolver;
+
+impl reqwest::dns::Resolve for SsrfSafeResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
+                .collect();
+
+            for addr in &addrs {
+                if is_private_ip(&addr.ip()) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "webhook URL resolved to private/reserved IP: {}",
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Build a `reqwest::Client` for webhook delivery.
+///
+/// When `allow_private_ips` is false, uses `SsrfSafeResolver` to block
+/// delivery to private/loopback addresses.
+pub fn build_webhook_client(allow_private_ips: bool) -> reqwest::Client {
+    if allow_private_ips {
+        reqwest::Client::new()
+    } else {
+        reqwest::Client::builder()
+            .dns_resolver(Arc::new(SsrfSafeResolver))
+            .build()
+            .expect("failed to build SSRF-safe HTTP client")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +347,43 @@ mod tests {
         assert!(is_valid_event_type("link.deleted"));
         assert!(!is_valid_event_type("user.nonexistent"));
         assert!(!is_valid_event_type(""));
+    }
+
+    #[test]
+    fn is_private_ip_blocks_private_ranges() {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        // IPv4 private ranges
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));   // loopback
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));    // 10.0.0.0/8
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));  // 172.16.0.0/12
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)))); // 192.168.0.0/16
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)))); // link-local
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));     // unspecified
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)))); // broadcast
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));  // CGNAT
+
+        // IPv6 private ranges
+        assert!(is_private_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));           // ::1
+        assert!(is_private_ip(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));         // ::
+        assert!(is_private_ip(&IpAddr::V6("fc00::1".parse().unwrap())));    // unique local
+        assert!(is_private_ip(&IpAddr::V6("fd12::1".parse().unwrap())));    // unique local
+        assert!(is_private_ip(&IpAddr::V6("fe80::1".parse().unwrap())));    // link-local
+    }
+
+    #[test]
+    fn is_private_ip_allows_public_ips() {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));     // Google DNS
+        assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));     // Cloudflare
+        assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)))); // example.com
+        assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(172, 15, 255, 255)))); // just outside 172.16/12
+        assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(172, 32, 0, 0))));   // just outside 172.16/12
+        assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(100, 63, 255, 255)))); // just outside CGNAT
+
+        assert!(!is_private_ip(&IpAddr::V6("2001:db8::1".parse().unwrap())));
+        assert!(!is_private_ip(&IpAddr::V6("2607:f8b0:4004:800::200e".parse().unwrap()))); // Google
     }
 }
