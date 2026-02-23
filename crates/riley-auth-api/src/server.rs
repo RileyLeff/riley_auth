@@ -40,9 +40,13 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     tracing::info!(%addr, "starting server");
     let listener = TcpListener::bind(addr).await?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Use into_make_service_with_connect_info so tower_governor can extract peer IP
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }

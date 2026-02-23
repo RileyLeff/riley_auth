@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::extract::State;
 use axum::http::Request;
 use axum::middleware::{self, Next};
@@ -5,6 +7,8 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::GovernorLayer;
 
 use riley_auth_core::error::Error;
 
@@ -53,8 +57,17 @@ async fn require_csrf_header(
 
 /// Build the application router.
 pub fn router() -> Router<AppState> {
-    // Cookie-authenticated routes get CSRF protection.
-    // The OAuth provider router (client-credential authenticated) is exempt.
+    // Rate limiting: 30 requests per 60 seconds per IP on auth endpoints.
+    // Prevents brute-force attacks on login, token exchange, and setup flows.
+    let rate_limit_config = GovernorConfigBuilder::default()
+        .per_second(2)
+        .burst_size(30)
+        .finish()
+        .expect("invalid rate limit config");
+
+    // Cookie-authenticated routes get CSRF protection + rate limiting.
+    // The OAuth provider router (client-credential authenticated) is CSRF-exempt
+    // but still rate-limited.
     let csrf_protected = Router::new()
         .merge(auth::router())
         .merge(admin::router())
@@ -65,4 +78,5 @@ pub fn router() -> Router<AppState> {
         .route("/.well-known/jwks.json", get(jwks))
         .merge(csrf_protected)
         .merge(oauth_provider::router())
+        .layer(GovernorLayer::new(Arc::new(rate_limit_config)))
 }
