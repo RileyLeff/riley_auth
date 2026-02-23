@@ -17,8 +17,8 @@ use reqwest::{Client, StatusCode};
 use riley_auth_api::routes;
 use riley_auth_api::server::AppState;
 use riley_auth_core::config::{
-    Config, ConfigValue, DatabaseConfig, JwtConfig, OAuthProvidersConfig, RateLimitingConfig,
-    ScopeDefinition, ScopesConfig, ServerConfig, UsernameConfig, WebhooksConfig,
+    Config, ConfigValue, DatabaseConfig, JwtConfig, MaintenanceConfig, OAuthProvidersConfig,
+    RateLimitingConfig, ScopeDefinition, ScopesConfig, ServerConfig, UsernameConfig, WebhooksConfig,
 };
 use riley_auth_core::db;
 use riley_auth_core::jwt::{self, Keys};
@@ -115,6 +115,7 @@ impl TestServer {
             },
             rate_limiting: RateLimitingConfig::default(),
             webhooks: WebhooksConfig::default(),
+            maintenance: MaintenanceConfig::default(),
         };
 
         let cookie_names = riley_auth_api::server::CookieNames::from_prefix(&config.server.cookie_prefix);
@@ -3190,5 +3191,130 @@ fn oauth_pkce_wrong_verifier_rejected() {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["error"], "invalid_grant");
+    });
+}
+
+// --- Cleanup tests ---
+
+#[test]
+#[ignore]
+fn cleanup_expired_tokens_removes_old() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        let (user, _, _) = s.create_user_with_session("cleanupuser", "user").await;
+
+        // Insert a refresh token that's already expired
+        sqlx::query(
+            "INSERT INTO refresh_tokens (token_hash, user_id, family_id, scopes, expires_at)
+             VALUES ('expired-hash', $1, gen_random_uuid(), ARRAY[]::text[], now() - interval '1 hour')"
+        )
+        .bind(user.id)
+        .execute(&s.db)
+        .await
+        .unwrap();
+
+        // Insert a valid (non-expired) refresh token
+        sqlx::query(
+            "INSERT INTO refresh_tokens (token_hash, user_id, family_id, scopes, expires_at)
+             VALUES ('valid-hash', $1, gen_random_uuid(), ARRAY[]::text[], now() + interval '1 hour')"
+        )
+        .bind(user.id)
+        .execute(&s.db)
+        .await
+        .unwrap();
+
+        let deleted = db::cleanup_expired_tokens(&s.db).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Valid token should still exist
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM refresh_tokens WHERE token_hash = 'valid-hash'")
+            .fetch_one(&s.db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1);
+    });
+}
+
+#[test]
+#[ignore]
+fn cleanup_consumed_tokens_respects_cutoff() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Insert an old consumed token (60 days ago)
+        sqlx::query(
+            "INSERT INTO consumed_refresh_tokens (token_hash, family_id, consumed_at)
+             VALUES ('old-consumed', gen_random_uuid(), now() - interval '60 days')"
+        )
+        .execute(&s.db)
+        .await
+        .unwrap();
+
+        // Insert a recent consumed token (1 hour ago)
+        sqlx::query(
+            "INSERT INTO consumed_refresh_tokens (token_hash, family_id, consumed_at)
+             VALUES ('recent-consumed', gen_random_uuid(), now() - interval '1 hour')"
+        )
+        .execute(&s.db)
+        .await
+        .unwrap();
+
+        // Cutoff at 30 days ago — should only delete the old one
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(30);
+        let deleted = db::cleanup_consumed_refresh_tokens(&s.db, cutoff).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Recent one should still exist
+        let count: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM consumed_refresh_tokens WHERE token_hash = 'recent-consumed'"
+        )
+        .fetch_one(&s.db)
+        .await
+        .unwrap();
+        assert_eq!(count.0, 1);
+    });
+}
+
+#[test]
+#[ignore]
+fn cleanup_webhook_deliveries_respects_retention() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        let webhook = db::create_webhook(
+            &s.db, None, "http://localhost:1/hook",
+            &["user.created".to_string()], "secret"
+        ).await.unwrap();
+
+        // Record a delivery and backdate it
+        db::record_webhook_delivery(&s.db, webhook.id, "user.created", &serde_json::json!({}), Some(200), None)
+            .await.unwrap();
+        sqlx::query("UPDATE webhook_deliveries SET attempted_at = now() - interval '10 days' WHERE webhook_id = $1")
+            .bind(webhook.id)
+            .execute(&s.db)
+            .await
+            .unwrap();
+
+        // Record a recent delivery
+        db::record_webhook_delivery(&s.db, webhook.id, "user.created", &serde_json::json!({}), Some(200), None)
+            .await.unwrap();
+
+        // Cleanup with 7-day retention — should delete only the old one
+        let deleted = db::cleanup_webhook_deliveries(&s.db, 7).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Recent one should remain
+        let count: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM webhook_deliveries WHERE webhook_id = $1"
+        )
+        .bind(webhook.id)
+        .fetch_one(&s.db)
+        .await
+        .unwrap();
+        assert_eq!(count.0, 1);
     });
 }
