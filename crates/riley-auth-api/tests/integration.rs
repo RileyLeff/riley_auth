@@ -2618,3 +2618,168 @@ fn webhook_remove_nonexistent_returns_404() {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     });
 }
+
+// --- Webhook Outbox / Reliability Tests ---
+
+#[test]
+#[ignore]
+fn outbox_enqueue_creates_entries_for_matching_webhooks() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Create two webhooks: one subscribes to user.created, one to user.deleted
+        let wh1 = db::create_webhook(&s.db, None, "http://localhost:1/hook1", &["user.created".to_string()], "secret1").await.unwrap();
+        let wh2 = db::create_webhook(&s.db, None, "http://localhost:1/hook2", &["user.deleted".to_string()], "secret2").await.unwrap();
+
+        // Enqueue a user.created event
+        let count = db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({"id": "u1"}), 5, None).await.unwrap();
+        assert_eq!(count, 1, "only wh1 subscribes to user.created");
+
+        // Enqueue a user.deleted event
+        let count = db::enqueue_webhook_events(&s.db, "user.deleted", &serde_json::json!({"id": "u2"}), 5, None).await.unwrap();
+        assert_eq!(count, 1, "only wh2 subscribes to user.deleted");
+
+        // Fetch pending entries — should have 2
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert_eq!(entries.len(), 2);
+
+        let wh1_entry = entries.iter().find(|e| e.webhook_id == wh1.id).unwrap();
+        assert_eq!(wh1_entry.event_type, "user.created");
+        assert_eq!(wh1_entry.max_attempts, 5);
+
+        let wh2_entry = entries.iter().find(|e| e.webhook_id == wh2.id).unwrap();
+        assert_eq!(wh2_entry.event_type, "user.deleted");
+    });
+}
+
+#[test]
+#[ignore]
+fn outbox_mark_delivered_removes_from_pending() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        let wh = db::create_webhook(&s.db, None, "http://localhost:1/hook", &["user.created".to_string()], "secret").await.unwrap();
+        db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({}), 5, None).await.unwrap();
+
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry_id = entries[0].id;
+
+        // Mark as delivered
+        db::mark_outbox_delivered(&s.db, entry_id).await.unwrap();
+
+        // No longer appears in pending
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert!(entries.is_empty(), "delivered entries should not be pending");
+
+        let _ = wh; // keep the webhook alive
+    });
+}
+
+#[test]
+#[ignore]
+fn outbox_retry_increments_attempts_and_delays() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        db::create_webhook(&s.db, None, "http://localhost:1/hook", &["user.created".to_string()], "secret").await.unwrap();
+        db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({}), 5, None).await.unwrap();
+
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entry = &entries[0];
+        assert_eq!(entry.attempts, 0);
+
+        // Record a failed attempt
+        db::record_outbox_attempt(&s.db, entry.id, "connection refused").await.unwrap();
+
+        // Entry should NOT be in pending results now (next_attempt_at is in the future)
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert!(entries.is_empty(), "retrying entry should be delayed");
+
+        // Verify the attempt was recorded by reading the entry directly
+        let row: (i32, Option<String>, String) = sqlx::query_as(
+            "SELECT attempts, last_error, status FROM webhook_outbox WHERE id = $1"
+        )
+        .bind(entry.id)
+        .fetch_one(&s.db)
+        .await
+        .unwrap();
+        assert_eq!(row.0, 1, "attempts should be incremented");
+        assert_eq!(row.1.as_deref(), Some("connection refused"));
+        assert_eq!(row.2, "pending", "status should still be pending");
+    });
+}
+
+#[test]
+#[ignore]
+fn outbox_max_attempts_marks_failed() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        db::create_webhook(&s.db, None, "http://localhost:1/hook", &["user.created".to_string()], "secret").await.unwrap();
+        // max_attempts = 1, so first failure should mark as failed
+        db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({}), 1, None).await.unwrap();
+
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entry = &entries[0];
+
+        // Deliver to unreachable URL — will fail
+        let http_client = reqwest::Client::new();
+        let result = riley_auth_core::webhooks::deliver_outbox_entry(&s.db, &http_client, entry).await;
+        assert!(result.is_err());
+
+        // Since attempts (0) + 1 >= max_attempts (1), mark as failed
+        db::mark_outbox_failed(&s.db, entry.id, &result.unwrap_err()).await.unwrap();
+
+        // Verify it's marked failed
+        let row: (String,) = sqlx::query_as(
+            "SELECT status FROM webhook_outbox WHERE id = $1"
+        )
+        .bind(entry.id)
+        .fetch_one(&s.db)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "failed");
+
+        // Not in pending anymore
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert!(entries.is_empty());
+    });
+}
+
+#[test]
+#[ignore]
+fn outbox_cleanup_removes_old_entries() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        db::create_webhook(&s.db, None, "http://localhost:1/hook", &["user.created".to_string()], "secret").await.unwrap();
+        db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({}), 5, None).await.unwrap();
+
+        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entry_id = entries[0].id;
+
+        // Mark as delivered
+        db::mark_outbox_delivered(&s.db, entry_id).await.unwrap();
+
+        // Backdate the entry's created_at to make it appear old
+        sqlx::query("UPDATE webhook_outbox SET created_at = now() - interval '10 days' WHERE id = $1")
+            .bind(entry_id)
+            .execute(&s.db)
+            .await
+            .unwrap();
+
+        // Cleanup with 7-day retention — should delete the old entry
+        let deleted = db::cleanup_webhook_outbox(&s.db, 7).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Cleanup again — nothing left
+        let deleted = db::cleanup_webhook_outbox(&s.db, 7).await.unwrap();
+        assert_eq!(deleted, 0);
+    });
+}
