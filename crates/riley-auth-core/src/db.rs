@@ -1185,6 +1185,7 @@ pub struct OutboxEntry {
 }
 
 /// Enqueue webhook events into the outbox for all matching webhooks.
+/// Uses a single atomic INSERT ... SELECT to ensure all-or-nothing enqueue.
 /// Returns the number of outbox entries created.
 pub async fn enqueue_webhook_events(
     pool: &PgPool,
@@ -1193,41 +1194,59 @@ pub async fn enqueue_webhook_events(
     max_attempts: u32,
     event_client_id: Option<Uuid>,
 ) -> Result<u64> {
-    let webhooks = find_webhooks_for_event(pool, event_type, event_client_id).await?;
-    if webhooks.is_empty() {
-        return Ok(0);
-    }
+    let result = match event_client_id {
+        Some(cid) => {
+            sqlx::query(
+                "INSERT INTO webhook_outbox (webhook_id, event_type, payload, max_attempts)
+                 SELECT id, $1, $2, $3
+                 FROM webhooks
+                 WHERE active = true AND $1 = ANY(events) AND (client_id IS NULL OR client_id = $4)"
+            )
+            .bind(event_type)
+            .bind(payload)
+            .bind(max_attempts as i32)
+            .bind(cid)
+            .execute(pool)
+            .await?
+        }
+        None => {
+            sqlx::query(
+                "INSERT INTO webhook_outbox (webhook_id, event_type, payload, max_attempts)
+                 SELECT id, $1, $2, $3
+                 FROM webhooks
+                 WHERE active = true AND $1 = ANY(events)"
+            )
+            .bind(event_type)
+            .bind(payload)
+            .bind(max_attempts as i32)
+            .execute(pool)
+            .await?
+        }
+    };
 
-    let mut count = 0u64;
-    for webhook in &webhooks {
-        sqlx::query(
-            "INSERT INTO webhook_outbox (webhook_id, event_type, payload, max_attempts)
-             VALUES ($1, $2, $3, $4)"
-        )
-        .bind(webhook.id)
-        .bind(event_type)
-        .bind(payload)
-        .bind(max_attempts as i32)
-        .execute(pool)
-        .await?;
-        count += 1;
-    }
-
-    Ok(count)
+    Ok(result.rows_affected())
 }
 
-/// Fetch pending outbox entries that are due for delivery.
-/// Uses FOR UPDATE SKIP LOCKED for safe concurrent worker access.
-pub async fn fetch_pending_outbox_entries(
+/// Atomically claim pending outbox entries for delivery by transitioning them
+/// to 'processing' status. Uses a CTE with FOR UPDATE SKIP LOCKED to prevent
+/// duplicate delivery across concurrent workers.
+pub async fn claim_pending_outbox_entries(
     pool: &PgPool,
     limit: i64,
 ) -> Result<Vec<OutboxEntry>> {
     let rows = sqlx::query_as::<_, OutboxEntry>(
-        "SELECT * FROM webhook_outbox
-         WHERE status = 'pending' AND next_attempt_at <= now()
-         ORDER BY next_attempt_at
-         LIMIT $1
-         FOR UPDATE SKIP LOCKED"
+        "WITH claimed AS (
+             SELECT id FROM webhook_outbox
+             WHERE status = 'pending' AND next_attempt_at <= now()
+             ORDER BY next_attempt_at
+             LIMIT $1
+             FOR UPDATE SKIP LOCKED
+         )
+         UPDATE webhook_outbox
+         SET status = 'processing'
+         FROM claimed
+         WHERE webhook_outbox.id = claimed.id
+         RETURNING webhook_outbox.*"
     )
     .bind(limit)
     .fetch_all(pool)
@@ -1235,46 +1254,49 @@ pub async fn fetch_pending_outbox_entries(
     Ok(rows)
 }
 
-/// Mark an outbox entry as delivered.
-pub async fn mark_outbox_delivered(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("UPDATE webhook_outbox SET status = 'delivered' WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(())
+/// Mark an outbox entry as delivered (only if currently processing).
+pub async fn mark_outbox_delivered(pool: &PgPool, id: Uuid) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE webhook_outbox SET status = 'delivered' WHERE id = $1 AND status = 'processing'"
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
-/// Mark an outbox entry as failed (after max attempts exhausted).
-pub async fn mark_outbox_failed(pool: &PgPool, id: Uuid, error: &str) -> Result<()> {
-    sqlx::query(
-        "UPDATE webhook_outbox SET status = 'failed', last_error = $2 WHERE id = $1"
+/// Mark an outbox entry as failed (only if currently processing).
+pub async fn mark_outbox_failed(pool: &PgPool, id: Uuid, error: &str) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE webhook_outbox SET status = 'failed', last_error = $2 WHERE id = $1 AND status = 'processing'"
     )
     .bind(id)
     .bind(error)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 /// Record a failed delivery attempt: increment attempts, set next retry time
-/// with exponential backoff (10s, 30s, 90s, 270s, 810s).
+/// with exponential backoff (10s, 30s, 90s, 270s, 810s), and return to pending.
 pub async fn record_outbox_attempt(
     pool: &PgPool,
     id: Uuid,
     error: &str,
-) -> Result<()> {
-    sqlx::query(
+) -> Result<bool> {
+    let result = sqlx::query(
         "UPDATE webhook_outbox
-         SET attempts = attempts + 1,
+         SET status = 'pending',
+             attempts = attempts + 1,
              last_error = $2,
              next_attempt_at = now() + (10 * pow(3, attempts)) * interval '1 second'
-         WHERE id = $1"
+         WHERE id = $1 AND status = 'processing'"
     )
     .bind(id)
     .bind(error)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 /// Cleanup delivered and failed outbox entries older than the given retention.

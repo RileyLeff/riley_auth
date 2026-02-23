@@ -173,14 +173,14 @@ async fn update_role(
     match db::update_user_role(&state.db, id, &body.role).await? {
         db::RoleUpdateResult::Updated(_) => {
             webhooks::dispatch_event(
-                state.db.clone(),
+                &state.db,
                 webhooks::USER_ROLE_CHANGED,
                 serde_json::json!({
                     "user_id": id.to_string(),
                     "new_role": body.role,
                 }),
                 state.config.webhooks.max_retry_attempts,
-            );
+            ).await;
             Ok(StatusCode::OK)
         }
         db::RoleUpdateResult::LastAdmin => {
@@ -200,11 +200,11 @@ async fn delete_user(
     match db::soft_delete_user(&state.db, id).await? {
         db::DeleteUserResult::Deleted => {
             webhooks::dispatch_event(
-                state.db.clone(),
+                &state.db,
                 webhooks::USER_DELETED,
                 serde_json::json!({ "user_id": id.to_string() }),
                 state.config.webhooks.max_retry_attempts,
-            );
+            ).await;
             Ok(StatusCode::OK)
         }
         db::DeleteUserResult::LastAdmin => {

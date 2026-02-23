@@ -225,6 +225,12 @@ impl Config {
         for def in &config.scopes.definitions {
             validate_scope_name(&def.name)?;
         }
+        // Validate webhook config
+        if config.webhooks.max_concurrent_deliveries == 0 {
+            return Err(Error::Config(
+                "webhooks.max_concurrent_deliveries must be at least 1".to_string(),
+            ));
+        }
         // Validate rate limiting config
         match config.rate_limiting.backend.as_str() {
             "memory" => {}

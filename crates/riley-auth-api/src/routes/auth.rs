@@ -179,11 +179,11 @@ async fn auth_callback(
         let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
         let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
         webhooks::dispatch_event(
-            state.db.clone(),
+            &state.db,
             webhooks::SESSION_CREATED,
             serde_json::json!({ "user_id": user.id.to_string() }),
             state.config.webhooks.max_retry_attempts,
-        );
+        ).await;
         return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
     }
 
@@ -263,17 +263,17 @@ async fn auth_setup(
     let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
 
     webhooks::dispatch_event(
-        state.db.clone(),
+        &state.db,
         webhooks::USER_CREATED,
         serde_json::json!({ "user_id": user.id.to_string(), "username": user.username }),
         state.config.webhooks.max_retry_attempts,
-    );
+    ).await;
     webhooks::dispatch_event(
-        state.db.clone(),
+        &state.db,
         webhooks::SESSION_CREATED,
         serde_json::json!({ "user_id": user.id.to_string() }),
         state.config.webhooks.max_retry_attempts,
-    );
+    ).await;
 
     Ok((jar, Json(user_to_me(&user))))
 }
@@ -494,11 +494,11 @@ async fn update_display_name(
     .await?;
 
     webhooks::dispatch_event(
-        state.db.clone(),
+        &state.db,
         webhooks::USER_UPDATED,
         serde_json::json!({ "user_id": user.id.to_string(), "display_name": user.display_name }),
         state.config.webhooks.max_retry_attempts,
-    );
+    ).await;
 
     Ok(Json(user_to_me(&user)))
 }
@@ -569,7 +569,7 @@ async fn update_username(
     let jar = jar.add(build_access_cookie(&state.cookie_names.access, &access_token, &state.config));
 
     webhooks::dispatch_event(
-        state.db.clone(),
+        &state.db,
         webhooks::USER_USERNAME_CHANGED,
         serde_json::json!({
             "user_id": user.id.to_string(),
@@ -577,7 +577,7 @@ async fn update_username(
             "new_username": user.username,
         }),
         state.config.webhooks.max_retry_attempts,
-    );
+    ).await;
 
     Ok((jar, Json(user_to_me(&user))))
 }
@@ -601,11 +601,11 @@ async fn delete_account(
     }
 
     webhooks::dispatch_event(
-        state.db.clone(),
+        &state.db,
         webhooks::USER_DELETED,
         serde_json::json!({ "user_id": user_id.to_string() }),
         state.config.webhooks.max_retry_attempts,
-    );
+    ).await;
 
     let jar = jar
         .remove(removal_cookie(&state.cookie_names.access, "/", &state.config))
@@ -738,14 +738,14 @@ async fn link_callback(
     })?;
 
     webhooks::dispatch_event(
-        state.db.clone(),
+        &state.db,
         webhooks::LINK_CREATED,
         serde_json::json!({
             "user_id": user_id.to_string(),
             "provider": profile.provider,
         }),
         state.config.webhooks.max_retry_attempts,
-    );
+    ).await;
 
     let jar = jar
         .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
@@ -767,14 +767,14 @@ async fn unlink_provider(
     match db::delete_oauth_link_if_not_last(&state.db, user_id, &provider_name).await? {
         db::UnlinkResult::Deleted => {
             webhooks::dispatch_event(
-                state.db.clone(),
+                &state.db,
                 webhooks::LINK_DELETED,
                 serde_json::json!({
                     "user_id": user_id.to_string(),
                     "provider": provider_name,
                 }),
                 state.config.webhooks.max_retry_attempts,
-            );
+            ).await;
             Ok(StatusCode::OK)
         }
         db::UnlinkResult::LastProvider => Err(Error::LastProvider),

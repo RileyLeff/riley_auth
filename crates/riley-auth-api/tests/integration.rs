@@ -2512,19 +2512,16 @@ fn webhook_delivery_recorded_on_event() {
         .await
         .unwrap();
 
-        // Dispatch an event (enqueues to outbox)
+        // Dispatch an event (enqueues to outbox — now awaited for durability)
         riley_auth_core::webhooks::dispatch_event(
-            s.db.clone(),
+            &s.db,
             "user.created",
             serde_json::json!({ "user_id": "test-user-id" }),
             s.config.webhooks.max_retry_attempts,
-        );
-
-        // Give the spawned enqueue task a moment to write
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        ).await;
 
         // Verify outbox entry was created
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         assert!(!entries.is_empty(), "outbox entry should be created after dispatch");
         let entry = &entries[0];
         assert_eq!(entry.event_type, "user.created");
@@ -2641,7 +2638,7 @@ fn outbox_enqueue_creates_entries_for_matching_webhooks() {
         assert_eq!(count, 1, "only wh2 subscribes to user.deleted");
 
         // Fetch pending entries — should have 2
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         assert_eq!(entries.len(), 2);
 
         let wh1_entry = entries.iter().find(|e| e.webhook_id == wh1.id).unwrap();
@@ -2663,7 +2660,7 @@ fn outbox_mark_delivered_removes_from_pending() {
         let wh = db::create_webhook(&s.db, None, "http://localhost:1/hook", &["user.created".to_string()], "secret").await.unwrap();
         db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({}), 5, None).await.unwrap();
 
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         assert_eq!(entries.len(), 1);
         let entry_id = entries[0].id;
 
@@ -2671,7 +2668,7 @@ fn outbox_mark_delivered_removes_from_pending() {
         db::mark_outbox_delivered(&s.db, entry_id).await.unwrap();
 
         // No longer appears in pending
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         assert!(entries.is_empty(), "delivered entries should not be pending");
 
         let _ = wh; // keep the webhook alive
@@ -2688,7 +2685,7 @@ fn outbox_retry_increments_attempts_and_delays() {
         db::create_webhook(&s.db, None, "http://localhost:1/hook", &["user.created".to_string()], "secret").await.unwrap();
         db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({}), 5, None).await.unwrap();
 
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         let entry = &entries[0];
         assert_eq!(entry.attempts, 0);
 
@@ -2696,7 +2693,7 @@ fn outbox_retry_increments_attempts_and_delays() {
         db::record_outbox_attempt(&s.db, entry.id, "connection refused").await.unwrap();
 
         // Entry should NOT be in pending results now (next_attempt_at is in the future)
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         assert!(entries.is_empty(), "retrying entry should be delayed");
 
         // Verify the attempt was recorded by reading the entry directly
@@ -2724,7 +2721,7 @@ fn outbox_max_attempts_marks_failed() {
         // max_attempts = 1, so first failure should mark as failed
         db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({}), 1, None).await.unwrap();
 
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         let entry = &entries[0];
 
         // Deliver to unreachable URL — will fail
@@ -2746,7 +2743,7 @@ fn outbox_max_attempts_marks_failed() {
         assert_eq!(row.0, "failed");
 
         // Not in pending anymore
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         assert!(entries.is_empty());
     });
 }
@@ -2761,7 +2758,7 @@ fn outbox_cleanup_removes_old_entries() {
         db::create_webhook(&s.db, None, "http://localhost:1/hook", &["user.created".to_string()], "secret").await.unwrap();
         db::enqueue_webhook_events(&s.db, "user.created", &serde_json::json!({}), 5, None).await.unwrap();
 
-        let entries = db::fetch_pending_outbox_entries(&s.db, 10).await.unwrap();
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
         let entry_id = entries[0].id;
 
         // Mark as delivered

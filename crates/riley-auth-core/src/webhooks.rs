@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use chrono::Utc;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use sqlx::PgPool;
@@ -52,39 +51,35 @@ pub fn sign_payload(secret: &str, payload: &[u8]) -> String {
 
 /// Enqueue a webhook event for all matching subscribers via the outbox.
 ///
-/// Events are written to the database; a background worker delivers them.
-/// This replaces the old fire-and-forget dispatch with durable delivery.
-pub fn dispatch_event(pool: PgPool, event_type: &str, payload: serde_json::Value, max_retry_attempts: u32) {
-    dispatch_event_for_client(pool, event_type, payload, max_retry_attempts, None);
+/// Awaits the database INSERT to guarantee durability. A background worker
+/// delivers the enqueued events asynchronously.
+pub async fn dispatch_event(pool: &PgPool, event_type: &str, payload: serde_json::Value, max_retry_attempts: u32) {
+    dispatch_event_for_client(pool, event_type, payload, max_retry_attempts, None).await;
 }
 
 /// Like `dispatch_event`, but scoped to a specific client.
-pub fn dispatch_event_for_client(
-    pool: PgPool,
+pub async fn dispatch_event_for_client(
+    pool: &PgPool,
     event_type: &str,
     payload: serde_json::Value,
     max_retry_attempts: u32,
     event_client_id: Option<uuid::Uuid>,
 ) {
-    let event_type = event_type.to_owned();
-
-    tokio::spawn(async move {
-        match db::enqueue_webhook_events(&pool, &event_type, &payload, max_retry_attempts, event_client_id).await {
-            Ok(0) => {}
-            Ok(count) => {
-                info!(event = %event_type, count, "enqueued webhook events");
-            }
-            Err(e) => {
-                warn!(event = %event_type, error = %e, "failed to enqueue webhook events");
-            }
+    match db::enqueue_webhook_events(pool, event_type, &payload, max_retry_attempts, event_client_id).await {
+        Ok(0) => {}
+        Ok(count) => {
+            info!(event = %event_type, count, "enqueued webhook events");
         }
-    });
+        Err(e) => {
+            warn!(event = %event_type, error = %e, "failed to enqueue webhook events");
+        }
+    }
 }
 
 /// Deliver a single outbox entry. Called by the background worker.
 ///
-/// Returns Ok(true) if delivered successfully, Ok(false) if delivery failed
-/// (caller should handle retry/failure logic).
+/// Returns `Ok(())` on successful delivery, `Err(message)` on failure.
+/// Returns `Err("permanent:...")` for non-retryable errors (deleted/inactive webhook).
 pub async fn deliver_outbox_entry(
     pool: &PgPool,
     client: &reqwest::Client,
@@ -94,15 +89,16 @@ pub async fn deliver_outbox_entry(
     let webhook = db::find_webhook(pool, entry.webhook_id)
         .await
         .map_err(|e| format!("db error: {e}"))?
-        .ok_or_else(|| "webhook not found (deleted?)".to_string())?;
+        .ok_or_else(|| "permanent: webhook not found (deleted?)".to_string())?;
 
     if !webhook.active {
-        return Err("webhook is inactive".to_string());
+        return Err("permanent: webhook is inactive".to_string());
     }
 
     let body = serde_json::json!({
+        "id": entry.id.to_string(),
         "event": entry.event_type,
-        "timestamp": Utc::now().to_rfc3339(),
+        "timestamp": entry.created_at.to_rfc3339(),
         "data": entry.payload,
     });
     let body_bytes = serde_json::to_vec(&body).expect("JSON serialization cannot fail");
@@ -113,7 +109,7 @@ pub async fn deliver_outbox_entry(
         .header("Content-Type", "application/json")
         .header("X-Webhook-Signature", &signature)
         .header("X-Webhook-Event", &entry.event_type)
-        .body(body_bytes.clone())
+        .body(body_bytes)
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await;
@@ -147,8 +143,9 @@ pub async fn deliver_outbox_entry(
 /// Uses a semaphore to bound concurrent outbound HTTP requests. Entries that
 /// fail delivery are retried with exponential backoff (handled by
 /// `record_outbox_attempt`). Entries that exceed max_attempts are marked failed.
+/// Non-retryable errors (deleted/inactive webhook) immediately mark as failed.
 ///
-/// Runs until the shutdown receiver signals `true`.
+/// Runs until the shutdown receiver signals `true`, then drains in-flight tasks.
 pub async fn delivery_worker(
     pool: PgPool,
     client: reqwest::Client,
@@ -166,12 +163,12 @@ pub async fn delivery_worker(
             break;
         }
 
-        // Fetch a batch of pending entries (up to semaphore capacity)
+        // Atomically claim a batch of pending entries (transitions to 'processing')
         let batch_size = semaphore.available_permits().max(1) as i64;
-        let entries = match db::fetch_pending_outbox_entries(&pool, batch_size).await {
+        let entries = match db::claim_pending_outbox_entries(&pool, batch_size).await {
             Ok(entries) => entries,
             Err(e) => {
-                warn!(error = %e, "failed to fetch outbox entries");
+                warn!(error = %e, "failed to claim outbox entries");
                 tokio::select! {
                     _ = tokio::time::sleep(poll_interval) => continue,
                     _ = shutdown.changed() => break,
@@ -199,20 +196,18 @@ pub async fn delivery_worker(
 
                 match result {
                     Ok(()) => {
-                        if let Err(e) = db::mark_outbox_delivered(&pool, entry_id).await {
-                            warn!(id = %entry_id, error = %e, "failed to mark outbox entry delivered");
-                        }
+                        let _ = db::mark_outbox_delivered(&pool, entry_id).await;
+                    }
+                    Err(ref error) if error.starts_with("permanent:") => {
+                        // Non-retryable: immediately mark as failed
+                        let _ = db::mark_outbox_failed(&pool, entry_id, error).await;
                     }
                     Err(error) => {
                         let next_attempt = entry.attempts + 1;
                         if next_attempt >= entry.max_attempts {
-                            if let Err(e) = db::mark_outbox_failed(&pool, entry_id, &error).await {
-                                warn!(id = %entry_id, error = %e, "failed to mark outbox entry failed");
-                            }
+                            let _ = db::mark_outbox_failed(&pool, entry_id, &error).await;
                         } else {
-                            if let Err(e) = db::record_outbox_attempt(&pool, entry_id, &error).await {
-                                warn!(id = %entry_id, error = %e, "failed to record outbox attempt");
-                            }
+                            let _ = db::record_outbox_attempt(&pool, entry_id, &error).await;
                         }
                     }
                 }
@@ -221,6 +216,9 @@ pub async fn delivery_worker(
             });
         }
     }
+
+    // Drain in-flight tasks by waiting for all semaphore permits to be returned
+    let _ = semaphore.acquire_many(max_concurrent as u32).await;
 
     info!("webhook delivery worker stopped");
 }
