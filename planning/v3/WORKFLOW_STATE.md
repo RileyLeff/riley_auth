@@ -1,8 +1,8 @@
 # v3 Workflow State
 
-**Current Phase:** 7 — Quality-of-Life Fixes (EXHAUSTIVE REVIEW)
-**Current Step:** Exhaustive review R2 (need 2 consecutive rounds with 0 majors)
-**Status:** R1 found 1 major (PII scrub path) + 5 minors — all fixed. Running R2.
+**Current Phase:** 7 — Quality-of-Life Fixes (COMPLETE)
+**Current Step:** Done
+**Status:** v3 workflow complete. Exhaustive review converged (R3+R4, 0 majors). 91 tests passing.
 
 ## Progress
 
@@ -39,7 +39,9 @@
 | 6 | review | Standard review (1 round, 1 major + 3 minors fixed) | Done |
 | 7 | 7.1-7.7 | Quality-of-Life Fixes | Done |
 | 7 | review R1 | Exhaustive R1 (Gemini + Claude, 1 major + 5 minors fixed) | Done |
-| 7 | review R2 | Exhaustive R2 | In Progress |
+| 7 | review R2 | Exhaustive R2 (Gemini + Claude, 2 majors fixed: PII scrub) | Done |
+| 7 | review R3 | Exhaustive R3 (Gemini + Claude, 0 majors — convergence round 1) | Done |
+| 7 | review R4 | Exhaustive R4 (Gemini + Claude, 0 majors — CONVERGED) | Done |
 
 ## Blockers
 
@@ -51,4 +53,8 @@ None.
 - Phase 6 review fixes: IPv4-mapped IPv6 bypass, multicast, redirect SSRF (6d36916)
 - Phase 7 QoL fixes: cached regex, char count, IP extraction consolidation, PII scrub (0e7e227)
 - Phase 7 exhaustive R1: 1 major (PII scrub path) + 5 minors fixed (eb3e09e)
+- Phase 7 exhaustive R2: 2 majors (PII scrub revert + outbox scrub) fixed (9298983, 8aa09a0)
+- Phase 7 exhaustive R3: 0 majors — convergence round 1
+- Phase 7 exhaustive R4: 0 majors — CONVERGED (R3+R4)
 - Total tests: 91 (69 integration + 22 unit)
+- v3 WORKFLOW COMPLETE
