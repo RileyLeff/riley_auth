@@ -90,3 +90,20 @@ Expired entries can linger up to 2x window duration before pruning. This is acce
 
 ### OPTIONS bypass permits unthrottled OPTIONS floods
 The OPTIONS bypass is necessary for CORS preflights. Edge/proxy-level generic request limits should backstop this.
+
+## Phase 4 — OIDC Compliance
+
+### UserInfo endpoint is future work
+`/auth/me` is session-only (cookies, `aud == issuer`). It cannot serve as an OIDC UserInfo endpoint because it rejects Bearer tokens from OAuth clients. The `userinfo_endpoint` was removed from the discovery document. A proper UserInfo endpoint accepting Bearer tokens with client audiences is future work.
+
+### Setup token binding is self-referential (accepted)
+The `binding` field in SetupClaims is computed from profile data inside the same signed JWT. The JWT signature already prevents tampering, so the binding adds no additional security. Keeping it as defense-in-depth, but it's a no-op.
+
+### Nonce not carried forward on refresh (SHOULD, not MUST)
+OIDC Core 1.0 Section 12.1 says refreshed ID tokens SHOULD contain the nonce. Currently passes `None` on refresh. This would require a nonce column on `refresh_tokens`. Accepted as minor spec deviation — the nonce is most important on the initial auth code exchange for replay protection.
+
+### Authorize endpoint errors not redirected to redirect_uri
+RFC 6749 Section 4.1.2.1 says errors (after validating client_id and redirect_uri) should redirect back with `?error=...`. Currently returns HTTP error responses. All current clients are auto_approve first-party, so this is not blocking. Full error redirect support is future work for third-party consent flows.
+
+### No pagination on list_clients and list_webhooks
+Admin-only endpoints with naturally small result sets. Pagination deferred.
