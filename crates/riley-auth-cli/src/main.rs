@@ -204,6 +204,22 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::RegisterClient { name, redirect_uris, scopes, auto_approve } => {
+            // Validate redirect_uris
+            for uri in &redirect_uris {
+                let parsed = url::Url::parse(uri)
+                    .map_err(|_| anyhow::anyhow!("invalid redirect_uri: {}", uri))?;
+                match parsed.scheme() {
+                    "https" => {}
+                    "http" if matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1")) => {}
+                    scheme => {
+                        anyhow::bail!(
+                            "redirect_uri must use https (or http://localhost for development), got {}://",
+                            scheme
+                        );
+                    }
+                }
+            }
+
             // Validate scopes: format + existence in config definitions
             let defined_names: Vec<&str> = config.scopes.definitions.iter()
                 .map(|d| d.name.as_str())

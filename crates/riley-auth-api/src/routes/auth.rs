@@ -176,7 +176,7 @@ async fn auth_callback(
             .ok_or(Error::UserNotFound)?;
 
         let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
-        let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
+        let ip = client_ip_string(&headers, addr, state.config.server.behind_proxy);
         let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
         webhooks::dispatch_event(
             &state.db,
@@ -229,7 +229,7 @@ async fn auth_setup(
     let profile = decode_setup_token(&state.keys, &state.config, &setup_token)?;
 
     // Validate username
-    validate_username(&body.username, &state.config)?;
+    validate_username(&body.username, &state.config, &state.username_regex)?;
 
     // Check availability
     if db::find_user_by_username(&state.db, &body.username).await?.is_some() {
@@ -259,7 +259,7 @@ async fn auth_setup(
     // Issue tokens, clear setup cookie
     let jar = jar.remove(removal_cookie(&state.cookie_names.setup, "/", &state.config));
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
-    let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
+    let ip = client_ip_string(&headers, addr, state.config.server.behind_proxy);
     let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
 
     webhooks::dispatch_event(
@@ -313,7 +313,7 @@ async fn auth_refresh(
         .ok_or(Error::UserNotFound)?;
 
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
-    let ip = extract_client_ip(&headers, addr, state.config.server.behind_proxy);
+    let ip = client_ip_string(&headers, addr, state.config.server.behind_proxy);
 
     // Issue new tokens, inheriting the family_id from the consumed token
     let access_token = state.keys.sign_access_token(
@@ -481,7 +481,7 @@ async fn update_display_name(
     jar: CookieJar,
     Json(body): Json<UpdateDisplayNameRequest>,
 ) -> Result<Json<MeResponse>, Error> {
-    if body.display_name.len() > 200 {
+    if body.display_name.chars().count() > 200 {
         return Err(Error::BadRequest("display name must be at most 200 characters".to_string()));
     }
 
@@ -524,7 +524,7 @@ async fn update_username(
         return Err(Error::BadRequest("username changes are disabled".to_string()));
     }
 
-    validate_username(&body.username, &state.config)?;
+    validate_username(&body.username, &state.config, &state.username_regex)?;
 
     // Check cooldown
     if let Some(last_change) = db::last_username_change(&state.db, user_id).await? {
@@ -820,7 +820,7 @@ fn extract_user(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error>
     Ok(data.claims)
 }
 
-fn validate_username(username: &str, config: &Config) -> Result<(), Error> {
+fn validate_username(username: &str, config: &Config, regex: &regex::Regex) -> Result<(), Error> {
     let rules = &config.usernames;
 
     if username.len() < rules.min_length {
@@ -834,10 +834,7 @@ fn validate_username(username: &str, config: &Config) -> Result<(), Error> {
         });
     }
 
-    let re = regex::Regex::new(&rules.pattern).map_err(|e| {
-        Error::Config(format!("invalid username pattern: {e}"))
-    })?;
-    if !re.is_match(username) {
+    if !regex.is_match(username) {
         return Err(Error::InvalidUsername {
             reason: "contains invalid characters".to_string(),
         });
@@ -856,32 +853,12 @@ fn validate_username(username: &str, config: &Config) -> Result<(), Error> {
 
 /// Extract the client IP address from the request.
 ///
-/// When `behind_proxy` is true, checks X-Forwarded-For and X-Real-IP headers
-/// first (the proxy must overwrite these with the real client IP).
-/// Falls back to the peer socket address.
+/// Extract client IP as a string for storage in the database.
 ///
-/// The extracted value is validated through `std::net::IpAddr` to ensure only
-/// real IP addresses are stored. If parsing fails, falls back to peer address.
-fn extract_client_ip(headers: &HeaderMap, addr: SocketAddr, behind_proxy: bool) -> String {
-    if behind_proxy {
-        // Try X-Forwarded-For first (first entry = original client)
-        if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            if let Some(first) = forwarded.split(',').next() {
-                let ip = first.trim();
-                if ip.parse::<std::net::IpAddr>().is_ok() {
-                    return ip.to_string();
-                }
-            }
-        }
-        // Try X-Real-IP
-        if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-            let ip = real_ip.trim();
-            if ip.parse::<std::net::IpAddr>().is_ok() {
-                return ip.to_string();
-            }
-        }
-    }
-    addr.ip().to_string()
+/// Delegates to `super::extract_client_ip` and formats as a String.
+fn client_ip_string(headers: &HeaderMap, addr: SocketAddr, behind_proxy: bool) -> String {
+    super::extract_client_ip(headers, Some(addr.ip()), behind_proxy)
+        .map_or_else(|| addr.ip().to_string(), |ip| ip.to_string())
 }
 
 /// Issue new access and refresh tokens, storing the refresh token in the DB.

@@ -90,34 +90,12 @@ pub fn classify_path(path: &str) -> RateLimitTier {
 
 /// Extract client IP from the request, with proxy header support.
 ///
-/// When `behind_proxy` is true, the reverse proxy **must** overwrite (not append
-/// to) the `X-Forwarded-For` header with the actual peer IP. See
-/// `riley_auth.example.toml` for proxy configuration requirements.
+/// Delegates to the shared `routes::extract_client_ip` function.
 pub fn extract_ip<B>(req: &Request<B>, behind_proxy: bool) -> Option<IpAddr> {
-    if behind_proxy {
-        // Try X-Forwarded-For first, then X-Real-IP
-        if let Some(xff) = req.headers().get("x-forwarded-for") {
-            if let Ok(val) = xff.to_str() {
-                if let Some(ip_str) = val.split(',').next() {
-                    if let Ok(ip) = ip_str.trim().parse::<IpAddr>() {
-                        return Some(ip);
-                    }
-                }
-            }
-        }
-        if let Some(real_ip) = req.headers().get("x-real-ip") {
-            if let Ok(val) = real_ip.to_str() {
-                if let Ok(ip) = val.trim().parse::<IpAddr>() {
-                    return Some(ip);
-                }
-            }
-        }
-    }
-
-    // Fall back to peer IP from ConnectInfo
-    req.extensions()
+    let peer_ip = req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip())
+        .map(|ci| ci.0.ip());
+    crate::routes::extract_client_ip(req.headers(), peer_ip, behind_proxy)
 }
 
 // --- In-memory rate limiter ---

@@ -119,12 +119,14 @@ impl TestServer {
         };
 
         let cookie_names = riley_auth_api::server::CookieNames::from_prefix(&config.server.cookie_prefix);
+        let username_regex = regex::Regex::new(&config.usernames.pattern).unwrap();
         let state = AppState {
             config: Arc::new(config.clone()),
             db: pool.clone(),
             keys: Arc::new(keys.clone()),
             http_client: reqwest::Client::new(),
             cookie_names,
+            username_regex,
         };
 
         let app = axum::Router::new()
@@ -3458,5 +3460,95 @@ fn ssrf_allow_private_ips_permits_localhost() {
             !err.contains("private") && !err.contains("reserved"),
             "error should be a connection error, not SSRF block, got: {err}"
         );
+    });
+}
+
+// --- Phase 7 QoL tests ---
+
+#[test]
+#[ignore]
+fn display_name_multibyte_characters_within_limit() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+        let (_, access_token, _) = s.create_user_with_session("mbuser", "user").await;
+
+        // 200 CJK characters = 600 bytes but only 200 chars → should pass
+        let name = "日".repeat(200);
+        let resp = client
+            .patch(s.url("/auth/me"))
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({ "display_name": name }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 201 CJK characters → should be rejected
+        let name_too_long = "日".repeat(201);
+        let resp = client
+            .patch(s.url("/auth/me"))
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({ "display_name": name_too_long }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
+fn soft_delete_scrubs_webhook_delivery_payloads() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        let (user, _, _) = s.create_user_with_session("scrubme", "user").await;
+
+        // Create a webhook and manually insert a delivery record referencing the user
+        let webhook = db::create_webhook(
+            &s.db,
+            None,
+            "https://example.com/hook",
+            &["user.created".to_string()],
+            "secret",
+        )
+        .await
+        .unwrap();
+
+        let payload = serde_json::json!({
+            "event": "user.created",
+            "data": { "user_id": user.id.to_string(), "username": "scrubme" }
+        });
+        db::record_webhook_delivery(
+            &s.db,
+            webhook.id,
+            "user.created",
+            &payload,
+            Some(200),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Verify the delivery exists with original payload
+        let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0).await.unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert!(deliveries[0].payload["data"]["username"].as_str().is_some());
+
+        // Soft-delete the user
+        let result = db::soft_delete_user(&s.db, user.id).await.unwrap();
+        assert!(matches!(result, db::DeleteUserResult::Deleted));
+
+        // Verify the delivery payload was scrubbed
+        let deliveries = db::list_webhook_deliveries(&s.db, webhook.id, 10, 0).await.unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].payload["data"]["scrubbed"], true);
+        // Original PII should be gone
+        assert!(deliveries[0].payload["data"]["username"].as_str().is_none());
     });
 }

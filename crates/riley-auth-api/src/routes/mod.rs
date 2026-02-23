@@ -1,6 +1,7 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
-use axum::http::Request;
+use axum::http::{HeaderMap, Request};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::get;
@@ -16,6 +17,29 @@ pub mod oauth_provider;
 
 use crate::rate_limit::{InMemoryRateLimiter, memory_rate_limit_middleware};
 use crate::server::AppState;
+
+/// Extract client IP from request headers with proxy support.
+///
+/// When `behind_proxy` is true, checks `X-Forwarded-For` (first entry) and
+/// `X-Real-IP` before falling back to `peer_ip`. The proxy **must** overwrite
+/// (not append to) these headers with the real client IP.
+pub fn extract_client_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>, behind_proxy: bool) -> Option<IpAddr> {
+    if behind_proxy {
+        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first) = xff.split(',').next() {
+                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                    return Some(ip);
+                }
+            }
+        }
+        if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            if let Ok(ip) = real_ip.trim().parse::<IpAddr>() {
+                return Some(ip);
+            }
+        }
+    }
+    peer_ip
+}
 
 #[derive(Serialize)]
 struct HealthResponse {

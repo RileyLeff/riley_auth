@@ -244,6 +244,15 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<DeleteUser
         .execute(&mut *tx)
         .await?;
 
+    // Scrub PII from webhook delivery payloads referencing this user
+    sqlx::query(
+        "UPDATE webhook_deliveries SET payload = jsonb_set(payload, '{data}', '{\"scrubbed\": true}')
+         WHERE payload->'data'->>'user_id' = $1::text"
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
     // Anonymize: replace username with a random, unregisterable placeholder.
     // Uses 12 random bytes (16 base64 chars) → "_" + 16 chars = 17 chars total.
     // The "_" prefix is blocked by the default username regex (first char must be a letter),

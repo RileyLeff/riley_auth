@@ -43,6 +43,7 @@ pub struct AppState {
     pub keys: Arc<Keys>,
     pub http_client: reqwest::Client,
     pub cookie_names: CookieNames,
+    pub username_regex: regex::Regex,
 }
 
 pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()> {
@@ -88,6 +89,8 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     if !config.webhooks.allow_private_ips {
         tracing::info!("SSRF protection enabled for webhook delivery");
     }
+    let username_regex = regex::Regex::new(&config.usernames.pattern)
+        .map_err(|e| anyhow::anyhow!("invalid username pattern: {e}"))?;
     let config = Arc::new(config);
     let state = AppState {
         config: Arc::clone(&config),
@@ -95,6 +98,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         keys: Arc::new(keys),
         http_client: http_client.clone(),
         cookie_names,
+        username_regex,
     };
 
     let app = Router::new()
