@@ -15,6 +15,8 @@ pub struct Config {
     pub storage: Option<StorageConfig>,
     #[serde(default)]
     pub usernames: UsernameConfig,
+    #[serde(default)]
+    pub scopes: ScopesConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -99,6 +101,18 @@ pub struct UsernameConfig {
     pub old_name_hold_days: u32,
     #[serde(default)]
     pub reserved: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ScopesConfig {
+    #[serde(default)]
+    pub definitions: Vec<ScopeDefinition>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScopeDefinition {
+    pub name: String,
+    pub description: String,
 }
 
 // --- ConfigValue: supports "env:VAR_NAME" syntax ---
@@ -293,6 +307,14 @@ public_url_base = "https://cdn.example.com"
 min_length = 4
 max_length = 20
 reserved = ["admin", "root"]
+
+[[scopes.definitions]]
+name = "read:profile"
+description = "Read your profile information"
+
+[[scopes.definitions]]
+name = "write:profile"
+description = "Update your profile information"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.server.port, 9000);
@@ -300,6 +322,9 @@ reserved = ["admin", "root"]
         assert!(config.oauth.google.is_some());
         assert!(config.storage.is_some());
         assert_eq!(config.usernames.reserved.len(), 2);
+        assert_eq!(config.scopes.definitions.len(), 2);
+        assert_eq!(config.scopes.definitions[0].name, "read:profile");
+        assert_eq!(config.scopes.definitions[1].description, "Update your profile information");
     }
 
     #[test]

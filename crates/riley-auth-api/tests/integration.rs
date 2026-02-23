@@ -17,8 +17,8 @@ use reqwest::{Client, StatusCode};
 use riley_auth_api::routes;
 use riley_auth_api::server::AppState;
 use riley_auth_core::config::{
-    Config, ConfigValue, DatabaseConfig, JwtConfig, OAuthProvidersConfig, ServerConfig,
-    UsernameConfig,
+    Config, ConfigValue, DatabaseConfig, JwtConfig, OAuthProvidersConfig, ScopesConfig,
+    ServerConfig, UsernameConfig,
 };
 use riley_auth_core::db;
 use riley_auth_core::jwt::{self, Keys};
@@ -103,6 +103,7 @@ impl TestServer {
             oauth: OAuthProvidersConfig::default(),
             storage: None,
             usernames: UsernameConfig::default(),
+            scopes: ScopesConfig::default(),
         };
 
         let state = AppState {
