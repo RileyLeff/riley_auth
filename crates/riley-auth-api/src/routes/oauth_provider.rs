@@ -117,16 +117,18 @@ async fn authorize(
     }
 
     // Validate and deduplicate requested scopes.
-    // "openid" is implicitly accepted (ID tokens are always issued) and filtered out
-    // of the stored scopes since it's not a resource-access scope.
+    // "openid" is a protocol-level scope (triggers ID token issuance) — accepted
+    // without a scope definition or allowed_scopes check, but stored so the token
+    // endpoint knows whether to include an id_token.
     let granted_scopes: Vec<String> = if let Some(ref scope_str) = query.scope {
-        let requested: BTreeSet<&str> = scope_str.split_whitespace()
-            .filter(|s| *s != "openid")
-            .collect();
+        let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
         let defined_names: Vec<&str> = state.config.scopes.definitions.iter()
             .map(|d| d.name.as_str())
             .collect();
         for s in &requested {
+            if *s == "openid" {
+                continue; // protocol-level, always accepted
+            }
             if !defined_names.contains(s) {
                 return Err(Error::BadRequest(format!("unknown scope: {s}")));
             }
@@ -223,13 +225,14 @@ async fn consent(
         .ok_or(Error::InvalidClient)?;
 
     // Resolve requested scopes to descriptions (validate like authorize endpoint).
-    // "openid" is implicitly accepted and filtered out (not a resource-access scope).
+    // "openid" is protocol-level — accepted but not shown in consent (no description needed).
     let scopes = if let Some(ref scope_str) = query.scope {
-        let requested: BTreeSet<&str> = scope_str.split_whitespace()
-            .filter(|s| *s != "openid")
-            .collect();
+        let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
         let mut result = Vec::new();
         for s in &requested {
+            if *s == "openid" {
+                continue; // protocol-level, no consent description needed
+            }
             let def = state.config.scopes.definitions.iter()
                 .find(|d| d.name == *s)
                 .ok_or_else(|| Error::BadRequest(format!("unknown scope: {s}")))?;
@@ -344,22 +347,27 @@ async fn token(
             )
             .await?;
 
-            let id_token = state.keys.sign_id_token(
-                &state.config.jwt,
-                &user.id.to_string(),
-                &user.username,
-                user.display_name.as_deref(),
-                user.avatar_url.as_deref(),
-                &client.client_id,
-                auth_code.nonce.as_deref(),
-            )?;
+            // Only issue ID token when openid scope was granted (OIDC Core 1.0)
+            let id_token = if auth_code.scopes.iter().any(|s| s == "openid") {
+                Some(state.keys.sign_id_token(
+                    &state.config.jwt,
+                    &user.id.to_string(),
+                    &user.username,
+                    user.display_name.as_deref(),
+                    user.avatar_url.as_deref(),
+                    &client.client_id,
+                    auth_code.nonce.as_deref(),
+                )?)
+            } else {
+                None
+            };
 
             Ok(Json(TokenResponse {
                 access_token,
                 token_type: "Bearer",
                 expires_in: state.config.jwt.access_token_ttl_secs,
                 refresh_token: refresh_raw,
-                id_token: Some(id_token),
+                id_token,
                 scope: scope_str,
             }))
         }
@@ -387,10 +395,11 @@ async fn token(
                 .ok_or(Error::UserNotFound)?;
 
             // Intersect original scopes with client's current allowed_scopes.
-            // If an admin revoked a scope from the client since the token was issued,
-            // the refreshed token will no longer carry that scope.
+            // "openid" is protocol-level and passes through unconditionally.
+            // If an admin revoked a resource scope from the client since the token
+            // was issued, the refreshed token will no longer carry that scope.
             let effective_scopes: Vec<String> = token_row.scopes.iter()
-                .filter(|s| client.allowed_scopes.contains(s))
+                .filter(|s| s.as_str() == "openid" || client.allowed_scopes.contains(s))
                 .cloned()
                 .collect();
 
@@ -426,22 +435,27 @@ async fn token(
             )
             .await?;
 
-            let id_token = state.keys.sign_id_token(
-                &state.config.jwt,
-                &user.id.to_string(),
-                &user.username,
-                user.display_name.as_deref(),
-                user.avatar_url.as_deref(),
-                &client.client_id,
-                None, // no nonce on refresh — only from authorization request
-            )?;
+            // Only issue ID token when openid scope is in the effective scopes
+            let id_token = if effective_scopes.iter().any(|s| s == "openid") {
+                Some(state.keys.sign_id_token(
+                    &state.config.jwt,
+                    &user.id.to_string(),
+                    &user.username,
+                    user.display_name.as_deref(),
+                    user.avatar_url.as_deref(),
+                    &client.client_id,
+                    None, // no nonce on refresh — only from authorization request
+                )?)
+            } else {
+                None
+            };
 
             Ok(Json(TokenResponse {
                 access_token,
                 token_type: "Bearer",
                 expires_in: state.config.jwt.access_token_ttl_secs,
                 refresh_token: new_refresh_raw,
-                id_token: Some(id_token),
+                id_token,
                 scope: scope_str,
             }))
         }

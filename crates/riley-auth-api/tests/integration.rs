@@ -1992,7 +1992,7 @@ fn oidc_token_response_includes_id_token() {
                 ("client_id", client_id_str),
                 ("redirect_uri", "https://oidc.example.com/callback"),
                 ("response_type", "code"),
-                ("scope", "read:profile"),
+                ("scope", "openid read:profile"),
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
@@ -2052,8 +2052,8 @@ fn oidc_token_response_includes_id_token() {
         // picture should be absent (user has no avatar)
         assert!(claims.get("picture").is_none());
 
-        // Verify scope is also in the response
-        assert_eq!(token_resp["scope"], "read:profile");
+        // Verify scope is also in the response (openid + read:profile)
+        assert_eq!(token_resp["scope"], "openid read:profile");
 
         // Refresh and verify id_token is also in refresh response
         let refresh_token = token_resp["refresh_token"].as_str().unwrap();
