@@ -135,3 +135,26 @@ Disabled to prevent open-redirect SSRF bypass. Webhook endpoints should return 2
 
 ### check_url_ip_literal silently succeeds on URL parse failure
 If URL can't be parsed, reqwest will also fail. Low risk. Accepted.
+
+## Phase 7 — Exhaustive Review
+
+### Webhook URLs allow plain HTTP
+Intentional for internal services when `allow_private_ips` is true. A warning log could be added but is not required.
+
+### X-Forwarded-For trusted proxy list
+A `trusted_proxies` config with rightmost-non-trusted extraction would be more robust, but the current leftmost-with-overwrite approach is documented and sufficient for v3.
+
+### Maintenance worker stalling on large backlogs
+Cleanup batches are fast (DELETE with LIMIT). The unlikely scenario of millions of records after long downtime doesn't warrant adding shutdown checks inside cleanup loops.
+
+### OpenID Discovery missing userinfo_endpoint
+No /userinfo endpoint exists. Profile claims are available via the ID token only. Documented in Phase 4 notes.
+
+### DNS rebinding on SSRF resolver
+Mitigated by reqwest's connection pooling — resolved IP is used immediately. Theoretical only.
+
+### Consumed token cleanup overflow
+`refresh_token_ttl_secs * 2` as i64 only overflows with absurdly large TTL values (> 146 billion years). Theoretical only.
+
+### Redis rate limiter key prefix (test-only)
+`RedisRateLimiter::new()` uses hardcoded "rate_limit" prefix. Only used in unit tests, not in production (which uses `TieredRedisRateLimiter` with per-tier prefixes).

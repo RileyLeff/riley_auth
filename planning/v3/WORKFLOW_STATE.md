@@ -1,8 +1,8 @@
 # v3 Workflow State
 
-**Current Phase:** 6 — Webhook SSRF Hardening (STARTING)
-**Current Step:** 6.1 Config — Private IP Policy
-**Status:** Phase 5 complete (standard review, 1 minor fixed). Starting Phase 6.
+**Current Phase:** 7 — Quality-of-Life Fixes (EXHAUSTIVE REVIEW)
+**Current Step:** Exhaustive review R2 (need 2 consecutive rounds with 0 majors)
+**Status:** R1 found 1 major (PII scrub path) + 5 minors — all fixed. Running R2.
 
 ## Progress
 
@@ -35,9 +35,11 @@
 | 5 | 5.3 | Background Worker | Done |
 | 5 | 5.4 | Tests — Cleanup | Done |
 | 5 | review | Standard review (1 round, 1 minor fixed) | Done |
-| 6 | 6.1-6.4 | Webhook SSRF Hardening | In Progress |
-| 7 | 7.1-7.7 | Quality-of-Life Fixes | Pending |
-| 7 | review | Exhaustive review (final) | Pending |
+| 6 | 6.1-6.4 | Webhook SSRF Hardening | Done |
+| 6 | review | Standard review (1 round, 1 major + 3 minors fixed) | Done |
+| 7 | 7.1-7.7 | Quality-of-Life Fixes | Done |
+| 7 | review R1 | Exhaustive R1 (Gemini + Claude, 1 major + 5 minors fixed) | Done |
+| 7 | review R2 | Exhaustive R2 | In Progress |
 
 ## Blockers
 
@@ -45,6 +47,8 @@ None.
 
 ## Recent Activity
 
-- Phase 5 implementation complete: maintenance config, batched cleanup functions, background worker, 5 cleanup tests (c70d2f0, 86051be, 990e8f3, 6138975)
-- Phase 5 review: 1 minor (config validation), 1 note (auth code test) — both fixed (d33192f)
-- Total tests: 103 (65 integration + 38 unit)
+- Phase 6 SSRF hardening: private IP blocking, SsrfSafeResolver, redirect disable (cb43e85)
+- Phase 6 review fixes: IPv4-mapped IPv6 bypass, multicast, redirect SSRF (6d36916)
+- Phase 7 QoL fixes: cached regex, char count, IP extraction consolidation, PII scrub (0e7e227)
+- Phase 7 exhaustive R1: 1 major (PII scrub path) + 5 minors fixed (eb3e09e)
+- Total tests: 91 (69 integration + 22 unit)
