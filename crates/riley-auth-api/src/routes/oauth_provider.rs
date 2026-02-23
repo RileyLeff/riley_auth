@@ -53,6 +53,24 @@ pub struct TokenResponse {
 }
 
 #[derive(Deserialize)]
+pub struct ConsentQuery {
+    client_id: String,
+    scope: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ConsentResponse {
+    client_name: String,
+    scopes: Vec<ConsentScope>,
+}
+
+#[derive(Serialize)]
+pub struct ConsentScope {
+    name: String,
+    description: String,
+}
+
+#[derive(Deserialize)]
 pub struct RevokeRequest {
     token: String,
     client_id: String,
@@ -62,6 +80,7 @@ pub struct RevokeRequest {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/oauth/authorize", get(authorize))
+        .route("/oauth/consent", get(consent))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
 }
@@ -169,6 +188,59 @@ async fn authorize(
     }
 
     Ok(Redirect::temporary(redirect_url.as_str()))
+}
+
+/// GET /oauth/consent — returns client name and scope descriptions for consent UI
+async fn consent(
+    State(state): State<AppState>,
+    Query(query): Query<ConsentQuery>,
+    jar: CookieJar,
+) -> Result<Json<ConsentResponse>, Error> {
+    // User must be authenticated
+    let access_token = jar
+        .get(ACCESS_TOKEN_COOKIE)
+        .map(|c| c.value().to_string())
+        .ok_or(Error::Unauthenticated)?;
+
+    let token_data = state.keys.verify_access_token(&state.config.jwt, &access_token)?;
+
+    // Only session tokens can access consent data
+    if token_data.claims.aud != state.config.jwt.issuer {
+        return Err(Error::InvalidToken);
+    }
+
+    // Look up client
+    let client = db::find_client_by_client_id(&state.db, &query.client_id)
+        .await?
+        .ok_or(Error::InvalidClient)?;
+
+    // Resolve requested scopes to descriptions
+    let scopes = if let Some(ref scope_str) = query.scope {
+        let requested: Vec<&str> = scope_str.split_whitespace().collect();
+        let mut result = Vec::new();
+        for s in requested {
+            // Only include scopes that are both defined and allowed for this client
+            if !client.allowed_scopes.iter().any(|a| a == s) {
+                continue;
+            }
+            let description = state.config.scopes.definitions.iter()
+                .find(|d| d.name == s)
+                .map(|d| d.description.clone())
+                .unwrap_or_default();
+            result.push(ConsentScope {
+                name: s.to_string(),
+                description,
+            });
+        }
+        result
+    } else {
+        vec![]
+    };
+
+    Ok(Json(ConsentResponse {
+        client_name: client.name,
+        scopes,
+    }))
 }
 
 /// POST /oauth/token — token endpoint
