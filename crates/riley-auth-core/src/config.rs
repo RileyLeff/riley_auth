@@ -194,6 +194,10 @@ pub struct WebhooksConfig {
     /// private/loopback/link-local IP addresses (SSRF protection).
     #[serde(default)]
     pub allow_private_ips: bool,
+    /// Seconds before a "processing" outbox entry is considered stuck and
+    /// reset to "pending" for retry. Default: 300 (5 minutes).
+    #[serde(default = "default_stuck_processing_timeout_secs")]
+    pub stuck_processing_timeout_secs: u64,
 }
 
 impl Default for WebhooksConfig {
@@ -202,12 +206,14 @@ impl Default for WebhooksConfig {
             max_concurrent_deliveries: default_max_concurrent_deliveries(),
             max_retry_attempts: default_max_retry_attempts(),
             allow_private_ips: false,
+            stuck_processing_timeout_secs: default_stuck_processing_timeout_secs(),
         }
     }
 }
 
 fn default_max_concurrent_deliveries() -> usize { 10 }
 fn default_max_retry_attempts() -> u32 { 5 }
+fn default_stuck_processing_timeout_secs() -> u64 { 300 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MaintenanceConfig {

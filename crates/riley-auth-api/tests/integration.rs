@@ -3567,3 +3567,56 @@ fn soft_delete_scrubs_webhook_delivery_payloads() {
         assert!(deliveries[0].payload["event"].as_str().is_some());
     });
 }
+
+#[test]
+#[ignore]
+fn stuck_processing_outbox_entries_are_reset() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Register a webhook
+        let webhook = db::create_webhook(
+            &s.db,
+            None,
+            "https://example.com/hook",
+            &["user.created".to_string()],
+            "test-secret",
+        )
+        .await
+        .unwrap();
+
+        // Dispatch an event to create an outbox entry
+        riley_auth_core::webhooks::dispatch_event(
+            &s.db,
+            "user.created",
+            serde_json::json!({ "user_id": "stuck-test" }),
+            s.config.webhooks.max_retry_attempts,
+        ).await;
+
+        // Claim the entry (sets status to 'processing')
+        let entries = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry_id = entries[0].id;
+
+        // Verify it's now in 'processing' status (won't be claimed again)
+        let re_claimed = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert!(re_claimed.is_empty(), "processing entry should not be re-claimed");
+
+        // Backdating: set next_attempt_at far in the past to simulate a stuck entry
+        sqlx::query("UPDATE webhook_outbox SET next_attempt_at = now() - interval '10 minutes' WHERE id = $1")
+            .bind(entry_id)
+            .execute(&s.db)
+            .await
+            .unwrap();
+
+        // Reset stuck entries with a 5-minute timeout
+        let reset_count = db::reset_stuck_outbox_entries(&s.db, 300).await.unwrap();
+        assert_eq!(reset_count, 1, "should reset 1 stuck entry");
+
+        // The entry should now be claimable again
+        let re_claimed = db::claim_pending_outbox_entries(&s.db, 10).await.unwrap();
+        assert_eq!(re_claimed.len(), 1, "reset entry should be claimable");
+        assert_eq!(re_claimed[0].id, entry_id);
+    });
+}

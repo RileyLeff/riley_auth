@@ -205,6 +205,15 @@ async fn maintenance_worker(
             Err(e) => tracing::warn!("cleanup_webhook_outbox failed: {e}"),
             _ => {}
         }
+
+        match riley_auth_core::db::reset_stuck_outbox_entries(
+            &pool,
+            config.webhooks.stuck_processing_timeout_secs,
+        ).await {
+            Ok(n) if n > 0 => tracing::info!(count = n, "reset stuck processing outbox entries"),
+            Err(e) => tracing::warn!("reset_stuck_outbox_entries failed: {e}"),
+            _ => {}
+        }
     }
 }
 

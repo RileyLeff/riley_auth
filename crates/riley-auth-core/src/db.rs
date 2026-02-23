@@ -1399,3 +1399,19 @@ pub async fn cleanup_webhook_outbox(pool: &PgPool, retention_days: i64) -> Resul
     }
     Ok(total)
 }
+
+/// Reset outbox entries stuck in "processing" status back to "pending".
+/// Entries are considered stuck if they've been in "processing" longer than
+/// `timeout_secs`. This handles ungraceful server crashes during delivery.
+pub async fn reset_stuck_outbox_entries(pool: &PgPool, timeout_secs: u64) -> Result<u64> {
+    let result = sqlx::query(
+        "UPDATE webhook_outbox
+         SET status = 'pending', next_attempt_at = now()
+         WHERE status = 'processing'
+           AND next_attempt_at < now() - make_interval(secs => $1::double precision)"
+    )
+    .bind(timeout_secs as f64)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
