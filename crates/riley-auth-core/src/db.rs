@@ -244,9 +244,20 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<DeleteUser
         .execute(&mut *tx)
         .await?;
 
-    // Scrub PII from webhook delivery payloads referencing this user
+    // Scrub PII from webhook delivery payloads referencing this user.
+    // Delivery records store enveloped payloads: {"id":..., "event":..., "data": {flat payload}}.
+    // The user_id lives under the "data" key.
     sqlx::query(
-        "UPDATE webhook_deliveries SET payload = '{\"scrubbed\": true}'::jsonb
+        "UPDATE webhook_deliveries SET payload = jsonb_set(payload, '{data}', '{\"scrubbed\": true}')
+         WHERE payload->'data'->>'user_id' = $1::text"
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Also scrub pending outbox entries (flat payloads: {"user_id": ...})
+    sqlx::query(
+        "UPDATE webhook_outbox SET payload = '{\"scrubbed\": true}'::jsonb
          WHERE payload->>'user_id' = $1::text"
     )
     .bind(user_id)
