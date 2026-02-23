@@ -61,6 +61,13 @@ async fn require_csrf_header(
 /// When `behind_proxy` is true, rate limiting extracts client IP from
 /// `X-Forwarded-For` / `X-Real-IP` / `Forwarded` headers (falling back to
 /// peer IP). When false, rate limiting uses the peer IP directly.
+///
+/// # Security: proxy header spoofing
+///
+/// When `behind_proxy` is true, the reverse proxy **must** overwrite (not
+/// append to) the `X-Forwarded-For` header with the actual peer IP.
+/// Otherwise, malicious clients can bypass rate limiting by sending a
+/// spoofed `X-Forwarded-For` header with a random IP.
 pub fn router(behind_proxy: bool) -> Router<AppState> {
     // Cookie-authenticated routes get CSRF protection + rate limiting.
     // The OAuth provider router (client-credential authenticated) is CSRF-exempt

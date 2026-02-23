@@ -1,3 +1,4 @@
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
@@ -238,7 +239,11 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<DeleteUser
         .execute(&mut *tx)
         .await?;
 
-    // Anonymize: replace username with full UUID to avoid collisions, clear PII
+    // Anonymize: replace username with a compact, unregisterable placeholder.
+    // Format: "_" + base64url(uuid_bytes) = 23 chars, fits within default max_length (24).
+    // The "_" prefix is blocked by the default username regex (first char must be a letter),
+    // preventing anyone from registering a collision.
+    let deleted_name = format!("_{}", URL_SAFE_NO_PAD.encode(user_id.as_bytes()));
     sqlx::query(
         "UPDATE users SET
             username = $2,
@@ -249,7 +254,7 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<DeleteUser
          WHERE id = $1 AND deleted_at IS NULL"
     )
     .bind(user_id)
-    .bind(format!("deleted_{user_id}"))
+    .bind(deleted_name)
     .execute(&mut *tx)
     .await?;
 

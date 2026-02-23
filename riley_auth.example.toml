@@ -18,7 +18,12 @@ cors_origins = [                           # Allowed CORS origins (empty = permi
 ]
 cookie_domain = ".example.com"             # Domain for auth cookies (enables subdomain SSO)
 frontend_url = "https://example.com"       # Redirect target after OAuth flows
-behind_proxy = false                       # Trust X-Forwarded-For headers (default: false)
+behind_proxy = false                       # Trust X-Forwarded-For headers for rate limiting (default: false)
+                                           # IMPORTANT: When true, your reverse proxy MUST overwrite (not append to)
+                                           # the X-Forwarded-For header with the real client IP. Otherwise, clients
+                                           # can bypass rate limiting by sending a spoofed X-Forwarded-For header.
+                                           # For nginx: proxy_set_header X-Forwarded-For $remote_addr;
+                                           # For Cloudflare: this is handled automatically via CF-Connecting-IP.
 
 [database]
 url = "env:DATABASE_URL"                   # PostgreSQL connection string (supports env: syntax)

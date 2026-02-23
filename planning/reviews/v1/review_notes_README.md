@@ -18,8 +18,9 @@ This file records architectural tradeoffs flagged during review that are intenti
 **Flagged by**: Codex R3 (note), Codex Phase 8 R1 (major)
 **Decision**: Intentional per RFC 7009 — always return 200. Updated in Phase 8 to log errors via `tracing::warn!` for observability while preserving the RFC-compliant 200 response.
 
-## Soft delete uses `deleted_{uuid}` username pattern
-**Decision**: This prevents username collisions between deleted and active users. The username becomes `deleted_<uuid>`, which is blocked by the `validate_username` regex pattern, preventing anyone from registering this as a real username.
+## Soft delete username format
+**Flagged by**: Gemini 3.1 Pro (post-review)
+**Decision**: Changed from `deleted_{uuid}` (44 chars, exceeded default `max_length` of 24) to `_` + base64url(uuid_bytes) (23 chars, fits within 24). The `_` prefix is blocked by the default username regex (first char must be a letter), preventing registration collisions. The base64url encoding of the 16-byte UUID is compact and unique.
 
 ## Username cooldown TOCTOU
 **Flagged by**: Gemini R4 (minor)
