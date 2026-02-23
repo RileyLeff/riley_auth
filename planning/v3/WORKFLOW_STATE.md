@@ -1,8 +1,8 @@
 # v3 Workflow State
 
-**Current Phase:** 5 — Background Cleanup Task (STARTING)
-**Current Step:** 5.1 Config — Maintenance
-**Status:** Phase 4 exhaustive review converged (3 rounds, 0 majors in R2+R3). Starting Phase 5.
+**Current Phase:** 6 — Webhook SSRF Hardening (STARTING)
+**Current Step:** 6.1 Config — Private IP Policy
+**Status:** Phase 5 complete (standard review, 1 minor fixed). Starting Phase 6.
 
 ## Progress
 
@@ -30,8 +30,12 @@
 | 4 | 4.4 | Discovery Document Updates | Done |
 | 4 | 4.5 | Tests — OIDC | Done |
 | 4 | review | Exhaustive review (3 rounds, converged R2+R3, Claude+Gemini partial) | Done |
-| 5 | 5.1-5.4 | Background Cleanup Task | Pending |
-| 6 | 6.1-6.4 | Webhook SSRF Hardening | Pending |
+| 5 | 5.1 | Config — Maintenance | Done |
+| 5 | 5.2 | Cleanup Functions | Done |
+| 5 | 5.3 | Background Worker | Done |
+| 5 | 5.4 | Tests — Cleanup | Done |
+| 5 | review | Standard review (1 round, 1 minor fixed) | Done |
+| 6 | 6.1-6.4 | Webhook SSRF Hardening | In Progress |
 | 7 | 7.1-7.7 | Quality-of-Life Fixes | Pending |
 | 7 | review | Exhaustive review (final) | Pending |
 
@@ -41,8 +45,6 @@ None.
 
 ## Recent Activity
 
-- Phase 4 R1: 2 majors fixed (remove userinfo_endpoint, rename detail→error_description) (736f243)
-- Phase 4 R1: 4 minors fixed (auth code replay test, PKCE test, empty display name) (d401fcf)
-- Phase 4 R2: 4 minors fixed (CHECK constraint, redirect_uri validation, CORS warning, remove unsafe Sync) (c00526c)
-- Phase 4 R3: 0 majors, convergence achieved. Review artifacts filed (704acf4)
-- Total tests: 105 (61 integration + 36 unit + 8 redis)
+- Phase 5 implementation complete: maintenance config, batched cleanup functions, background worker, 5 cleanup tests (c70d2f0, 86051be, 990e8f3, 6138975)
+- Phase 5 review: 1 minor (config validation), 1 note (auth code test) — both fixed (d33192f)
+- Total tests: 103 (65 integration + 38 unit)
