@@ -996,32 +996,87 @@ pub async fn get_user_role(pool: &PgPool, user_id: Uuid) -> Result<Option<String
 
 // --- Cleanup ---
 
+/// Delete expired refresh tokens in batches of 1000 to avoid long locks.
 pub async fn cleanup_expired_tokens(pool: &PgPool) -> Result<u64> {
-    let result = sqlx::query("DELETE FROM refresh_tokens WHERE expires_at <= now()")
+    let mut total = 0u64;
+    loop {
+        let result = sqlx::query(
+            "DELETE FROM refresh_tokens WHERE id IN (
+                SELECT id FROM refresh_tokens WHERE expires_at <= now() LIMIT 1000
+            )"
+        )
         .execute(pool)
         .await?;
-    Ok(result.rows_affected())
+        let affected = result.rows_affected();
+        total += affected;
+        if affected < 1000 { break; }
+    }
+    Ok(total)
 }
 
+/// Delete expired authorization codes in batches of 1000.
 pub async fn cleanup_expired_auth_codes(pool: &PgPool) -> Result<u64> {
-    let result = sqlx::query("DELETE FROM authorization_codes WHERE expires_at <= now()")
+    let mut total = 0u64;
+    loop {
+        let result = sqlx::query(
+            "DELETE FROM authorization_codes WHERE id IN (
+                SELECT id FROM authorization_codes WHERE expires_at <= now() LIMIT 1000
+            )"
+        )
         .execute(pool)
         .await?;
-    Ok(result.rows_affected())
+        let affected = result.rows_affected();
+        total += affected;
+        if affected < 1000 { break; }
+    }
+    Ok(total)
 }
 
 /// Clean up consumed refresh token records older than the given cutoff.
 /// The cutoff should be ~2x the refresh token TTL — if the attacker hasn't
 /// replayed the stolen token within that window, the family has naturally expired.
+/// Batched to 1000 per iteration.
 pub async fn cleanup_consumed_refresh_tokens(
     pool: &PgPool,
     older_than: DateTime<Utc>,
 ) -> Result<u64> {
-    let result = sqlx::query("DELETE FROM consumed_refresh_tokens WHERE consumed_at < $1")
+    let mut total = 0u64;
+    loop {
+        let result = sqlx::query(
+            "DELETE FROM consumed_refresh_tokens WHERE token_hash IN (
+                SELECT token_hash FROM consumed_refresh_tokens WHERE consumed_at < $1 LIMIT 1000
+            )"
+        )
         .bind(older_than)
         .execute(pool)
         .await?;
-    Ok(result.rows_affected())
+        let affected = result.rows_affected();
+        total += affected;
+        if affected < 1000 { break; }
+    }
+    Ok(total)
+}
+
+/// Clean up old webhook delivery records beyond the retention period.
+/// Batched to 1000 per iteration.
+pub async fn cleanup_webhook_deliveries(pool: &PgPool, retention_days: i64) -> Result<u64> {
+    let mut total = 0u64;
+    loop {
+        let result = sqlx::query(
+            "DELETE FROM webhook_deliveries WHERE id IN (
+                SELECT id FROM webhook_deliveries
+                WHERE attempted_at < now() - make_interval(days => $1::int)
+                LIMIT 1000
+            )"
+        )
+        .bind(retention_days as i32)
+        .execute(pool)
+        .await?;
+        let affected = result.rows_affected();
+        total += affected;
+        if affected < 1000 { break; }
+    }
+    Ok(total)
 }
 
 // --- Webhook queries ---
@@ -1303,14 +1358,24 @@ pub async fn record_outbox_attempt(
 }
 
 /// Cleanup delivered and failed outbox entries older than the given retention.
+/// Batched to 1000 per iteration.
 pub async fn cleanup_webhook_outbox(pool: &PgPool, retention_days: i64) -> Result<u64> {
-    let result = sqlx::query(
-        "DELETE FROM webhook_outbox
-         WHERE status IN ('delivered', 'failed')
-         AND created_at < now() - make_interval(days => $1::int)"
-    )
-    .bind(retention_days as i32)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected())
+    let mut total = 0u64;
+    loop {
+        let result = sqlx::query(
+            "DELETE FROM webhook_outbox WHERE id IN (
+                SELECT id FROM webhook_outbox
+                WHERE status IN ('delivered', 'failed')
+                AND created_at < now() - make_interval(days => $1::int)
+                LIMIT 1000
+            )"
+        )
+        .bind(retention_days as i32)
+        .execute(pool)
+        .await?;
+        let affected = result.rows_affected();
+        total += affected;
+        if affected < 1000 { break; }
+    }
+    Ok(total)
 }
