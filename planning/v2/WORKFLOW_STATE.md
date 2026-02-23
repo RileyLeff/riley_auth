@@ -1,21 +1,24 @@
 # v2 Workflow State
 
-**Current Phase:** 1 — Scopes & Permissions (NOT STARTED)
-**Current Step:** 1.1 Database Migration — Scopes Columns
-**Status:** Beginning Phase 1 implementation.
+**Current Phase:** 1 — Scopes & Permissions (REVIEW)
+**Current Step:** Exhaustive review — round 2
+**Status:** Round 1 fixes committed (cf0740e). 17 unit + 32 integration tests pass. Round 2 in progress (Gemini + Claude).
 
 ## Progress
 
 | Phase | Step | Description | Status |
 |-------|------|-------------|--------|
-| 1 | 1.1 | Database migration — scopes columns | Not Started |
-| 1 | 1.2 | Config — scope definitions | Not Started |
-| 1 | 1.3 | Admin API — client scope management | Not Started |
-| 1 | 1.4 | OAuth provider flow — scope validation & propagation | Not Started |
-| 1 | 1.5 | JWT — scope claim | Not Started |
-| 1 | 1.6 | Consent data endpoint | Not Started |
-| 1 | 1.7 | Tests — scopes | Not Started |
-| 1 | review | Exhaustive review | Not Started |
+| 1 | 1.1 | Database migration — scopes columns | Done (6c83956) |
+| 1 | 1.2 | Config — scope definitions | Done (a2d5d63) |
+| 1 | 1.3 | Admin API — client scope management | Done (c72e076) |
+| 1 | 1.4 | OAuth provider flow — scope validation & propagation | Done (e60a48d) |
+| 1 | 1.5 | JWT — scope claim | Done (bc5cb50) |
+| 1 | 1.6 | Consent data endpoint | Done (ed2d1de) |
+| 1 | 1.7 | Tests — scopes | Done (b1953fa) |
+| 1 | fix | Fix integration test rate limiting | Done (1a39a98) |
+| 1 | review R1 | Exhaustive review round 1 (Gemini + Claude) | Done — 5 major, 9 minor, 9 notes |
+| 1 | fixes R1 | Round 1 fixes | Done (cf0740e) — 5 major + 1 minor fixed |
+| 1 | review R2 | Exhaustive review round 2 (Gemini + Claude) | In Progress |
 | 2 | 2.1 | OIDC discovery endpoint | Not Started |
 | 2 | 2.2 | ID token issuance | Not Started |
 | 2 | 2.3 | Tests — OIDC | Not Started |
@@ -45,5 +48,8 @@ None.
 
 ## Recent Activity
 
-- v2 architecture plan written and committed (43cd1da)
-- Implementation plan created
+- Phase 1 steps 1.1–1.7 implemented with 8 commits (6c83956..1a39a98)
+- Review round 1: Gemini + Claude (Codex rate-limited). 5 major, 9 minor, 9 notes.
+- Round 1 fixes committed (cf0740e): scope validation, dedup, constant-time state, consent errors
+- Review artifacts filed: planning/reviews/v2/01-02 + review_notes_README.md (c9653ef)
+- Review round 2 in progress
