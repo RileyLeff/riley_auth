@@ -1,8 +1,8 @@
 # v1 Workflow State
 
 **Current Phase:** Phase 8 — Integration Testing & Deploy
-**Current Step:** Pending (exhaustive review complete)
-**Status:** Exhaustive review converged: R9 + R10 achieved 2 consecutive clean passes (0 major across all 3 models). Ready for Phase 8.
+**Current Step:** Phase 8 exhaustive review R2
+**Status:** Phase 8 R1 findings fixed. Running R2 for convergence.
 
 ## Progress
 
@@ -15,7 +15,15 @@
 | 7 | 7.1-7.4 | Admin API, CLI commands | Done (c5488aa) |
 | - | R1-R8 | 22 major bugs found and fixed | Done |
 | - | R9+R10 | 2 consecutive clean passes (converged) | Done |
-| 8 | 8.1-8.5 | Docker, integration tests, Dockerfile, config, rate limiting | Pending |
+| 8 | 8.1 | Docker Compose test environment | Done (b6fa89b) |
+| 8 | 8.2 | Integration tests (21 tests) | Done (b6fa89b) |
+| 8 | 8.3 | Dockerfile | Done (3ab6772) |
+| 8 | 8.4 | Example config | Done (3ab6772) |
+| 8 | 8.5 | Rate limiting | Done (de240ba) |
+| 8 | - | DB schema config | Done (c469b00) |
+| 8 | review-R1 | Phase 8 exhaustive review R1 (Claude+Gemini+Codex) | Done |
+| 8 | review-R1-fix | Fix: SQL injection, behind_proxy, Dockerfile, revoke logging | Done |
+| 8 | review-R2 | Phase 8 exhaustive review R2 | In Progress |
 
 ## Blockers
 
@@ -23,6 +31,8 @@ None.
 
 ## Recent Activity
 
-- R9: CLEAN PASS #1 — 0 major across Claude + Gemini + Codex
-- R10: CLEAN PASS #2 — 0 major across Claude + Gemini + Codex (CONVERGED)
-- Exhaustive review complete. Ready for Phase 8.
+- Phase 8 R1: 3 models, 1 major (SQL injection via schema), 3 minor fixes
+- Fixed SQL injection via schema name validation
+- Wired `behind_proxy` to SmartIpKeyExtractor for rate limiting
+- Dockerfile now runs as non-root user (appuser)
+- Token revocation errors now logged via tracing::warn

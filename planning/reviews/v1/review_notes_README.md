@@ -15,8 +15,8 @@ This file records architectural tradeoffs flagged during review that are intenti
 **Decision**: Acceptable for now. Username validation happens rarely (account creation, username change). If profiling shows this matters, can use `OnceLock` or `LazyLock` to cache the compiled regex. Not a correctness issue.
 
 ## `/oauth/revoke` swallows DB errors
-**Flagged by**: Codex R3 (note)
-**Decision**: Intentional per RFC 7009. The revocation endpoint SHOULD return 200 for both valid and invalid tokens. Silencing DB errors means we return 200 even if the DB is down, which is technically wrong but follows the spec's philosophy of "always succeed." The tradeoff is acceptable for a revocation endpoint — the worst case is a token that should have been revoked remains valid until expiry.
+**Flagged by**: Codex R3 (note), Codex Phase 8 R1 (major)
+**Decision**: Intentional per RFC 7009 — always return 200. Updated in Phase 8 to log errors via `tracing::warn!` for observability while preserving the RFC-compliant 200 response.
 
 ## Soft delete uses `deleted_{uuid}` username pattern
 **Decision**: This prevents username collisions between deleted and active users. The username becomes `deleted_<uuid>`, which is blocked by the `validate_username` regex pattern, preventing anyone from registering this as a real username.
@@ -52,3 +52,23 @@ This file records architectural tradeoffs flagged during review that are intenti
 ## kid generation from full PEM content
 **Flagged by**: Gemini R9 (minor)
 **Decision**: The key ID is SHA-256 of the full PEM file. This means whitespace/comment changes would alter the kid. In practice we control key generation and PEM format is stable. For a v1 single-key deployment this is fine. Could improve to hash only DER bytes in a future iteration.
+
+## ct_eq comparison logic is correct
+**Flagged by**: Gemini Phase 8 R1 (major — FALSE POSITIVE)
+**Decision**: `ct_eq().unwrap_u8() == 0` means "if NOT equal → error". `unwrap_u8()` returns 1 for equal, 0 for not-equal. The code is correct. Gemini misread the logic.
+
+## Unverified email in account linking suggestion
+**Flagged by**: Gemini Phase 8 R1 (major — downgraded to note)
+**Decision**: The email-matching flow only redirects to a frontend `/link-accounts` page — it does NOT auto-link. The user must explicitly consent. Google only returns verified emails. For GitHub, `fetch_github_primary_email` doesn't check the `verified` field, but the worst case is suggesting a link the user can decline. Good hygiene to add `email_verified` check in a future iteration, but not a security vulnerability.
+
+## OAuth refresh/code consume-before-validate pattern
+**Flagged by**: Codex Phase 8 R1 (minor)
+**Decision**: Auth codes and refresh tokens are consumed atomically before validation (redirect_uri, client_id, PKCE checks). This is the RFC-recommended approach — consume to prevent replay, then validate. If validation fails, the code/token is dead. A different authorized client could theoretically burn another client's refresh token, but this requires valid client credentials + the victim's refresh token — an extremely narrow window between trusted parties.
+
+## Rate limiting applied globally
+**Flagged by**: Claude Phase 8 R1 (note)
+**Decision**: Rate limiter covers all endpoints including `/health` and `/.well-known/jwks.json`. Acceptable for v1. Can split rate limit layers per route group later if monitoring systems cause issues.
+
+## Integration test coverage gaps
+**Flagged by**: Consensus Phase 8 R1 (minor)
+**Decision**: 21 tests cover happy paths and key security scenarios. Missing tests for rate limiting, PKCE failure, auth code replay, unlink/last-provider, admin self-deletion, expired refresh tokens. Tracked for future improvement.
