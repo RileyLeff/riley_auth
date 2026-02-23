@@ -569,6 +569,43 @@ pub async fn consume_refresh_token(
     Ok(row)
 }
 
+/// Atomically consume a client-bound refresh token for rotation.
+/// Only consumes tokens that belong to the specified client, preventing
+/// session tokens or other clients' tokens from being destroyed when
+/// mistakenly sent to the OAuth token endpoint.
+pub async fn consume_client_refresh_token(
+    pool: &PgPool,
+    token_hash: &str,
+    client_id: Uuid,
+) -> Result<Option<RefreshTokenRow>> {
+    let mut tx = pool.begin().await?;
+
+    let row = sqlx::query_as::<_, RefreshTokenRow>(
+        "DELETE FROM refresh_tokens
+         WHERE token_hash = $1 AND expires_at > now() AND client_id = $2
+         RETURNING *"
+    )
+    .bind(token_hash)
+    .bind(client_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if let Some(ref token) = row {
+        sqlx::query(
+            "INSERT INTO consumed_refresh_tokens (token_hash, family_id)
+             VALUES ($1, $2)
+             ON CONFLICT (token_hash) DO NOTHING"
+        )
+        .bind(&token.token_hash)
+        .bind(token.family_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(row)
+}
+
 /// Atomically consume a session-only refresh token (client_id IS NULL).
 /// Same as `consume_refresh_token` but rejects client-bound tokens without
 /// consuming them, preventing accidental destruction of OAuth client tokens

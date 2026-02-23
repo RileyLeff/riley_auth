@@ -372,15 +372,12 @@ async fn token(
                 return Err(Error::InvalidGrant);
             }
 
-            // Atomically consume the refresh token (moves to consumed table for reuse detection)
-            let token_row = db::consume_refresh_token(&state.db, &refresh_hash)
+            // Atomically consume a client-bound refresh token (client_id = verified client).
+            // This rejects session tokens or other clients' tokens without consuming them,
+            // preventing cross-endpoint token destruction.
+            let token_row = db::consume_client_refresh_token(&state.db, &refresh_hash, client.id)
                 .await?
                 .ok_or(Error::InvalidGrant)?;
-
-            // Verify this refresh token belongs to this client
-            if token_row.client_id != Some(client.id) {
-                return Err(Error::InvalidGrant);
-            }
 
             let user = db::find_user_by_id(&state.db, token_row.user_id)
                 .await?
