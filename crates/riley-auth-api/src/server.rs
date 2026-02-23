@@ -140,7 +140,13 @@ fn build_cors(config: &Config) -> CorsLayer {
     } else {
         let origins: Vec<_> = origins
             .iter()
-            .filter_map(|o| o.parse().ok())
+            .filter_map(|o| match o.parse() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("ignoring unparseable CORS origin {o:?}: {e}");
+                    None
+                }
+            })
             .collect();
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(origins))

@@ -247,6 +247,22 @@ async fn register_client(
         return Err(Error::BadRequest("at least one redirect_uri required".to_string()));
     }
 
+    // Validate redirect_uri schemes
+    for uri in &body.redirect_uris {
+        let parsed = url::Url::parse(uri).map_err(|_| {
+            Error::BadRequest(format!("invalid redirect_uri: {uri}"))
+        })?;
+        match parsed.scheme() {
+            "https" => {}
+            "http" if parsed.host_str() == Some("localhost") || parsed.host_str() == Some("127.0.0.1") => {}
+            scheme => {
+                return Err(Error::BadRequest(format!(
+                    "redirect_uri must use https (or http://localhost for development), got {scheme}://"
+                )));
+            }
+        }
+    }
+
     // Validate allowed_scopes: format + existence in config definitions
     let defined_names: Vec<&str> = state.config.scopes.definitions.iter()
         .map(|d| d.name.as_str())

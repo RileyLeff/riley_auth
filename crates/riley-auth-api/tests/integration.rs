@@ -51,9 +51,6 @@ struct TestServer {
     _key_dir: tempfile::TempDir,
 }
 
-// TempDir is Send + Sync; all other fields are Send + Sync.
-unsafe impl Sync for TestServer {}
-
 impl TestServer {
     async fn init() -> Self {
         let database_url = std::env::var("DATABASE_URL")
@@ -1891,6 +1888,62 @@ fn admin_rejects_invalid_scope_name() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
+fn admin_rejects_invalid_redirect_uri_scheme() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let (_, admin_token, _) = s.create_user_with_session("redirschemeadmin", "admin").await;
+        let client = s.client();
+
+        // javascript: scheme should be rejected
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "Evil App",
+                "redirect_uris": ["javascript:alert(1)"],
+                "auto_approve": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // http:// non-localhost should be rejected
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "HTTP App",
+                "redirect_uris": ["http://example.com/callback"],
+                "auto_approve": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // http://localhost should be allowed (development)
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "Dev App",
+                "redirect_uris": ["http://localhost:3000/callback"],
+                "auto_approve": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
     });
 }
 
