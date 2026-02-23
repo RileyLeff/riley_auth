@@ -113,3 +113,25 @@ CLI-only setup-time operation (the `generate-keys` subcommand). Not reachable vi
 
 ### Cookie Secure flag always true
 All cookies are set with `Secure = true` unconditionally. This prevents local HTTP development without workarounds, but is the correct default for production. Integration tests work because reqwest ignores the Secure flag. Accepted as safe default.
+
+## Phase 5 — Background Cleanup Task
+
+### Maintenance worker does not run cleanup immediately on startup
+Sleep-first pattern is common and acceptable. Expired data waiting another hour after restart is fine.
+
+### Batched delete subquery without FOR UPDATE SKIP LOCKED
+Single-worker architecture makes locking unnecessary. Redundant deletes are idempotent.
+
+## Phase 6 — Webhook SSRF Hardening
+
+### TOCTOU in DNS resolver is inherent
+The DNS-check-then-connect pattern has a theoretical race window. Exploiting it requires attacker control of authoritative DNS. Standard mitigation for reqwest.
+
+### Webhook URL validation at registration is scheme-only
+Only admins can register webhooks. SSRF protection kicks in at delivery time. Adding IP checks at registration would require DNS resolution (fragile).
+
+### Webhook delivery does not follow redirects
+Disabled to prevent open-redirect SSRF bypass. Webhook endpoints should return 2xx directly.
+
+### check_url_ip_literal silently succeeds on URL parse failure
+If URL can't be parsed, reqwest will also fail. Low risk. Accepted.
