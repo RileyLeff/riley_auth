@@ -1,0 +1,71 @@
+# riley_auth configuration
+#
+# Config resolution order:
+#   1. --config CLI flag
+#   2. RILEY_AUTH_CONFIG env var
+#   3. ./riley_auth.toml (walks up parent directories)
+#   4. ~/.config/riley_auth/config.toml
+#   5. /etc/riley_auth/config.toml
+#
+# Values support "env:VAR_NAME" syntax for secrets.
+
+[server]
+host = "0.0.0.0"                          # Listen address (default: 0.0.0.0)
+port = 8081                                # Listen port (default: 8081)
+cors_origins = [                           # Allowed CORS origins (empty = permissive)
+  "https://example.com",
+  "https://app.example.com",
+]
+cookie_domain = ".example.com"             # Domain for auth cookies (enables subdomain SSO)
+frontend_url = "https://example.com"       # Redirect target after OAuth flows
+behind_proxy = false                       # Trust X-Forwarded-For headers (default: false)
+
+[database]
+url = "env:DATABASE_URL"                   # PostgreSQL connection string (supports env: syntax)
+max_connections = 10                       # Connection pool size (default: 10)
+
+[jwt]
+private_key_path = "/data/keys/private.pem"  # RS256 private key (signs tokens)
+public_key_path = "/data/keys/public.pem"    # RS256 public key (verifies tokens, served at /jwks.json)
+access_token_ttl_secs = 900                  # Access token lifetime (default: 900 = 15 minutes)
+refresh_token_ttl_secs = 2592000             # Refresh token lifetime (default: 2592000 = 30 days)
+issuer = "riley-auth"                        # JWT "iss" claim (default: riley-auth)
+authorization_code_ttl_secs = 300            # OAuth authorization code lifetime (default: 300 = 5 min)
+
+# OAuth providers — configure one or both.
+# Generate credentials at:
+#   Google: https://console.cloud.google.com/apis/credentials
+#   GitHub: https://github.com/settings/developers
+
+[oauth.google]
+client_id = "env:GOOGLE_CLIENT_ID"
+client_secret = "env:GOOGLE_CLIENT_SECRET"
+
+[oauth.github]
+client_id = "env:GITHUB_CLIENT_ID"
+client_secret = "env:GITHUB_CLIENT_SECRET"
+
+# Optional: S3-compatible storage for avatar uploads.
+# Omit this section to disable avatar uploads.
+
+# [storage]
+# backend = "s3"                             # Storage backend (default: s3)
+# bucket = "avatars"                         # S3 bucket name
+# region = "auto"                            # S3 region (default: auto)
+# endpoint = "https://xxx.r2.cloudflarestorage.com"  # S3-compatible endpoint
+# public_url_base = "https://avatars.example.com"    # Public URL prefix for avatars
+# max_avatar_size = 2097152                  # Max upload size in bytes (default: 2097152 = 2MB)
+
+[usernames]
+min_length = 3                             # Minimum username length (default: 3)
+max_length = 24                            # Maximum username length (default: 24)
+pattern = "^[a-zA-Z][a-zA-Z0-9_-]*$"      # Username regex (default: letter + alphanumeric/dash/underscore)
+case_sensitive = false                     # Treat "Riley" and "riley" as the same (default: false)
+allow_changes = true                       # Allow username changes (default: true)
+change_cooldown_days = 30                  # Days between username changes (default: 30)
+old_name_hold_days = 90                    # Days old username is reserved after change (default: 90)
+reserved = [                               # Blocked usernames (default: empty)
+  "admin", "administrator", "system", "support", "help",
+  "mod", "moderator", "root", "api", "auth", "blog",
+  "null", "undefined", "deleted",
+]
