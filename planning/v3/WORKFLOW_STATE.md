@@ -1,8 +1,8 @@
 # v3 Workflow State
 
-**Current Phase:** 3 — Tiered Rate Limiting (REVIEW)
-**Current Step:** review
-**Status:** Phase 3 complete. Standard review converged (2 rounds, 0 major in R2).
+**Current Phase:** 5 — Background Cleanup Task (STARTING)
+**Current Step:** 5.1 Config — Maintenance
+**Status:** Phase 4 exhaustive review converged (3 rounds, 0 majors in R2+R3). Starting Phase 5.
 
 ## Progress
 
@@ -24,8 +24,12 @@
 | 3 | 3.3 | CORS Preflight Exemption | Done |
 | 3 | 3.4 | Tests — Tiered Rate Limiting | Done |
 | 3 | review | Standard review (2 rounds, converged) | Done |
-| 4 | 4.1-4.5 | OIDC Compliance | Pending |
-| 4 | review | Exhaustive review | Pending |
+| 4 | 4.1 | Database Migration — Nonce Column | Done |
+| 4 | 4.2 | Nonce Support | Done |
+| 4 | 4.3 | Conditional ID Token Issuance | Done |
+| 4 | 4.4 | Discovery Document Updates | Done |
+| 4 | 4.5 | Tests — OIDC | Done |
+| 4 | review | Exhaustive review (3 rounds, converged R2+R3, Claude+Gemini partial) | Done |
 | 5 | 5.1-5.4 | Background Cleanup Task | Pending |
 | 6 | 6.1-6.4 | Webhook SSRF Hardening | Pending |
 | 7 | 7.1-7.7 | Quality-of-Life Fixes | Pending |
@@ -37,10 +41,8 @@ None.
 
 ## Recent Activity
 
-- Phase 3 Step 3.1-3.3: tiered rate limiting config, middleware, OPTIONS exemption (b137da8)
-- Phase 3 Step 3.4: tiered Redis rate limit tests (516111a)
-- Phase 3 Review R1: 2 major, 9 minor findings (10_review_round.md)
-- Phase 3 Review R1 fixes: path classification, memory eviction, Retry-After, JSON 429 (a05adf4)
-- Phase 3 Review R2: 0 real major, 4 minor/notes (Claude-only, degraded round)
-- Phase 3 Review R2 fixes: IP warning, CORS comment, remove redundant header (f13fe3b)
-- Total tests: 100 (56 integration + 36 unit + 8 redis)
+- Phase 4 R1: 2 majors fixed (remove userinfo_endpoint, rename detail→error_description) (736f243)
+- Phase 4 R1: 4 minors fixed (auth code replay test, PKCE test, empty display name) (d401fcf)
+- Phase 4 R2: 4 minors fixed (CHECK constraint, redirect_uri validation, CORS warning, remove unsafe Sync) (c00526c)
+- Phase 4 R3: 0 majors, convergence achieved. Review artifacts filed (704acf4)
+- Total tests: 105 (61 integration + 36 unit + 8 redis)
