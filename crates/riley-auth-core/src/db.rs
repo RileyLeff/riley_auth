@@ -129,7 +129,7 @@ pub async fn create_user(
 pub async fn update_user_display_name(
     pool: &PgPool,
     user_id: Uuid,
-    display_name: &str,
+    display_name: Option<&str>,
 ) -> Result<User> {
     let user = sqlx::query_as::<_, User>(
         "UPDATE users SET display_name = $2, updated_at = now()

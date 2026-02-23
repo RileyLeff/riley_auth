@@ -2981,3 +2981,161 @@ fn oidc_no_id_token_without_openid_scope() {
         );
     });
 }
+
+#[test]
+#[ignore]
+fn oauth_authorization_code_replay_rejected() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("replayuser", "user").await;
+
+        let client_id_str = "replay-client";
+        let client_secret = "replay-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Replay Client",
+            client_id_str,
+            &secret_hash,
+            &["https://replay.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://replay.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "read:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // First exchange should succeed
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://replay.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Second exchange (replay) should fail
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://replay.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "invalid_authorization_code");
+    });
+}
+
+#[test]
+#[ignore]
+fn oauth_pkce_wrong_verifier_rejected() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("pkceuser", "user").await;
+
+        let client_id_str = "pkce-client";
+        let client_secret = "pkce-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "PKCE Client",
+            client_id_str,
+            &secret_hash,
+            &["https://pkce.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://pkce.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "read:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange with wrong verifier should fail
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://pkce.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", "wrong-verifier-that-does-not-match"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "invalid_grant");
+    });
+}

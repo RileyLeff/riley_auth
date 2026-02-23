@@ -486,10 +486,18 @@ async fn update_display_name(
     }
 
     let claims = extract_user(&state, &jar)?;
+
+    // Treat empty string as clearing the display name
+    let display_name = if body.display_name.trim().is_empty() {
+        None
+    } else {
+        Some(body.display_name.as_str())
+    };
+
     let user = db::update_user_display_name(
         &state.db,
         claims.sub_uuid()?,
-        &body.display_name,
+        display_name,
     )
     .await?;
 
