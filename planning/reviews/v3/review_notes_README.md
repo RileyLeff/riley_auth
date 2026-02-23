@@ -70,3 +70,23 @@ HMAC signature covers payload only, no timestamp in signed content. Industry sta
 
 ### dispatch_event_for_client is not currently used with client_id
 The `event_client_id` parameter on `dispatch_event_for_client` enables client-scoped webhook delivery but no call site currently passes a non-None client_id. The capability exists for future use (e.g., OAuth token grant events scoped to the requesting client).
+
+## Phase 3 — Tiered Rate Limiting
+
+### X-Forwarded-For leftmost IP is correct with proxy overwrite
+The rate limiter takes the first (leftmost) IP from `X-Forwarded-For`. This requires the proxy to *overwrite* (not append to) the header. Documented in `riley_auth.example.toml` with nginx/Cloudflare guidance. The "count from right with trusted proxy count" is another valid approach but unnecessary complexity for this use case.
+
+### Rate limiting fails open when IP extraction fails
+Both in-memory and Redis middlewares allow requests through when `extract_ip` returns None. This is unreachable in production (ConnectInfo is always present from `into_make_service_with_connect_info`), but a `tracing::warn!` was added for monitoring in case of misconfigured deployments.
+
+### Fixed-window boundary burst is accepted
+Fixed-window counters allow up to 2x burst at window boundaries. Known tradeoff. Sliding window or token bucket would fix this but add complexity disproportionate to the threat model.
+
+### Memory eviction runs every window_secs (2x linger possible)
+Expired entries can linger up to 2x window duration before pruning. This is acceptable — under DDoS with many unique IPs, the Redis backend is the recommended path.
+
+### Percent-encoded paths may bypass tier classification
+`/auth%2Fgoogle` would not match `/auth/` prefix in `classify_path`. Non-exploitable because Axum would 404 such requests (its router normalizes differently). No code change needed.
+
+### OPTIONS bypass permits unthrottled OPTIONS floods
+The OPTIONS bypass is necessary for CORS preflights. Edge/proxy-level generic request limits should backstop this.

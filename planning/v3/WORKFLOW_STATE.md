@@ -1,8 +1,8 @@
 # v3 Workflow State
 
-**Current Phase:** 3 — Tiered Rate Limiting (PENDING)
-**Current Step:** 3.1
-**Status:** Phase 2 complete. Review round converged with all findings fixed. Starting Phase 3.
+**Current Phase:** 3 — Tiered Rate Limiting (REVIEW)
+**Current Step:** review
+**Status:** Phase 3 complete. Standard review converged (2 rounds, 0 major in R2).
 
 ## Progress
 
@@ -19,7 +19,11 @@
 | 2 | 2.4 | Core — Delivery Worker | Done |
 | 2 | 2.5 | Tests — Webhook Reliability | Done |
 | 2 | review | Standard review (1 round, all findings fixed) | Done |
-| 3 | 3.1-3.4 | Tiered Rate Limiting | Pending |
+| 3 | 3.1 | Config — Rate Limit Tiers | Done |
+| 3 | 3.2 | Middleware — Tiered Rate Limiter | Done |
+| 3 | 3.3 | CORS Preflight Exemption | Done |
+| 3 | 3.4 | Tests — Tiered Rate Limiting | Done |
+| 3 | review | Standard review (2 rounds, converged) | Done |
 | 4 | 4.1-4.5 | OIDC Compliance | Pending |
 | 4 | review | Exhaustive review | Pending |
 | 5 | 5.1-5.4 | Background Cleanup Task | Pending |
@@ -33,10 +37,10 @@ None.
 
 ## Recent Activity
 
-- Phase 2 Step 2.1: webhook outbox migration (9587fe4)
-- Phase 2 Step 2.2: webhooks config section (c7a75df)
-- Phase 2 Step 2.3: outbox writer + caller updates (3a87738)
-- Phase 2 Step 2.4: delivery worker with bounded concurrency (1ad479a)
-- Phase 2 Step 2.5: outbox reliability tests — 5 new tests (72c92c7)
-- Phase 2 Review R5: 4 majors, 7 minors fixed (e1ff9c0)
-- Total tests: 78 (56 integration + 22 unit)
+- Phase 3 Step 3.1-3.3: tiered rate limiting config, middleware, OPTIONS exemption (b137da8)
+- Phase 3 Step 3.4: tiered Redis rate limit tests (516111a)
+- Phase 3 Review R1: 2 major, 9 minor findings (10_review_round.md)
+- Phase 3 Review R1 fixes: path classification, memory eviction, Retry-After, JSON 429 (a05adf4)
+- Phase 3 Review R2: 0 real major, 4 minor/notes (Claude-only, degraded round)
+- Phase 3 Review R2 fixes: IP warning, CORS comment, remove redundant header (f13fe3b)
+- Total tests: 100 (56 integration + 36 unit + 8 redis)
