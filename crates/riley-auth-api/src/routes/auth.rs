@@ -239,6 +239,14 @@ async fn auth_setup(
         return Err(Error::UsernameTaken);
     }
 
+    // Check if this provider identity is already linked to another user
+    if db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id)
+        .await?
+        .is_some()
+    {
+        return Err(Error::ProviderAlreadyLinked);
+    }
+
     // Create user + OAuth link atomically
     let user = db::create_user_with_link(
         &state.db,
@@ -251,6 +259,7 @@ async fn auth_setup(
     )
     .await
     .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
+        // Race: username taken between check and insert
         Error::UsernameTaken
     } else {
         e

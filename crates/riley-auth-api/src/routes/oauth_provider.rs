@@ -122,6 +122,9 @@ async fn authorize(
     // endpoint knows whether to include an id_token.
     let granted_scopes: Vec<String> = if let Some(ref scope_str) = query.scope {
         let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
+        if requested.is_empty() {
+            return Err(Error::BadRequest("scope parameter must not be empty".to_string()));
+        }
         let defined_names: Vec<&str> = state.config.scopes.definitions.iter()
             .map(|d| d.name.as_str())
             .collect();

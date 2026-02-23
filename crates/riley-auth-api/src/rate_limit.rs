@@ -233,10 +233,15 @@ pub async fn memory_rate_limit_middleware(
         let headers = response.headers_mut();
         headers.insert("x-ratelimit-remaining", HeaderValue::from(remaining));
         headers.insert("x-ratelimit-limit", HeaderValue::from(limiter.burst_size(tier)));
+        headers_insert_reset(headers, retry_after);
         response
     } else {
         let mut response = Error::RateLimited.into_response();
-        headers_insert_retry_after(response.headers_mut(), retry_after);
+        let headers = response.headers_mut();
+        headers_insert_retry_after(headers, retry_after);
+        headers.insert("x-ratelimit-remaining", HeaderValue::from(0u64));
+        headers.insert("x-ratelimit-limit", HeaderValue::from(limiter.burst_size(tier)));
+        headers_insert_reset(headers, retry_after);
         response
     }
 }
@@ -244,6 +249,16 @@ pub async fn memory_rate_limit_middleware(
 /// Insert retry-after header on a rate-limited response.
 fn headers_insert_retry_after(headers: &mut axum::http::HeaderMap, retry_after: u64) {
     headers.insert("retry-after", HeaderValue::from(retry_after));
+}
+
+/// Insert x-ratelimit-reset header (epoch seconds when the window resets).
+fn headers_insert_reset(headers: &mut axum::http::HeaderMap, retry_after: u64) {
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + retry_after;
+    headers.insert("x-ratelimit-reset", HeaderValue::from(reset));
 }
 
 // --- Redis rate limiter ---
@@ -439,6 +454,9 @@ mod redis_impl {
                 let headers = response.headers_mut();
                 headers.insert("x-ratelimit-remaining", HeaderValue::from(remaining));
                 headers.insert("x-ratelimit-limit", HeaderValue::from(tier_limiter.burst_size));
+                if let Some(wait) = retry_after {
+                    headers_insert_reset(headers, wait);
+                }
             }
             response
         } else {
@@ -446,6 +464,7 @@ mod redis_impl {
             let headers = response.headers_mut();
             if let Some(wait) = retry_after {
                 headers_insert_retry_after(headers, wait);
+                headers_insert_reset(headers, wait);
             }
             headers.insert("x-ratelimit-remaining", HeaderValue::from(0u32));
             headers.insert("x-ratelimit-limit", HeaderValue::from(tier_limiter.burst_size));
