@@ -22,3 +22,4 @@ sqlx.workspace = true
 rand.workspace = true
 hex = "0.4"
 uuid.workspace = true
+url.workspace = true

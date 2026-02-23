@@ -281,7 +281,7 @@ async fn main() -> anyhow::Result<()> {
                     println!(
                         "{:<38} {:<40} {:<8} {}",
                         hook.id,
-                        if hook.url.len() > 38 { &hook.url[..38] } else { &hook.url },
+                        if hook.url.len() > 38 { &hook.url[..hook.url.floor_char_boundary(38)] } else { &hook.url },
                         hook.active,
                         hook.events.join(", "),
                     );
@@ -290,6 +290,13 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::RegisterWebhook { url, events, client_id } => {
+            // Validate URL scheme (same rules as the API endpoint)
+            let parsed_url = url::Url::parse(&url)
+                .map_err(|_| anyhow::anyhow!("invalid webhook URL"))?;
+            match parsed_url.scheme() {
+                "https" | "http" => {}
+                _ => anyhow::bail!("webhook URL must use https:// or http://"),
+            }
             for event in &events {
                 if !webhooks::is_valid_event_type(event) {
                     anyhow::bail!("unknown event type: {}", event);

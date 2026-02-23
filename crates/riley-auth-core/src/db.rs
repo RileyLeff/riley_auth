@@ -674,6 +674,7 @@ pub struct OAuthClient {
     pub id: Uuid,
     pub name: String,
     pub client_id: String,
+    #[serde(skip_serializing)]
     pub client_secret_hash: String,
     pub redirect_uris: Vec<String>,
     pub allowed_scopes: Vec<String>,
@@ -918,6 +919,7 @@ pub struct Webhook {
     pub client_id: Option<Uuid>,
     pub url: String,
     pub events: Vec<String>,
+    #[serde(skip_serializing)]
     pub secret: String,
     pub active: bool,
     pub created_at: DateTime<Utc>,
