@@ -973,19 +973,26 @@ fn extract_client_credentials(
     body_client_id: Option<&str>,
     body_client_secret: Option<&str>,
 ) -> Result<(String, String), Error> {
-    // Try Basic auth first
+    // Try Basic auth first (RFC 7617)
     if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
         if auth_header.len() > 6 && auth_header[..6].eq_ignore_ascii_case("basic ") {
-            let decoded = URL_SAFE_NO_PAD
-                .decode(&auth_header[6..])
-                .or_else(|_| {
-                    // Standard base64 (with padding) is more common for Basic auth
-                    base64::engine::general_purpose::STANDARD.decode(&auth_header[6..])
-                })
+            let b64 = auth_header[6..].trim();
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .or_else(|_| URL_SAFE_NO_PAD.decode(b64))
                 .map_err(|_| Error::InvalidClient)?;
             let decoded_str = String::from_utf8(decoded).map_err(|_| Error::InvalidClient)?;
             let (id, secret) = decoded_str.split_once(':').ok_or(Error::InvalidClient)?;
-            return Ok((id.to_string(), secret.to_string()));
+            // RFC 6749 §2.3.1: credentials are application/x-www-form-urlencoded
+            let id = percent_encoding::percent_decode_str(id)
+                .decode_utf8()
+                .map_err(|_| Error::InvalidClient)?
+                .into_owned();
+            let secret = percent_encoding::percent_decode_str(secret)
+                .decode_utf8()
+                .map_err(|_| Error::InvalidClient)?
+                .into_owned();
+            return Ok((id, secret));
         }
     }
 

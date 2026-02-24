@@ -28,6 +28,7 @@ base64 = "0.22"
 rand.workspace = true
 hex = "0.4"
 url.workspace = true
+percent-encoding = "2"
 reqwest.workspace = true
 subtle = "2"
 redis = { workspace = true, optional = true }

@@ -3143,6 +3143,34 @@ fn basic_auth_takes_precedence_over_post_body() {
 
 #[test]
 #[ignore]
+fn token_and_revoke_reject_missing_credentials() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // POST to /oauth/token with no credentials at all
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[("grant_type", "authorization_code"), ("code", "fake")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "token endpoint should reject missing credentials");
+
+        // POST to /oauth/revoke with no credentials at all
+        let resp = client
+            .post(s.url("/oauth/revoke"))
+            .form(&[("token", "fake-token")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "revoke endpoint should reject missing credentials");
+    });
+}
+
+#[test]
+#[ignore]
 fn oauth_deduplicates_scopes() {
     let s = server();
     runtime().block_on(async {
