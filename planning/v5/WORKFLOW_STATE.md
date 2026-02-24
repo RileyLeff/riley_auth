@@ -1,8 +1,8 @@
 # v5 Workflow State
 
-**Current Phase:** 6 — Codebase Organization (REVIEW PENDING)
-**Current Step:** 6.3 — Verify + review
-**Status:** Phase 6 implementation complete. db.rs split into 7 submodules, integration.rs split into 5 domain files. All 176 tests pass.
+**Current Phase:** 7 — Observability (STARTING)
+**Current Step:** 7.1 — Add metrics dependencies
+**Status:** Phase 6 complete and converged. Starting Phase 7.
 
 ## Progress
 
@@ -21,8 +21,8 @@
 | 6 | 6.1 | Split integration.rs into domain-specific test files | Done |
 | 6 | 6.2 | Split db.rs into db/ module with submodules | Done |
 | 6 | 6.3 | Verify all tests pass | Done |
-| 6 | review | Standard review | In Progress |
-| 7 | 7.1-7.6 | Observability | Pending |
+| 6 | review | Standard review (2 rounds, Claude-only, converged) | Done |
+| 7 | 7.1-7.6 | Observability | In Progress |
 | 7 | review | Standard review | Pending |
 | 8 | 8.1-8.3 | Production defaults & deployment polish | Pending |
 | 8 | review | Exhaustive review (pre-conformance) | Pending |
@@ -34,6 +34,7 @@ None.
 
 ## Recent Activity
 
+- Phase 6 review: 2 rounds, 0 major, converged (bc8f8c2)
 - Phase 6.2: Split db.rs into db/ module (70c8613)
 - Phase 6.1: Split integration.rs into 5 domain files (b9dfbf2)
 - All 176 tests pass (34 unit + 126 integration + 16 API unit)
