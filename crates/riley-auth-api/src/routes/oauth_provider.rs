@@ -444,9 +444,11 @@ async fn consent(
         .await?
         .ok_or(Error::NotFound)?;
 
-    // The consent request must belong to the authenticated user
+    // The consent request must belong to the authenticated user.
+    // Return NotFound (not Forbidden) to avoid revealing that the consent_id
+    // exists for a different user (oracle prevention).
     if consent_req.user_id != user_id {
-        return Err(Error::Forbidden);
+        return Err(Error::NotFound);
     }
 
     // Look up the client (by internal id)
@@ -523,14 +525,11 @@ async fn consent_decision(
     let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
 
     // Atomically consume the consent request (one-time use, prevents TOCTOU race).
-    // Returns None if expired or already consumed by a concurrent request.
-    let consent_req = db::consume_consent_request(&state.db, query.consent_id)
+    // The user_id filter is part of the atomic DELETE so that a wrong user cannot
+    // destroy another user's consent request.
+    let consent_req = db::consume_consent_request(&state.db, query.consent_id, user_id)
         .await?
         .ok_or(Error::NotFound)?;
-
-    if consent_req.user_id != user_id {
-        return Err(Error::Forbidden);
-    }
 
     let redirect_uri = &consent_req.redirect_uri;
     let state_param = consent_req.state.as_deref();

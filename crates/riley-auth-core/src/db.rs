@@ -1003,16 +1003,20 @@ pub async fn find_consent_request(
 }
 
 /// Atomically consume a consent request by deleting it and returning the row.
-/// Returns None if the consent request does not exist, is expired, or was
-/// already consumed by a concurrent request. This prevents TOCTOU races.
+/// Returns None if the consent request does not exist, is expired, belongs to
+/// a different user, or was already consumed by a concurrent request.
+/// The user_id check is part of the atomic DELETE to prevent a wrong user from
+/// destroying another user's consent request.
 pub async fn consume_consent_request(
     pool: &PgPool,
     id: Uuid,
+    user_id: Uuid,
 ) -> Result<Option<ConsentRequestRow>> {
     let row = sqlx::query_as::<_, ConsentRequestRow>(
-        "DELETE FROM consent_requests WHERE id = $1 AND expires_at > now() RETURNING *"
+        "DELETE FROM consent_requests WHERE id = $1 AND user_id = $2 AND expires_at > now() RETURNING *"
     )
     .bind(id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await?;
     Ok(row)

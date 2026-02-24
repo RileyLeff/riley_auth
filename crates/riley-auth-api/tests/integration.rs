@@ -2248,7 +2248,8 @@ fn consent_rejects_wrong_user() {
         .await
         .unwrap();
 
-        // User B tries to access user A's consent request
+        // User B tries to access user A's consent request — returns 404 (not 403)
+        // to prevent oracle that reveals consent_id existence for other users.
         let resp = client
             .get(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.to_string())])
@@ -2256,7 +2257,7 @@ fn consent_rejects_wrong_user() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     });
 }
 
