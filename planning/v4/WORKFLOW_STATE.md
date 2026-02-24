@@ -1,8 +1,8 @@
 # v4 Workflow State
 
-**Current Phase:** 8 — Consent UI Support (COMPLETE)
-**Current Step:** Exhaustive review converged
-**Status:** Phase 8 done. 3-round exhaustive review converged (0 MAJORs in R2+R3). 114 tests passing (22 unit + 92 integration). Ready for Phase 9.
+**Current Phase:** 9 — Token Introspection (REVIEW R1 FIXES DONE)
+**Current Step:** Review R2 pending
+**Status:** Phase 9 implemented + R1 fixes applied. 138 tests passing (22 unit + 16 core + 100 integration). Running R2.
 
 ## Progress
 
@@ -20,7 +20,9 @@
 | 6+7 | review | Combined review, 4 MAJORs + 2 MINORs, all fixed | Done (fcd6b5a) |
 | 8 | 8.1-8.7 | Consent UI Support | Done (ba1e46d) |
 | 8 | review | Exhaustive review (3 rounds, Gemini+Claude, converged) | Done (ce49935, f1e9b7a, 3be13a3) |
-| 9 | 9.1-9.10 | Token Introspection | Pending |
+| 9 | 9.1-9.10 | Token Introspection | Done (271719a) |
+| 9 | review R1 | Claude-only, 2 MAJORs + 4 MINORs, fixes applied | Done (bf7dcae) |
+| 9 | review R2 | Verify fixes | In Progress |
 | 10 | 10.1-10.9 | OIDC Back-Channel Logout | Pending |
 | 11 | 11.1-11.7 | Multi-Provider Account Merging | Pending |
 | 11 | review | Exhaustive review (milestone: v4 complete) | Pending |
@@ -31,8 +33,5 @@ None.
 
 ## Recent Activity
 
-- Phase 8: Consent UI Support — consent_requests table, consent_url config, GET/POST /oauth/consent, 8 integration tests (ba1e46d)
-- Phase 8 R1 fixes: atomic consume, CSRF, scope display, gen_random_uuid comment (ce49935)
-- Phase 8 R2 fixes: expires_at in response, redirect_uri re-validation (f1e9b7a)
-- Phase 8 R3 fixes: atomic user ownership in consume, oracle prevention (3be13a3)
-- Review artifacts filed, convergence achieved (R2+R3 = 0 MAJORs)
+- Phase 9: Token Introspection — POST /oauth/introspect, client auth, RFC 7662 response, 6 integration tests (271719a)
+- Phase 9 R1 fixes: session token rejection, auth rate limit tier, cache-control headers, 2 new tests (bf7dcae)

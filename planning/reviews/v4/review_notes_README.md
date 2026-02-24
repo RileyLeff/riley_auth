@@ -238,3 +238,14 @@ Webhook payload scrubbing in `soft_delete_user` uses `jsonb_set(payload, '{data}
 
 ### Protocol scopes can't be added to client allowed_scopes via admin API (pre-existing)
 `register_client` validates scopes against `config.scopes.definitions`, but protocol scopes (openid, profile, email) are not config-defined. The authorize handler allows them regardless of `allowed_scopes`, so the DB record appears to lack capabilities it actually has. UX improvement for a future phase.
+
+## v4 Phase 9 — Token Introspection
+
+### Cross-client introspection is intentionally allowed
+Any authenticated OAuth client can introspect tokens issued to any other client. This is the resource-server model: backend APIs need to validate tokens regardless of which client obtained them. If per-client isolation were needed, an `aud` check would be added. Flagged as MAJOR by Claude; accepted as intentional design.
+
+### Basic auth credentials not URL-decoded per RFC 7617
+Client IDs and secrets are server-generated alphanumeric strings that never contain special characters. URL-decoding would require adding the `percent-encoding` crate for a scenario that cannot occur in practice.
+
+### Base64 fallback order in Basic auth (URL-safe before STANDARD)
+The `extract_client_credentials` function tries URL_SAFE_NO_PAD first, then STANDARD. This is inverted from what HTTP clients send (STANDARD), but functionally correct: values with `+` or `/` will fail URL-safe decode and fall through correctly.
