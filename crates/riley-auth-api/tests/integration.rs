@@ -2674,6 +2674,125 @@ fn introspect_discovery_document_updated() {
 
 #[test]
 #[ignore]
+fn introspect_rejects_session_token() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Create user with a session (session tokens have aud == issuer)
+        let (user, _, _) = s.create_user_with_session("introsession", "user").await;
+
+        // Create an OAuth client for authentication
+        let client_secret = "session-reject-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Session Reject Client",
+            "session-reject-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Sign a session token (aud == issuer)
+        let session_token = s.keys.sign_access_token(
+            &s.config.jwt,
+            &user.id.to_string(),
+            &user.username,
+            &user.role,
+            &s.config.jwt.issuer,
+        ).unwrap();
+
+        // Introspecting a session token should return inactive
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[
+                ("token", session_token.as_str()),
+                ("client_id", "session-reject-client"),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["active"], false);
+    });
+}
+
+#[test]
+#[ignore]
+fn introspect_returns_cache_control_headers() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (user, _, _) = s.create_user_with_session("introcache", "user").await;
+        let client_secret = "cache-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        let oauth_client = db::create_client(
+            &s.db,
+            "Cache Client",
+            "cache-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let access_token = s.keys.sign_access_token_with_scopes(
+            &s.config.jwt,
+            &user.id.to_string(),
+            &user.username,
+            &user.role,
+            &oauth_client.client_id,
+            Some("openid"),
+        ).unwrap();
+
+        // Active token response should have Cache-Control: no-store
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[
+                ("token", access_token.as_str()),
+                ("client_id", "cache-client"),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-store");
+        assert_eq!(resp.headers().get("pragma").unwrap(), "no-cache");
+
+        // Inactive token response should also have Cache-Control: no-store
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[
+                ("token", "invalid-token"),
+                ("client_id", "cache-client"),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-store");
+        assert_eq!(resp.headers().get("pragma").unwrap(), "no-cache");
+    });
+}
+
+#[test]
+#[ignore]
 fn oauth_deduplicates_scopes() {
     let s = server();
     runtime().block_on(async {

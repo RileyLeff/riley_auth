@@ -51,6 +51,7 @@ pub fn classify_path(path: &str) -> RateLimitTier {
         "/oauth/token"
             | "/oauth/authorize"
             | "/oauth/revoke"
+            | "/oauth/introspect"
             | "/auth/setup"
             | "/auth/refresh"
     ) {

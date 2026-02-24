@@ -884,7 +884,13 @@ async fn introspect(
     State(state): State<AppState>,
     headers: HeaderMap,
     Form(body): Form<IntrospectRequest>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<impl IntoResponse, Error> {
+    let no_cache_headers = || [
+        (axum::http::header::CACHE_CONTROL, "no-store"),
+        (axum::http::header::PRAGMA, "no-cache"),
+    ];
+    let inactive = || Ok((no_cache_headers(), Json(serde_json::json!({"active": false}))));
+
     // Authenticate the client via Basic auth or POST body credentials
     let (client_id_str, client_secret) = extract_client_credentials(&headers, &body)?;
 
@@ -900,19 +906,24 @@ async fn introspect(
     // Decode and verify the token — any failure means inactive
     let token_data = match state.keys.verify_access_token(&state.config.jwt, &body.token) {
         Ok(data) => data,
-        Err(_) => return Ok(Json(serde_json::json!({"active": false}))),
+        Err(_) => return inactive(),
     };
 
     let claims = &token_data.claims;
 
+    // Reject session tokens (aud == issuer) — introspection is for OAuth client tokens only
+    if claims.aud == state.config.jwt.issuer {
+        return inactive();
+    }
+
     // Check the user still exists and is not soft-deleted
     let user_id: uuid::Uuid = match claims.sub.parse() {
         Ok(id) => id,
-        Err(_) => return Ok(Json(serde_json::json!({"active": false}))),
+        Err(_) => return inactive(),
     };
 
     if db::find_user_by_id(&state.db, user_id).await?.is_none() {
-        return Ok(Json(serde_json::json!({"active": false})));
+        return inactive();
     }
 
     // Build RFC 7662 response
@@ -932,7 +943,7 @@ async fn introspect(
         response["scope"] = serde_json::Value::String(scope.clone());
     }
 
-    Ok(Json(response))
+    Ok((no_cache_headers(), Json(response)))
 }
 
 /// Extract client credentials from Basic auth header or POST body.
