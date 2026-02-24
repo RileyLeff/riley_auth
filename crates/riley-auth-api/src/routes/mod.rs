@@ -79,7 +79,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "token_endpoint_auth_methods_supported": ["client_secret_post"],
         "introspection_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
         "backchannel_logout_supported": true,
-        "backchannel_logout_session_supported": true,
+        "backchannel_logout_session_supported": false,
         "scopes_supported": scope_names,
         "claims_supported": ["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at"],
         "code_challenge_methods_supported": ["S256"],

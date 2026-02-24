@@ -310,6 +310,13 @@ async fn register_client(
         }
     }
 
+    // Reject backchannel_logout_session_required since sid is not yet implemented
+    if body.backchannel_logout_session_required {
+        return Err(Error::BadRequest(
+            "backchannel_logout_session_required is not supported (sid not implemented)".to_string(),
+        ));
+    }
+
     // Generate client_id and client_secret
     let mut id_bytes = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut id_bytes);

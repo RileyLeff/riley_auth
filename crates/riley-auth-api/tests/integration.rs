@@ -5517,7 +5517,7 @@ fn backchannel_logout_register_client_with_logout_uri() {
 
         let (_, admin_token, _) = s.create_user_with_session("bcladmin", "admin").await;
 
-        // Register client with backchannel_logout_uri
+        // Register client with backchannel_logout_uri (session_required=false)
         let resp = client
             .post(s.url("/admin/clients"))
             .header("cookie", format!("riley_auth_access={admin_token}"))
@@ -5525,8 +5525,7 @@ fn backchannel_logout_register_client_with_logout_uri() {
             .json(&serde_json::json!({
                 "name": "BCL App",
                 "redirect_uris": ["https://app.example.com/callback"],
-                "backchannel_logout_uri": "https://app.example.com/logout",
-                "backchannel_logout_session_required": true
+                "backchannel_logout_uri": "https://app.example.com/logout"
             }))
             .send()
             .await
@@ -5535,7 +5534,7 @@ fn backchannel_logout_register_client_with_logout_uri() {
 
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["backchannel_logout_uri"], "https://app.example.com/logout");
-        assert_eq!(body["backchannel_logout_session_required"], true);
+        assert_eq!(body["backchannel_logout_session_required"], false);
 
         // List clients — verify backchannel fields appear
         let resp = client
@@ -5548,7 +5547,7 @@ fn backchannel_logout_register_client_with_logout_uri() {
         let clients: Vec<serde_json::Value> = resp.json().await.unwrap();
         let bcl_client = clients.iter().find(|c| c["name"] == "BCL App").unwrap();
         assert_eq!(bcl_client["backchannel_logout_uri"], "https://app.example.com/logout");
-        assert_eq!(bcl_client["backchannel_logout_session_required"], true);
+        assert_eq!(bcl_client["backchannel_logout_session_required"], false);
     });
 }
 
@@ -5615,6 +5614,37 @@ fn backchannel_logout_client_without_uri_has_null() {
 
 #[test]
 #[ignore]
+fn backchannel_logout_rejects_session_required() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("bclsidadmin", "admin").await;
+
+        // backchannel_logout_session_required=true should be rejected (sid not implemented)
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "SID App",
+                "redirect_uris": ["https://app.example.com/callback"],
+                "backchannel_logout_uri": "https://app.example.com/logout",
+                "backchannel_logout_session_required": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(body["error_description"].as_str().unwrap().contains("session_required"));
+    });
+}
+
+#[test]
+#[ignore]
 fn backchannel_logout_discovery_document() {
     let s = server();
     runtime().block_on(async {
@@ -5629,7 +5659,7 @@ fn backchannel_logout_discovery_document() {
 
         let doc: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(doc["backchannel_logout_supported"], true);
-        assert_eq!(doc["backchannel_logout_session_supported"], true);
+        assert_eq!(doc["backchannel_logout_session_supported"], false);
     });
 }
 
