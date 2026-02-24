@@ -361,3 +361,20 @@ The Phase 5 review flagged duplicated auth code generation between `authorize()`
 
 ### Webhook.secret skip_serializing is documentation-level only
 The `#[serde(skip_serializing)]` on `Webhook.secret` is belt-and-suspenders — admin response types already use separate structs. The annotation prevents accidental exposure if the model struct is ever serialized directly. Not a bug.
+
+## v5 Phase 7 — Observability (Metrics)
+
+### /metrics plain-text errors are intentional (accepted)
+The /metrics endpoint returns plain-text errors (401, 500) while all other endpoints return JSON. This is intentional — Prometheus scrapers expect text/plain responses. Not changing for consistency.
+
+### Metrics bearer token resolved per-request (accepted)
+`token_config.resolve()` is called on every /metrics scrape. For literal tokens this is trivial. For `env:` references, it reads the env var each time — this is acceptable since metrics scraping frequency is low (typically 15-30s intervals) and the overhead is negligible.
+
+### 200 vs 204 status code inconsistency (accepted, existing behavior)
+Several mutating endpoints (logout, logout-all, revoke session, delete account) return 200 instead of 204 No Content. This is pre-existing behavior across Phases 1-5. Changing would be a breaking API change. Accepted as-is.
+
+### Metrics middleware ordering is correct (verified)
+The metrics middleware runs inside the rate limit layer. This means: (1) rate-limited 429 responses ARE recorded in metrics (correct), and (2) the /metrics endpoint scrape itself is counted (standard Prometheus behavior, not a bug).
+
+### Webhook delivery metrics track HTTP outcomes only (design choice)
+`riley_auth_webhook_deliveries_total` is incremented only for actual HTTP delivery attempts. Permanent failures (deleted/inactive webhook) that return before the HTTP request are not counted. This is correct — the metric measures delivery outcomes, not logical decisions.

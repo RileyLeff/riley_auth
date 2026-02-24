@@ -1,8 +1,8 @@
 # v5 Workflow State
 
-**Current Phase:** 7 — Observability (STARTING)
-**Current Step:** 7.1 — Add metrics dependencies
-**Status:** Phase 6 complete and converged. Starting Phase 7.
+**Current Phase:** 7 — Observability (REVIEW IN PROGRESS)
+**Current Step:** 7 review — Exhaustive review round 1
+**Status:** Phase 7 implementation complete. Running exhaustive review (Claude-only, Codex rate-limited, Gemini unavailable).
 
 ## Progress
 
@@ -22,8 +22,12 @@
 | 6 | 6.2 | Split db.rs into db/ module with submodules | Done |
 | 6 | 6.3 | Verify all tests pass | Done |
 | 6 | review | Standard review (2 rounds, Claude-only, converged) | Done |
-| 7 | 7.1-7.6 | Observability | In Progress |
-| 7 | review | Standard review | Pending |
+| 7 | 7.1 | Add metrics dependencies (prometheus crate) | Done |
+| 7 | 7.2 | MetricsConfig + /metrics endpoint | Done |
+| 7 | 7.3 | HTTP middleware metrics (requests, latency, status) | Done |
+| 7 | 7.4 | Application metrics (tokens, webhooks, rate limits) | Done |
+| 7 | 7.5 | Integration tests for /metrics endpoint | Done |
+| 7 | review | Exhaustive review (R1 in progress, Claude-only) | In Progress |
 | 8 | 8.1-8.3 | Production defaults & deployment polish | Pending |
 | 8 | review | Exhaustive review (pre-conformance) | Pending |
 | 9 | 9.1-9.4 | OIDC conformance testing | Pending |
@@ -34,7 +38,7 @@ None.
 
 ## Recent Activity
 
-- Phase 6 review: 2 rounds, 0 major, converged (bc8f8c2)
-- Phase 6.2: Split db.rs into db/ module (70c8613)
-- Phase 6.1: Split integration.rs into 5 domain files (b9dfbf2)
-- All 176 tests pass (34 unit + 126 integration + 16 API unit)
+- Phase 7.5: Metrics integration tests (15cf2e6)
+- Phase 7.4: Application-level metrics — tokens, webhooks, rate limits (bec83ae)
+- Phase 7.1-7.3: MetricsConfig, HTTP middleware, /metrics endpoint (99de69e)
+- All 185 tests pass (35 core + 21 API unit + 129 integration)
