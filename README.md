@@ -79,6 +79,7 @@ Key sections:
 | `[server]` | Host, port, CORS, cookie domain, proxy settings |
 | `[database]` | PostgreSQL connection string, pool size, optional schema |
 | `[jwt]` | Token lifetimes, issuer, signing keys |
+| `[oauth]` | Account merge policy, login/consent page URLs |
 | `[[oauth.providers]]` | OAuth provider credentials (Google, GitHub, OIDC, manual) |
 | `[scopes]` | Custom scope definitions |
 | `[webhooks]` | Webhook delivery tuning |

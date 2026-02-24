@@ -68,6 +68,7 @@ public_key_path = "/data/keys/public.pem"
 #   Google: https://console.cloud.google.com/apis/credentials
 #   GitHub: https://github.com/settings/developers
 
+[oauth]
 # Account merge policy: controls automatic linking when a new OAuth login
 # matches an existing account's email address.
 #   "none"           — never auto-merge; prompt user to link accounts manually (default)
