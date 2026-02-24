@@ -322,3 +322,17 @@ OIDC Core 1.0 Section 3.1.2.1 defines `max_age` which would enforce re-authentic
 
 ### auth_time on session-cookie refresh path is for DB consistency only
 `auth_refresh` propagates auth_time to the new refresh token but does not issue ID tokens. The auth_time value is preserved so that if the token is ever used in an OAuth context (it can't be, but architecturally it's correct to preserve), the data is consistent.
+
+## v5 Phase 4 — WWW-Authenticate Headers
+
+### WWW-Authenticate only on userinfo (correct scoping)
+The userinfo endpoint is the only Bearer-token-protected endpoint. Token/revoke/introspect use client credentials (Basic/POST body). Session endpoints use cookies. WWW-Authenticate headers are correctly not applied to non-Bearer endpoints.
+
+### Zero leeway is a pre-existing decision (REITERATED)
+`verify_token` leeway=0 was already documented in Phase 1 notes. Phase 4 did not change this behavior — it only introduced the ExpiredToken/InvalidToken distinction for the WWW-Authenticate error description. The leeway decision still stands per Phase 1 notes.
+
+### bearer_error_response unwrap is safe for URL issuers
+`HeaderValue::from_str()` called via `.parse().unwrap()` would panic on non-visible-ASCII characters in the issuer. Issuers are URLs (valid ASCII). The issuer escaping handles `\` and `"`. Control characters would cause failures in JWT validation and discovery before reaching this code path.
+
+### WWW-Authenticate supersedes Phase 6 note
+The Phase 6 note "WWW-Authenticate header not included on 401 responses" is now resolved. Phase 4 implemented RFC 6750 §3.1 compliant headers on the userinfo endpoint with proper error codes: `invalid_token` (for expired and invalid), `insufficient_scope` (for missing required scopes), and realm-only (for missing authentication).
