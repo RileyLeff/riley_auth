@@ -31,3 +31,30 @@ Round 2 found several pre-existing minor issues not caused by phases 1-3:
 - cleanup_webhook_deliveries accepts i64 but casts to i32 (cosmetic)
 - Missing compound index on refresh_tokens(user_id, client_id) (optimization)
 These are tracked for future cleanup but do not block the v6 workflow.
+
+## Phase 4 Review Notes
+
+### XFF trust model is documented, not a code fix
+The `extract_client_ip()` function takes the leftmost IP from X-Forwarded-For.
+This is safe only when the reverse proxy overwrites (not appends to) the header.
+The example config already documents this prominently. Adding a `trusted_proxies`
+config is a future enhancement, not a v6 blocker.
+
+### Webhook secrets are stored in plaintext intentionally
+HMAC signing keys must be available in raw form to compute signatures. Envelope
+encryption would add complexity without meaningful security benefit — if the
+DB is compromised, the attacker can read the webhook endpoints too.
+
+### Schema injection pattern is safe
+The `SET search_path TO "{schema}"` uses double-quoted identifiers. The charset
+validation (`is_ascii_alphanumeric() || c == '_'`) excludes double-quote, making
+injection impossible. The pattern is safe as-is.
+
+### preferred_username in ID tokens (OIDC compliance)
+The `preferred_username` is always included in ID tokens regardless of scope.
+Per OIDC Core 1.0 Section 5.4, it should be gated on the `profile` scope.
+Tracked for Phase 5 (OIDC compliance pass) or separate fix.
+
+### Request body size limit deferred
+No global request body size limit is configured. Should add
+`DefaultBodyLimit::max(1MB)` in a future pass. Not Phase 4 scope.
