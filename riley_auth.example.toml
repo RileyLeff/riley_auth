@@ -121,6 +121,7 @@ client_secret = "env:GITHUB_CLIENT_SECRET"
 # email = "email_address"
 # name = "display_name"
 # avatar_url = "photo"
+# email_verified = "verified"                  # optional: field indicating email verification status
 
 # Optional: Define scopes that OAuth clients can request.
 # Omit or leave empty for no scopes (backwards-compatible).
@@ -141,6 +142,8 @@ client_secret = "env:GITHUB_CLIENT_SECRET"
 # max_retry_attempts = 5                     # Retries before marking delivery as failed (default: 5)
 # allow_private_ips = false                  # Allow delivery to private/loopback IPs (default: false)
                                              # Set to true for development/testing with local webhook receivers
+# stuck_processing_timeout_secs = 300        # Seconds before a stuck outbox entry is reset (default: 300)
+# backchannel_logout_max_retry_attempts = 3  # Max retries for OIDC back-channel logout (default: 3)
 
 # Optional: Rate limiting tier configuration.
 # Three tiers: auth (sensitive endpoints), standard (general API), public (discovery/health).

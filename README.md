@@ -99,17 +99,17 @@ riley-auth <command> [options]
 |---------|-------------|
 | `serve` | Start the HTTP server |
 | `migrate` | Run database migrations |
-| `generate-keys` | Generate a keypair for JWT signing (`--algorithm es256\|rs256`) |
+| `generate-keys` | Generate a keypair for JWT signing (`--algorithm es256\|rs256`, `--output <dir>`, `--key-size <bits>`) |
 | `validate` | Check config file and database connectivity |
 | `list-users` | List all users |
 | `promote <username>` | Promote a user to admin |
 | `demote <username>` | Demote an admin to regular user |
 | `revoke <username>` | Revoke all refresh tokens for a user |
 | `delete <username>` | Soft-delete (anonymize) a user |
-| `register-client <name> <redirect_uris...>` | Register an OAuth client |
+| `register-client <name> <redirect_uris...>` | Register an OAuth client (`--scopes`, `--auto-approve`) |
 | `list-clients` | List registered OAuth clients |
 | `remove-client <id>` | Remove an OAuth client |
-| `register-webhook <url> <events...>` | Register a webhook |
+| `register-webhook <url> <events...>` | Register a webhook (`--client-id`) |
 | `list-webhooks` | List registered webhooks |
 | `remove-webhook <id>` | Remove a webhook |
 
@@ -125,14 +125,19 @@ The full API specification is available at `/openapi.json` when the server is ru
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/auth/login/{provider}` | Start OAuth login |
+| GET | `/auth/{provider}` | Start OAuth login |
+| GET | `/auth/{provider}/callback` | OAuth callback (internal) |
+| POST | `/auth/setup` | Create account with username after first OAuth login |
 | POST | `/auth/refresh` | Refresh access token |
 | POST | `/auth/logout` | Logout (revoke session) |
+| POST | `/auth/logout-all` | Logout from all sessions |
 | GET | `/auth/me` | Current user profile |
-| PATCH | `/auth/me/display-name` | Update display name |
+| PATCH | `/auth/me` | Update display name |
 | PATCH | `/auth/me/username` | Update username |
 | DELETE | `/auth/me` | Delete account |
 | GET | `/auth/me/links` | List linked providers |
+| GET | `/auth/link/{provider}` | Start provider linking flow |
+| POST | `/auth/link/confirm` | Confirm linking a new provider |
 | DELETE | `/auth/link/{provider}` | Unlink a provider |
 | GET | `/auth/sessions` | List active sessions |
 | DELETE | `/auth/sessions/{id}` | Revoke a session |
@@ -146,8 +151,8 @@ The full API specification is available at `/openapi.json` when the server is ru
 | GET/POST | `/oauth/userinfo` | UserInfo endpoint |
 | POST | `/oauth/revoke` | Token revocation |
 | POST | `/oauth/introspect` | Token introspection |
-| GET | `/oauth/consent/{id}` | Get consent details |
-| POST | `/oauth/consent/{id}` | Submit consent decision |
+| GET | `/oauth/consent?consent_id={id}` | Get consent details |
+| POST | `/oauth/consent?consent_id={id}` | Submit consent decision |
 
 **Admin** (`/admin/*`) — User and client management. Requires admin role.
 
@@ -171,6 +176,7 @@ The full API specification is available at `/openapi.json` when the server is ru
 | GET | `/.well-known/openid-configuration` | OIDC discovery document |
 | GET | `/.well-known/jwks.json` | JSON Web Key Set |
 | GET | `/openapi.json` | OpenAPI specification |
+| GET | `/metrics` | Prometheus metrics (when enabled) |
 
 ## Deployment
 

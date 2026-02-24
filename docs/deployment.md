@@ -54,10 +54,7 @@ A production-ready `docker-compose.yml` is included in the repo root. To use it:
    docker compose up -d
    ```
 
-5. Run migrations:
-   ```bash
-   docker compose exec riley-auth riley-auth migrate
-   ```
+Migrations run automatically when the server starts. No separate migration step is needed.
 
 The stack includes:
 - **riley-auth** — the identity server on port 8081
@@ -156,7 +153,7 @@ Set `behind_proxy = true` in your riley_auth config when behind a reverse proxy.
    riley-auth serve
    ```
 
-5. **Log in** — Visit `/auth/login/google` (or your provider) to create your account.
+5. **Log in** — Visit `/auth/google` (or your provider) to create your account.
 
 6. **Promote yourself to admin:**
    ```bash
