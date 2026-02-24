@@ -1,0 +1,41 @@
+# v5 Workflow State
+
+**Current Phase:** 1 — JWKS Key Rotation & Algorithm Agility (IN PROGRESS)
+**Current Step:** 1.1 Config: KeyConfig struct and JwtConfig migration
+**Status:** Starting Phase 1 implementation.
+
+## Progress
+
+| Phase | Step | Description | Status |
+|-------|------|-------------|--------|
+| 1 | 1.1 | Config: KeyConfig struct and JwtConfig migration | In Progress |
+| 1 | 1.2 | jwt.rs: KeyEntry and KeySet | Pending |
+| 1 | 1.3 | CLI: generate-keys algorithm flag | Pending |
+| 1 | 1.4 | Wire up: server.rs, main.rs, AppState | Pending |
+| 1 | 1.5 | Discovery document: dynamic alg_values_supported | Pending |
+| 1 | 1.6 | Update existing tests | Pending |
+| 1 | 1.7 | Update example config | Pending |
+| 1 | review | Standard review | Pending |
+| 2 | 2.1-2.5 | Token endpoint auth: client_secret_basic | Pending |
+| 2 | review | Standard review | Pending |
+| 3 | 3.1-3.6 | OIDC compliance: auth_time | Pending |
+| 3 | review | Standard review | Pending |
+| 4 | 4.1-4.4 | WWW-Authenticate headers | Pending |
+| 4 | review | Standard review | Pending |
+| 5 | 5.1-5.6 | Authorize prompt parameter | Pending |
+| 5 | review | Exhaustive review (crypto + OIDC spec complete) | Pending |
+| 6 | 6.1-6.3 | Codebase organization | Pending |
+| 6 | review | Standard review | Pending |
+| 7 | 7.1-7.6 | Observability | Pending |
+| 7 | review | Standard review | Pending |
+| 8 | 8.1-8.3 | Production defaults & deployment polish | Pending |
+| 8 | review | Exhaustive review (pre-conformance) | Pending |
+| 9 | 9.1-9.4 | OIDC conformance testing | Pending |
+
+## Blockers
+
+None.
+
+## Recent Activity
+
+- Created v5 architecture plan, implementation plan, and workflow state
