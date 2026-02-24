@@ -95,7 +95,7 @@ fn admin_register_and_remove_client() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     });
 }
 

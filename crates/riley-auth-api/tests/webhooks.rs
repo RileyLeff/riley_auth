@@ -53,7 +53,7 @@ fn webhook_register_list_remove() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         // Verify removed
         let resp = client

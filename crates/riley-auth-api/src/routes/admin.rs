@@ -199,7 +199,7 @@ pub(crate) async fn get_user(
     params(("id" = Uuid, Path, description = "User ID")),
     request_body = UpdateRoleRequest,
     responses(
-        (status = 200, description = "Role updated"),
+        (status = 204, description = "Role updated"),
         (status = 400, description = "Invalid role or last admin", body = ErrorBody),
         (status = 401, description = "Not authenticated", body = ErrorBody),
         (status = 403, description = "Not an admin", body = ErrorBody),
@@ -233,7 +233,7 @@ pub(crate) async fn update_role(
                 }),
                 state.config.webhooks.max_retry_attempts,
             ).await;
-            Ok(StatusCode::OK)
+            Ok(StatusCode::NO_CONTENT)
         }
         db::RoleUpdateResult::LastAdmin => {
             Err(Error::BadRequest("cannot demote the last admin".to_string()))
@@ -248,7 +248,7 @@ pub(crate) async fn update_role(
     tag = "admin",
     params(("id" = Uuid, Path, description = "User ID")),
     responses(
-        (status = 200, description = "User soft-deleted"),
+        (status = 204, description = "User soft-deleted"),
         (status = 400, description = "Cannot delete last admin", body = ErrorBody),
         (status = 401, description = "Not authenticated", body = ErrorBody),
         (status = 403, description = "Not an admin", body = ErrorBody),
@@ -275,7 +275,7 @@ pub(crate) async fn delete_user(
                 serde_json::json!({ "user_id": id.to_string() }),
                 state.config.webhooks.max_retry_attempts,
             ).await;
-            Ok(StatusCode::OK)
+            Ok(StatusCode::NO_CONTENT)
         }
         db::DeleteUserResult::LastAdmin => {
             Err(Error::BadRequest("cannot delete the last admin".to_string()))
@@ -434,7 +434,7 @@ pub(crate) async fn register_client(
     tag = "admin",
     params(("id" = Uuid, Path, description = "Client internal ID")),
     responses(
-        (status = 200, description = "Client removed"),
+        (status = 204, description = "Client removed"),
         (status = 401, description = "Not authenticated", body = ErrorBody),
         (status = 403, description = "Not an admin", body = ErrorBody),
         (status = 404, description = "Client not found", body = ErrorBody),
@@ -452,7 +452,7 @@ pub(crate) async fn remove_client(
         return Err(Error::NotFound);
     }
 
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // --- Webhook admin endpoints ---
@@ -624,7 +624,7 @@ pub(crate) async fn list_webhooks(
     tag = "admin",
     params(("id" = Uuid, Path, description = "Webhook ID")),
     responses(
-        (status = 200, description = "Webhook removed"),
+        (status = 204, description = "Webhook removed"),
         (status = 401, description = "Not authenticated", body = ErrorBody),
         (status = 403, description = "Not an admin", body = ErrorBody),
         (status = 404, description = "Webhook not found", body = ErrorBody),
@@ -642,7 +642,7 @@ pub(crate) async fn remove_webhook(
         return Err(Error::NotFound);
     }
 
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
