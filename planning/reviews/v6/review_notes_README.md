@@ -82,3 +82,11 @@ the spec but is non-trivial for these endpoints. Deferred to future work.
 `auth_callback` and `link_callback` accept `code` and `state` query params from
 the OAuth provider. These are not consumer-facing endpoints (they're redirect
 targets) so omitting query param docs is acceptable.
+
+## Phase 6 Review Notes
+
+### Link callback route intentionally omitted from README
+`GET /auth/link/{provider}/callback` is an internal OAuth redirect target, not
+a user-callable endpoint. Consistent with the convention of marking
+`/auth/{provider}/callback` as "(internal)" in the table and omitting the link
+callback entirely.
