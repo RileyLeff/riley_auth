@@ -1295,17 +1295,25 @@ fn request_body_size_limit() {
 
         let (_, access_token, _) = s.create_user_with_session("bodylimit", "user").await;
 
-        // 2 MiB payload exceeds the 1 MiB limit
+        // 2 MiB payload exceeds the 1 MiB limit.
+        // The server may respond with 413 Payload Too Large, or may close the
+        // connection while the client is still writing (ConnectionReset).
+        // Both outcomes confirm the body limit is enforced.
         let oversized = "x".repeat(2 * 1024 * 1024);
-        let resp = client
+        let result = client
             .patch(s.url("/auth/me"))
             .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .header("content-type", "application/json")
             .body(oversized)
             .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            .await;
+        match result {
+            Ok(resp) => assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE),
+            Err(e) => assert!(
+                e.is_request() || e.is_connect(),
+                "expected connection reset or 413, got: {e}"
+            ),
+        }
     });
 }

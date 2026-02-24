@@ -85,6 +85,33 @@ pub(crate) struct RegisterClientResponse {
     backchannel_logout_session_required: bool,
 }
 
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct UserSummaryResponse {
+    id: String,
+    username: String,
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+    role: String,
+    created_at: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct UserLinkResponse {
+    provider: String,
+    provider_email: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct UserDetailResponse {
+    id: String,
+    username: String,
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+    role: String,
+    created_at: String,
+    links: Vec<UserLinkResponse>,
+}
+
 // --- Admin middleware helper ---
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error> {
@@ -124,7 +151,7 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims,
         ("offset" = Option<i64>, Query, description = "Offset for pagination"),
     ),
     responses(
-        (status = 200, description = "Paginated user list"),
+        (status = 200, description = "Paginated user list", body = Vec<UserSummaryResponse>),
         (status = 401, description = "Not authenticated", body = ErrorBody),
         (status = 403, description = "Not an admin", body = ErrorBody),
     )
@@ -133,21 +160,21 @@ pub(crate) async fn list_users(
     State(state): State<AppState>,
     Query(query): Query<PaginationQuery>,
     jar: CookieJar,
-) -> Result<Json<Vec<serde_json::Value>>, Error> {
+) -> Result<Json<Vec<UserSummaryResponse>>, Error> {
     require_admin(&state, &jar).await?;
 
     let limit = query.limit.max(0).min(MAX_LIMIT);
     let offset = query.offset.max(0);
     let users = db::list_users(&state.db, limit, offset).await?;
-    let response: Vec<serde_json::Value> = users.iter().map(|u| {
-        serde_json::json!({
-            "id": u.id.to_string(),
-            "username": u.username,
-            "display_name": u.display_name,
-            "avatar_url": u.avatar_url,
-            "role": u.role,
-            "created_at": u.created_at.to_rfc3339(),
-        })
+    let response: Vec<UserSummaryResponse> = users.iter().map(|u| {
+        UserSummaryResponse {
+            id: u.id.to_string(),
+            username: u.username.clone(),
+            display_name: u.display_name.clone(),
+            avatar_url: u.avatar_url.clone(),
+            role: u.role.clone(),
+            created_at: u.created_at.to_rfc3339(),
+        }
     }).collect();
 
     Ok(Json(response))
@@ -159,7 +186,7 @@ pub(crate) async fn list_users(
     tag = "admin",
     params(("id" = Uuid, Path, description = "User ID")),
     responses(
-        (status = 200, description = "User details with linked providers"),
+        (status = 200, description = "User details with linked providers", body = UserDetailResponse),
         (status = 401, description = "Not authenticated", body = ErrorBody),
         (status = 403, description = "Not an admin", body = ErrorBody),
         (status = 404, description = "User not found", body = ErrorBody),
@@ -169,7 +196,7 @@ pub(crate) async fn get_user(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     jar: CookieJar,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<UserDetailResponse>, Error> {
     require_admin(&state, &jar).await?;
 
     let user = db::find_user_by_id(&state.db, id)
@@ -178,18 +205,18 @@ pub(crate) async fn get_user(
 
     let links = db::find_oauth_links_by_user(&state.db, id).await?;
 
-    Ok(Json(serde_json::json!({
-        "id": user.id.to_string(),
-        "username": user.username,
-        "display_name": user.display_name,
-        "avatar_url": user.avatar_url,
-        "role": user.role,
-        "created_at": user.created_at.to_rfc3339(),
-        "links": links.iter().map(|l| serde_json::json!({
-            "provider": l.provider,
-            "provider_email": l.provider_email,
-        })).collect::<Vec<_>>(),
-    })))
+    Ok(Json(UserDetailResponse {
+        id: user.id.to_string(),
+        username: user.username,
+        display_name: user.display_name,
+        avatar_url: user.avatar_url,
+        role: user.role,
+        created_at: user.created_at.to_rfc3339(),
+        links: links.iter().map(|l| UserLinkResponse {
+            provider: l.provider.clone(),
+            provider_email: l.provider_email.clone(),
+        }).collect(),
+    }))
 }
 
 #[utoipa::path(

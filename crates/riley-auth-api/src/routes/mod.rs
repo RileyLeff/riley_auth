@@ -48,6 +48,41 @@ struct HealthResponse {
     version: &'static str,
 }
 
+/// JSON Web Key Set (RFC 7517 §5).
+#[derive(Serialize, utoipa::ToSchema)]
+struct JwksResponse {
+    keys: Vec<serde_json::Value>,
+}
+
+/// OpenID Connect Discovery document (OpenID Connect Discovery 1.0).
+#[derive(Serialize, utoipa::ToSchema)]
+struct OpenIdConfiguration {
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    userinfo_endpoint: String,
+    jwks_uri: String,
+    revocation_endpoint: String,
+    introspection_endpoint: String,
+    response_types_supported: Vec<String>,
+    response_modes_supported: Vec<String>,
+    grant_types_supported: Vec<String>,
+    subject_types_supported: Vec<String>,
+    id_token_signing_alg_values_supported: Vec<String>,
+    token_endpoint_auth_methods_supported: Vec<String>,
+    revocation_endpoint_auth_methods_supported: Vec<String>,
+    introspection_endpoint_auth_methods_supported: Vec<String>,
+    backchannel_logout_supported: bool,
+    backchannel_logout_session_supported: bool,
+    scopes_supported: Vec<String>,
+    claims_supported: Vec<String>,
+    claims_parameter_supported: bool,
+    request_parameter_supported: bool,
+    request_uri_parameter_supported: bool,
+    code_challenge_methods_supported: Vec<String>,
+    prompt_values_supported: Vec<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/health",
@@ -68,17 +103,19 @@ async fn health(axum::extract::State(_state): axum::extract::State<AppState>) ->
     path = "/.well-known/jwks.json",
     tag = "discovery",
     responses(
-        (status = 200, description = "JSON Web Key Set"),
+        (status = 200, description = "JSON Web Key Set", body = JwksResponse),
     )
 )]
-async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> (HeaderMap, Json<serde_json::Value>) {
+async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> (HeaderMap, Json<JwksResponse>) {
     let mut headers = HeaderMap::new();
     let max_age = state.config.jwt.jwks_cache_max_age_secs;
     headers.insert(
         axum::http::header::CACHE_CONTROL,
         format!("public, max-age={max_age}").parse().unwrap(),
     );
-    (headers, Json(state.keys.jwks()))
+    let jwks_value = state.keys.jwks();
+    let keys = jwks_value["keys"].as_array().cloned().unwrap_or_default();
+    (headers, Json(JwksResponse { keys }))
 }
 
 /// OpenID Connect Discovery document (per OpenID Connect Discovery 1.0).
@@ -87,42 +124,47 @@ async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> (H
     path = "/.well-known/openid-configuration",
     tag = "discovery",
     responses(
-        (status = 200, description = "OIDC discovery document"),
+        (status = 200, description = "OIDC discovery document", body = OpenIdConfiguration),
     )
 )]
-async fn openid_configuration(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
+async fn openid_configuration(axum::extract::State(state): axum::extract::State<AppState>) -> Json<OpenIdConfiguration> {
     let base = state.config.server.public_url.trim_end_matches('/');
-    let mut scope_names: Vec<&str> = vec!["openid", "profile", "email"];
-    scope_names.extend(state.config.scopes.definitions.iter().map(|d| d.name.as_str()));
+    let mut scope_names: Vec<String> = vec!["openid".into(), "profile".into(), "email".into()];
+    scope_names.extend(state.config.scopes.definitions.iter().map(|d| d.name.clone()));
 
     let signing_algs: Vec<String> = state.keys.algorithms().into_iter().map(|a| a.to_string()).collect();
+    let auth_methods = vec!["client_secret_basic".into(), "client_secret_post".into()];
 
-    Json(serde_json::json!({
-        "issuer": state.config.jwt.issuer,
-        "authorization_endpoint": format!("{base}/oauth/authorize"),
-        "token_endpoint": format!("{base}/oauth/token"),
-        "userinfo_endpoint": format!("{base}/oauth/userinfo"),
-        "jwks_uri": format!("{base}/.well-known/jwks.json"),
-        "revocation_endpoint": format!("{base}/oauth/revoke"),
-        "introspection_endpoint": format!("{base}/oauth/introspect"),
-        "response_types_supported": ["code"],
-        "response_modes_supported": ["query"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
-        "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": signing_algs,
-        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-        "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-        "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-        "backchannel_logout_supported": true,
-        "backchannel_logout_session_supported": false,
-        "scopes_supported": scope_names,
-        "claims_supported": ["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at", "auth_time"],
-        "claims_parameter_supported": false,
-        "request_parameter_supported": false,
-        "request_uri_parameter_supported": false,
-        "code_challenge_methods_supported": ["S256"],
-        "prompt_values_supported": ["none", "login", "consent"],
-    }))
+    Json(OpenIdConfiguration {
+        issuer: state.config.jwt.issuer.clone(),
+        authorization_endpoint: format!("{base}/oauth/authorize"),
+        token_endpoint: format!("{base}/oauth/token"),
+        userinfo_endpoint: format!("{base}/oauth/userinfo"),
+        jwks_uri: format!("{base}/.well-known/jwks.json"),
+        revocation_endpoint: format!("{base}/oauth/revoke"),
+        introspection_endpoint: format!("{base}/oauth/introspect"),
+        response_types_supported: vec!["code".into()],
+        response_modes_supported: vec!["query".into()],
+        grant_types_supported: vec!["authorization_code".into(), "refresh_token".into()],
+        subject_types_supported: vec!["public".into()],
+        id_token_signing_alg_values_supported: signing_algs,
+        token_endpoint_auth_methods_supported: auth_methods.clone(),
+        revocation_endpoint_auth_methods_supported: auth_methods.clone(),
+        introspection_endpoint_auth_methods_supported: auth_methods,
+        backchannel_logout_supported: true,
+        backchannel_logout_session_supported: false,
+        scopes_supported: scope_names,
+        claims_supported: vec![
+            "sub".into(), "name".into(), "preferred_username".into(),
+            "picture".into(), "email".into(), "email_verified".into(),
+            "updated_at".into(), "auth_time".into(),
+        ],
+        claims_parameter_supported: false,
+        request_parameter_supported: false,
+        request_uri_parameter_supported: false,
+        code_challenge_methods_supported: vec!["S256".into()],
+        prompt_values_supported: vec!["none".into(), "login".into(), "consent".into()],
+    })
 }
 
 // --- OpenAPI ---
@@ -183,6 +225,8 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
     components(schemas(
         ErrorBody,
         HealthResponse,
+        JwksResponse,
+        OpenIdConfiguration,
         // Auth types
         auth::SetupRequest,
         auth::MeResponse,
@@ -191,6 +235,9 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         auth::UpdateUsernameRequest,
         auth::SessionResponse,
         // Admin types
+        admin::UserSummaryResponse,
+        admin::UserDetailResponse,
+        admin::UserLinkResponse,
         admin::UpdateRoleRequest,
         admin::RegisterClientRequest,
         admin::ClientResponse,
