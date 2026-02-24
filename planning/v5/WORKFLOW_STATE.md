@@ -1,21 +1,21 @@
 # v5 Workflow State
 
-**Current Phase:** 1 — JWKS Key Rotation & Algorithm Agility (IN PROGRESS)
-**Current Step:** 1.1 Config: KeyConfig struct and JwtConfig migration
-**Status:** Starting Phase 1 implementation.
+**Current Phase:** 1 — JWKS Key Rotation & Algorithm Agility (REVIEW)
+**Current Step:** Phase 1 standard review
+**Status:** Phase 1 implementation complete (all 7 steps). 28 unit + 111 integration tests pass. Running standard review.
 
 ## Progress
 
 | Phase | Step | Description | Status |
 |-------|------|-------------|--------|
-| 1 | 1.1 | Config: KeyConfig struct and JwtConfig migration | In Progress |
-| 1 | 1.2 | jwt.rs: KeyEntry and KeySet | Pending |
-| 1 | 1.3 | CLI: generate-keys algorithm flag | Pending |
-| 1 | 1.4 | Wire up: server.rs, main.rs, AppState | Pending |
-| 1 | 1.5 | Discovery document: dynamic alg_values_supported | Pending |
-| 1 | 1.6 | Update existing tests | Pending |
-| 1 | 1.7 | Update example config | Pending |
-| 1 | review | Standard review | Pending |
+| 1 | 1.1 | Config: KeyConfig struct and JwtConfig migration | Done |
+| 1 | 1.2 | jwt.rs: KeyEntry and KeySet | Done |
+| 1 | 1.3 | CLI: generate-keys algorithm flag | Done |
+| 1 | 1.4 | Wire up: server.rs, main.rs, AppState | Done |
+| 1 | 1.5 | Discovery document: dynamic alg_values_supported | Done |
+| 1 | 1.6 | Update existing tests | Done |
+| 1 | 1.7 | Update example config | Done |
+| 1 | review | Standard review | In Progress |
 | 2 | 2.1-2.5 | Token endpoint auth: client_secret_basic | Pending |
 | 2 | review | Standard review | Pending |
 | 3 | 3.1-3.6 | OIDC compliance: auth_time | Pending |
@@ -38,4 +38,5 @@ None.
 
 ## Recent Activity
 
-- Created v5 architecture plan, implementation plan, and workflow state
+- Created v5 architecture plan, implementation plan, and workflow state (a0cafe7)
+- Phase 1 complete: JWKS key rotation + ES256/RS256 algorithm agility (f53899e)

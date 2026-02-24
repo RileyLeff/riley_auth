@@ -1162,12 +1162,7 @@ fn decode_setup_token(
     config: &Config,
     token: &str,
 ) -> Result<oauth::OAuthProfile, Error> {
-    let mut validation = jsonwebtoken::Validation::new(keys.active_algorithm());
-    validation.set_issuer(&[&config.jwt.issuer]);
-    validation.validate_aud = false;
-    validation.leeway = 0;
-
-    let data = jsonwebtoken::decode::<SetupClaims>(token, &keys.decoding_key(), &validation)
+    let data = keys.verify_token::<SetupClaims>(&config.jwt, token)
         .map_err(|_| Error::InvalidToken)?;
 
     if data.claims.purpose != "setup" {

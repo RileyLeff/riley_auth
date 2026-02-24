@@ -120,12 +120,18 @@ impl JwtConfig {
             return Ok(self.keys.clone());
         }
         match (&self.private_key_path, &self.public_key_path) {
-            (Some(priv_path), Some(pub_path)) => Ok(vec![KeyConfig {
-                algorithm: SigningAlgorithm::RS256,
-                private_key_path: priv_path.clone(),
-                public_key_path: pub_path.clone(),
-                kid: None,
-            }]),
+            (Some(priv_path), Some(pub_path)) => {
+                tracing::warn!(
+                    "using legacy flat jwt key config (assumed RS256); \
+                     migrate to [[jwt.keys]] for multi-key and ES256 support"
+                );
+                Ok(vec![KeyConfig {
+                    algorithm: SigningAlgorithm::RS256,
+                    private_key_path: priv_path.clone(),
+                    public_key_path: pub_path.clone(),
+                    kid: None,
+                }])
+            }
             _ => Err(Error::Config(
                 "jwt config must specify either [[jwt.keys]] or both private_key_path and public_key_path".to_string(),
             )),
@@ -700,6 +706,48 @@ public = { requests = 500, window_secs = 60 }
         assert!(validate_scope_name("scope with space").is_err()); // whitespace
         assert!(validate_scope_name("scope\nnewline").is_err()); // newline
         assert!(validate_scope_name(":leading-colon").is_err()); // starts with colon
+    }
+
+    #[test]
+    fn resolved_keys_new_format() {
+        let config: JwtConfig = toml::from_str(r#"
+            issuer = "test"
+
+            [[keys]]
+            algorithm = "ES256"
+            private_key_path = "/tmp/ec-priv.pem"
+            public_key_path = "/tmp/ec-pub.pem"
+            kid = "my-ec-key"
+        "#).unwrap();
+
+        let keys = config.resolved_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].kid, Some("my-ec-key".to_string()));
+        assert!(matches!(keys[0].algorithm, SigningAlgorithm::ES256));
+    }
+
+    #[test]
+    fn resolved_keys_legacy_flat_format() {
+        let config: JwtConfig = toml::from_str(r#"
+            private_key_path = "/tmp/priv.pem"
+            public_key_path = "/tmp/pub.pem"
+            issuer = "test"
+        "#).unwrap();
+
+        let keys = config.resolved_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        // Legacy flat format assumed RS256
+        assert!(matches!(keys[0].algorithm, SigningAlgorithm::RS256));
+        assert!(keys[0].kid.is_none());
+    }
+
+    #[test]
+    fn resolved_keys_no_keys_errors() {
+        let config: JwtConfig = toml::from_str(r#"
+            issuer = "test"
+        "#).unwrap();
+
+        assert!(config.resolved_keys().is_err());
     }
 
     #[test]

@@ -138,6 +138,11 @@ impl KeySet {
                 }
             };
 
+            if kid_index.contains_key(&kid) {
+                return Err(Error::Config(format!(
+                    "duplicate kid '{}' — each key must have a unique identifier", kid
+                )));
+            }
             kid_index.insert(kid.clone(), i);
             entries.push(KeyEntry { algorithm, encoding, decoding, kid, jwks_params });
         }
@@ -146,6 +151,7 @@ impl KeySet {
     }
 
     /// Load a single RS256 key from PEM files (backward compat).
+    /// Assumes RS256 algorithm. For ES256 keys, use `from_configs` instead.
     pub fn from_pem_files(private_path: &Path, public_path: &Path) -> Result<Self> {
         let config = KeyConfig {
             algorithm: SigningAlgorithm::RS256,
@@ -170,6 +176,7 @@ impl KeySet {
                 _ => format!("{:?}", e.algorithm),
             })
             .collect();
+        algs.sort();
         algs.dedup();
         algs
     }
@@ -227,14 +234,9 @@ impl KeySet {
         self.verify_token(config, token)
     }
 
-    /// Encoding key for signing (used by setup tokens etc.)
+    /// Encoding key for the active (first) signing key.
     pub fn encoding_key(&self) -> &EncodingKey {
         &self.entries[0].encoding
-    }
-
-    /// Decoding key for verification (tries kid match first).
-    pub fn decoding_key(&self) -> &DecodingKey {
-        &self.entries[0].decoding
     }
 
     /// The active signing algorithm.
@@ -338,7 +340,8 @@ impl KeySet {
     }
 
     /// Verify and decode a token, trying kid-matched key first, then all keys.
-    fn verify_token<T: for<'de> Deserialize<'de>>(
+    /// Generic over the claims type — works with access tokens, setup tokens, etc.
+    pub fn verify_token<T: for<'de> Deserialize<'de>>(
         &self,
         config: &JwtConfig,
         token: &str,
@@ -445,6 +448,9 @@ pub fn generate_keypair_with_algorithm(
             );
         }
         SigningAlgorithm::ES256 => {
+            if key_size.is_some() {
+                tracing::warn!("--key-size is ignored for ES256 (P-256 keys are always 256 bits)");
+            }
             // Use genpkey to produce PKCS#8 format (required by jsonwebtoken crate)
             let status = Command::new("openssl")
                 .args(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out"])
@@ -948,5 +954,85 @@ mod tests {
             },
         ]).unwrap();
         assert_eq!(keys.algorithms(), vec!["ES256"]);
+    }
+
+    #[test]
+    fn verify_token_by_kid_secondary_key() {
+        // T1: Sign with the secondary (RSA) key, verify via kid lookup
+        let (ec_priv, ec_pub) = generate_ec_test_keys();
+        let (rsa_priv, rsa_pub) = generate_rsa_test_keys();
+
+        // Build a KeySet with EC as active, RSA as secondary
+        let keys = KeySet::from_configs(&[
+            KeyConfig {
+                algorithm: SigningAlgorithm::ES256,
+                private_key_path: ec_priv.path().to_path_buf(),
+                public_key_path: ec_pub.path().to_path_buf(),
+                kid: Some("ec-active".to_string()),
+            },
+            KeyConfig {
+                algorithm: SigningAlgorithm::RS256,
+                private_key_path: rsa_priv.path().to_path_buf(),
+                public_key_path: rsa_pub.path().to_path_buf(),
+                kid: Some("rsa-secondary".to_string()),
+            },
+        ]).unwrap();
+
+        let config = test_jwt_config("test-auth");
+
+        // Manually sign a token with the RSA (secondary) key and its kid
+        let now = chrono::Utc::now();
+        let claims = Claims {
+            sub: "user-kid-test".to_string(),
+            username: "kiduser".to_string(),
+            role: "user".to_string(),
+            aud: "test".to_string(),
+            iss: "test-auth".to_string(),
+            iat: now.timestamp(),
+            exp: (now + chrono::Duration::seconds(900)).timestamp(),
+            scope: None,
+        };
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("rsa-secondary".to_string());
+        let rsa_entry = &keys.entries[1];
+        let token = encode(&header, &claims, &rsa_entry.encoding).unwrap();
+
+        // Verify should succeed via kid lookup (not brute-force)
+        let decoded = keys.verify_access_token(&config, &token).unwrap();
+        assert_eq!(decoded.claims.sub, "user-kid-test");
+    }
+
+    #[test]
+    fn duplicate_kid_rejected() {
+        // T7: Two keys with the same kid should error
+        let (ec_priv1, ec_pub1) = generate_ec_test_keys();
+        let (ec_priv2, ec_pub2) = generate_ec_test_keys();
+
+        let result = KeySet::from_configs(&[
+            KeyConfig {
+                algorithm: SigningAlgorithm::ES256,
+                private_key_path: ec_priv1.path().to_path_buf(),
+                public_key_path: ec_pub1.path().to_path_buf(),
+                kid: Some("same-kid".to_string()),
+            },
+            KeyConfig {
+                algorithm: SigningAlgorithm::ES256,
+                private_key_path: ec_priv2.path().to_path_buf(),
+                public_key_path: ec_pub2.path().to_path_buf(),
+                kid: Some("same-kid".to_string()),
+            },
+        ]);
+
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected duplicate kid error, got Ok"),
+        };
+        assert!(err.contains("duplicate kid"), "expected duplicate kid error, got: {err}");
+    }
+
+    #[test]
+    fn empty_configs_rejected() {
+        let result = KeySet::from_configs(&[]);
+        assert!(result.is_err());
     }
 }
