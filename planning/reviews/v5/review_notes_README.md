@@ -230,8 +230,8 @@ The token endpoint falls under the `standard` tier (60/min) instead of the `auth
 ### Stuck outbox next_attempt_at check (pre-existing)
 `reset_stuck_outbox_entries` checks `next_attempt_at` instead of processing start time. Could cause premature reset for entries that were pending a long time before being claimed. Low probability under normal operation.
 
-### auth_time not in refreshed ID tokens (pre-existing OIDC gap)
-OIDC Core 1.0 Section 12.2 says refreshed ID tokens SHOULD include `auth_time`. Not currently tracked. Would require an `auth_time` column on `refresh_tokens`. Low priority.
+### auth_time now tracked and preserved (SUPERSEDED)
+~~OIDC Core 1.0 Section 12.2 says refreshed ID tokens SHOULD include `auth_time`. Not currently tracked.~~ v5 Phase 3 added `auth_time` column to `refresh_tokens`, propagated through token rotation, included in ID tokens (eb865d4, 426d3cc, cd01b86).
 
 ### PII scrubbing assumes {data} JSON structure (pre-existing)
 Webhook payload scrubbing in `soft_delete_user` uses `jsonb_set(payload, '{data}', ...)`. If future event types use a different structure, user data could survive deletion. Event-registry pattern for PII paths would be more robust but adds complexity for the current single-payload-format use case.
@@ -308,3 +308,17 @@ After trying STANDARD base64 per RFC 7617, URL_SAFE_NO_PAD is tried as fallback 
 
 ### No test for percent-encoded Basic auth credentials (accepted)
 No integration test exercises the percent-decoding path with actual encoded characters. Client_ids are server-generated plain ASCII slugs, and secrets are random tokens. If user-chosen credentials are ever supported, add a test at that time.
+
+## v5 Phase 3 — OIDC Compliance: auth_time
+
+### auth_time semantics differ between session and OAuth paths (accepted)
+`issue_tokens` (session-cookie path) uses `Utc::now()` as auth_time since it runs immediately after OAuth callback. The OAuth token handler uses `auth_code.created_at.timestamp()` (DB server time when the auth code was stored). Both are valid proxies for authentication time. Documented with comments.
+
+### auth_time stored as bigint not timestamptz (intentional)
+OIDC requires auth_time as a JSON number (Unix epoch seconds) in ID tokens. Storing as bigint avoids a conversion step. The column is not indexed or queried by timestamp functions, so timestamptz offers no advantage.
+
+### max_age parameter not implemented (Phase 5 scope)
+OIDC Core 1.0 Section 3.1.2.1 defines `max_age` which would enforce re-authentication. Phase 5 covers the `prompt` parameter family. The auth_time infrastructure now in place is a prerequisite for max_age support.
+
+### auth_time on session-cookie refresh path is for DB consistency only
+`auth_refresh` propagates auth_time to the new refresh token but does not issue ID tokens. The auth_time value is preserved so that if the token is ever used in an OAuth context (it can't be, but architecturally it's correct to preserve), the data is consistent.

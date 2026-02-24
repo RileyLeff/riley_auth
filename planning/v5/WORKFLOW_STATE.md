@@ -1,8 +1,8 @@
 # v5 Workflow State
 
-**Current Phase:** 2 — Token Endpoint Auth: client_secret_basic (REVIEW COMPLETE)
-**Current Step:** Phase 2 review converged (2 rounds, 0 major in round 2)
-**Status:** Phase 2 done. 34 unit + 116 integration tests pass. Ready for Phase 3.
+**Current Phase:** 3 — OIDC Compliance: auth_time (REVIEW COMPLETE)
+**Current Step:** Phase 3 review converged (2 rounds, 0 major in round 2)
+**Status:** Phase 3 done. 34 unit + 117 integration tests pass. Ready for Phase 4.
 
 ## Progress
 
@@ -22,8 +22,13 @@
 | 2 | 2.4 | Update discovery document | Done |
 | 2 | 2.5 | Integration tests (5 new + 1 discovery update) | Done |
 | 2 | review | Standard review (2 rounds, Claude-only, converged) | Done |
-| 3 | 3.1-3.6 | OIDC compliance: auth_time | Pending |
-| 3 | review | Standard review | Pending |
+| 3 | 3.1 | Migration 012_auth_time + 013_backfill | Done |
+| 3 | 3.2 | DB: RefreshTokenRow + store_refresh_token | Done |
+| 3 | 3.3 | JWT: IdTokenClaims + sign_id_token | Done |
+| 3 | 3.4 | Update all call sites (auth.rs, oauth_provider.rs, tests) | Done |
+| 3 | 3.5 | Discovery document: claims_supported | Done |
+| 3 | 3.6 | Integration test: auth_time preserved across refresh | Done |
+| 3 | review | Standard review (2 rounds, Claude-only, converged) | Done |
 | 4 | 4.1-4.4 | WWW-Authenticate headers | Pending |
 | 4 | review | Standard review | Pending |
 | 5 | 5.1-5.6 | Authorize prompt parameter | Pending |
@@ -42,8 +47,8 @@ None.
 
 ## Recent Activity
 
-- Phase 1 complete: JWKS key rotation + ES256/RS256 algorithm agility (f53899e)
-- Phase 1 review: 2 rounds, converged (68c86e3, 11713a4)
 - Phase 2 complete: client_secret_basic on token/revoke/introspect (631bbb0)
-- Phase 2 review R1: 1 major (percent-decoding), 3 minor. Fixed all (d5a121a)
-- Phase 2 review R2: 0 major, 0 minor. Converged.
+- Phase 2 review: 2 rounds, converged (d5a121a, eb6536a)
+- Phase 3 complete: auth_time in ID tokens + refresh propagation (eb865d4, 426d3cc)
+- Phase 3 review R1: 0 major, 4 minor (comments + backfill). Fixed all (cd01b86)
+- Phase 3 review R2: 0 major, 0 minor. Converged.
