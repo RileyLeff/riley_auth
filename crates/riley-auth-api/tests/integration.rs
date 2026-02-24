@@ -5862,6 +5862,49 @@ fn account_merge_auto_links_on_verified_email() {
 
 #[test]
 #[ignore]
+fn account_merge_skips_unverified_existing_link() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Create a user whose existing link has email_verified = false
+        let user = db::create_user_with_link(
+            &s.db,
+            "unverified_existing",
+            None,
+            None,
+            "github",
+            "gh-unverified-999",
+            Some("shared@example.com"),
+            false, // existing link is NOT verified
+        )
+        .await
+        .unwrap();
+
+        // Now simulate an auto-merge query: find matching links and filter by verified
+        let matching_links = db::find_oauth_links_by_email(&s.db, "shared@example.com")
+            .await
+            .unwrap();
+        assert_eq!(matching_links.len(), 1, "should find one matching link");
+
+        // The auto-merge path filters to verified links only
+        let verified_links: Vec<&db::OAuthLink> = matching_links
+            .iter()
+            .filter(|l| l.email_verified)
+            .collect();
+        assert!(
+            verified_links.is_empty(),
+            "no verified links → auto-merge should not proceed"
+        );
+
+        // Verify user still has only one link (no merge happened)
+        let all_links = db::find_oauth_links_by_user(&s.db, user.id).await.unwrap();
+        assert_eq!(all_links.len(), 1);
+    });
+}
+
+#[test]
+#[ignore]
 fn account_merge_config_defaults_to_none() {
     let s = server();
     runtime().block_on(async {

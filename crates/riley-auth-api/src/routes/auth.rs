@@ -192,13 +192,18 @@ async fn auth_callback(
     if let Some(ref email) = profile.email {
         let matching_links = db::find_oauth_links_by_email(&state.db, email).await?;
         if !matching_links.is_empty() {
-            // Auto-merge: when policy is verified_email, the provider confirms the email,
-            // and exactly one existing user matches.
+            // Auto-merge: when policy is verified_email, BOTH the new provider and the
+            // existing link(s) must have verified the email, and exactly one user matches.
             if state.config.oauth.account_merge_policy == AccountMergePolicy::VerifiedEmail
                 && profile.email_verified
             {
-                // Collect distinct user IDs from matching links
-                let mut user_ids: Vec<uuid::Uuid> = matching_links.iter().map(|l| l.user_id).collect();
+                // Only consider links where the existing provider also verified the email
+                let verified_links: Vec<&db::OAuthLink> = matching_links.iter()
+                    .filter(|l| l.email_verified)
+                    .collect();
+
+                // Collect distinct user IDs from verified links only
+                let mut user_ids: Vec<uuid::Uuid> = verified_links.iter().map(|l| l.user_id).collect();
                 user_ids.sort();
                 user_ids.dedup();
 
