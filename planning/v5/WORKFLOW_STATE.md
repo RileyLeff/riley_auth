@@ -1,8 +1,8 @@
 # v5 Workflow State
 
-**Current Phase:** 5 — Authorize prompt Parameter (REVIEW CONVERGED)
-**Current Step:** Exhaustive review complete (2 rounds, converged). Ready for Phase 6.
-**Status:** Phase 5 done. 34 unit + 126 integration = 160 tests pass. Ready for Phase 6.
+**Current Phase:** 6 — Codebase Organization (REVIEW PENDING)
+**Current Step:** 6.3 — Verify + review
+**Status:** Phase 6 implementation complete. db.rs split into 7 submodules, integration.rs split into 5 domain files. All 176 tests pass.
 
 ## Progress
 
@@ -18,8 +18,10 @@
 | 4 | review | Standard review (2 rounds, Claude-only, converged) | Done |
 | 5 | 5.1-5.6 | Authorize prompt parameter (none, login, consent) | Done |
 | 5 | review | Exhaustive review (2 rounds, Claude-only, converged) | Done |
-| 6 | 6.1-6.3 | Codebase organization | Pending |
-| 6 | review | Standard review | Pending |
+| 6 | 6.1 | Split integration.rs into domain-specific test files | Done |
+| 6 | 6.2 | Split db.rs into db/ module with submodules | Done |
+| 6 | 6.3 | Verify all tests pass | Done |
+| 6 | review | Standard review | In Progress |
 | 7 | 7.1-7.6 | Observability | Pending |
 | 7 | review | Standard review | Pending |
 | 8 | 8.1-8.3 | Production defaults & deployment polish | Pending |
@@ -32,7 +34,6 @@ None.
 
 ## Recent Activity
 
-- Phase 5 implementation: prompt parameter (66289c0)
-- Phase 5 exhaustive R1: 0 new major, 1 test gap fixed (9604e72)
-- Phase 5 exhaustive R1 artifacts filed (b81ea5c)
-- Phase 5 exhaustive R2: 0 major, 2 minor (pre-existing). CONVERGED.
+- Phase 6.2: Split db.rs into db/ module (70c8613)
+- Phase 6.1: Split integration.rs into 5 domain files (b9dfbf2)
+- All 176 tests pass (34 unit + 126 integration + 16 API unit)
