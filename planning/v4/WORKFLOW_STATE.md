@@ -1,8 +1,8 @@
 # v4 Workflow State
 
-**Current Phase:** 5 — Account Linking Confirmation
-**Current Step:** Exhaustive review COMPLETE (milestone: debt cleared)
-**Status:** Phases 1-5 done. Exhaustive review converged (4 rounds, 2 consecutive clean). 98 tests passing. Ready for Phase 6.
+**Current Phase:** 8 — Consent UI Support (IN PROGRESS)
+**Current Step:** Starting Phase 8 implementation
+**Status:** Phases 1-7 done. Phase 6+7 review converged after fixes. 110 tests passing (22 unit + 88 integration). Starting Phase 8.
 
 ## Progress
 
@@ -14,9 +14,11 @@
 | 4 | 4.1-4.5 | Webhook Replay Protection | Done (7ca06b2) |
 | 5 | 5.1-5.7 | Account Linking Confirmation | Done (9967b14) |
 | 5 | review | Exhaustive review (4 rounds, Gemini+Claude, converged) | Done (090c864, c26641e) |
-| 6 | 6.1-6.8 | UserInfo Endpoint | Pending |
-| 7 | 7.1-7.4 | Authorize Error Redirects | Pending |
-| 8 | 8.1-8.7 | Consent UI Support | Pending |
+| 6 | 6.1-6.8 | UserInfo Endpoint | Done (57c3d1f) |
+| 6 | review | Claude-only review, 1 MAJOR + 6 MINORs, all fixed | Done (1ab2431) |
+| 7 | 7.1-7.4 | Authorize Error Redirects | Done (55d1b43) |
+| 6+7 | review | Combined review, 4 MAJORs + 2 MINORs, all fixed | Done (fcd6b5a) |
+| 8 | 8.1-8.7 | Consent UI Support | In Progress |
 | 8 | review | Exhaustive review (milestone: OAuth compliance) | Pending |
 | 9 | 9.1-9.10 | Token Introspection | Pending |
 | 10 | 10.1-10.9 | OIDC Back-Channel Logout | Pending |
@@ -29,12 +31,8 @@ None.
 
 ## Recent Activity
 
-- Phase 1: stuck outbox recovery (03d9313)
-- Phase 2: nonce preservation on refresh (0c469e2)
-- Phase 3: scope downscoping on refresh (264b690)
-- Phase 4: webhook replay protection (7ca06b2)
-- Phase 5: account linking confirmation (9967b14)
-- Exhaustive review R1: 4 MAJORs found (Claude-only), 3 fixed (090c864)
-- Exhaustive review R2: 1 MAJOR + 2 MINORs found (Gemini+Claude), all fixed (c26641e)
-- Exhaustive review R3: 0 MAJORs (clean round 1)
-- Exhaustive review R4: 0 MAJORs (clean round 2) — CONVERGED
+- Phase 6: UserInfo endpoint (57c3d1f)
+- Phase 6 review fixes: require openid scope, case-insensitive Bearer, email_verified, deterministic ordering (1ab2431)
+- Phase 7: authorize error redirects (55d1b43)
+- Phase 6+7 review fixes: 302 redirect, consent ordering, protocol-level scopes (fcd6b5a)
+- Review artifacts filed (7ffd061, 0bd7ff4)
