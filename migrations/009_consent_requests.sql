@@ -3,8 +3,8 @@
 -- external consent UI and resume after the user approves/denies.
 
 CREATE TABLE consent_requests (
-    -- Uses gen_random_uuid() (UUIDv4) instead of uuidv7() so that consent_id
-    -- values are cryptographically random and not predictable from timestamps.
+    -- Uses gen_random_uuid() (UUIDv4) instead of app-side UUIDv7 so that
+    -- consent_id values are cryptographically random and not predictable.
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     client_id   uuid NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
     user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
