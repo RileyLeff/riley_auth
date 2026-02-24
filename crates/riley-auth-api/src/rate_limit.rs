@@ -488,6 +488,7 @@ mod tests {
         assert_eq!(classify_path("/oauth/token"), RateLimitTier::Auth);
         assert_eq!(classify_path("/oauth/authorize"), RateLimitTier::Auth);
         assert_eq!(classify_path("/oauth/revoke"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/oauth/introspect"), RateLimitTier::Auth);
         assert_eq!(classify_path("/auth/setup"), RateLimitTier::Auth);
         assert_eq!(classify_path("/auth/refresh"), RateLimitTier::Auth);
     }
@@ -517,6 +518,7 @@ mod tests {
     #[test]
     fn classify_auth_trailing_slash() {
         assert_eq!(classify_path("/oauth/token/"), RateLimitTier::Auth);
+        assert_eq!(classify_path("/oauth/introspect/"), RateLimitTier::Auth);
         assert_eq!(classify_path("/auth/setup/"), RateLimitTier::Auth);
         assert_eq!(classify_path("/auth/google/"), RateLimitTier::Auth);
         assert_eq!(classify_path("/auth/link/google/"), RateLimitTier::Auth);
