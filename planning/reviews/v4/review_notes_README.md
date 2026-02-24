@@ -249,3 +249,23 @@ Client IDs and secrets are server-generated alphanumeric strings that never cont
 
 ### Base64 fallback order in Basic auth (URL-safe before STANDARD)
 The `extract_client_credentials` function tries URL_SAFE_NO_PAD first, then STANDARD. This is inverted from what HTTP clients send (STANDARD), but functionally correct: values with `+` or `/` will fail URL-safe decode and fall through correctly.
+
+## v4 Phase 10 — OIDC Back-Channel Logout
+
+### Backchannel logout is fire-and-forget (not outbox-based)
+Intentional architecture tradeoff. BCL is time-sensitive (RP should be notified ASAP), so fire-and-forget with in-process retries (1s, 3s, 9s backoff) is used instead of the durable outbox pattern. Not durable across server restarts.
+
+### sid not implemented (backchannel_logout_session_supported: false)
+The server does not track session IDs that flow through to logout tokens. Discovery correctly reports `backchannel_logout_session_supported: false`. Registration rejects `backchannel_logout_session_required: true`. All dispatch calls pass `None` for sid.
+
+### /oauth/revoke does not dispatch backchannel logout (intentional)
+The client revoking its own token already knows it's invalidated. BCL is for notifying *other* relying parties. No spec requirement for BCL on RFC 7009 revocation.
+
+### Token reuse detection does not dispatch backchannel logout (accepted)
+Family revocation is an active-attack response where speed is prioritized. The affected client discovers revocation on its next API call.
+
+### CLI backchannel logout degrades gracefully without JWT keys
+`dispatch_backchannel_logout_cli` warns and continues if PEM key files are unavailable. This handles the scenario of CLI running on a management box without signing keys.
+
+### auth_logout ordering relies on session tokens having NULL client_id
+`auth_logout` deletes the session token first, then dispatches BCL. This works because session tokens (client_id IS NULL) don't match the BCL query's `rt.client_id = c.id` JOIN. A comment explains the ordering.

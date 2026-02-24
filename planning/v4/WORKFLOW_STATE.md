@@ -1,8 +1,8 @@
 # v4 Workflow State
 
-**Current Phase:** 9 — Token Introspection (COMPLETE)
-**Current Step:** Standard review converged
-**Status:** Phase 9 done. 2-round review converged (0 MAJORs in R2). 138 tests passing (22 unit + 16 core + 100 integration). Ready for Phase 10.
+**Current Phase:** 11 — Multi-Provider Account Merging (PENDING)
+**Current Step:** Starting Phase 11
+**Status:** Phase 10 complete and reviewed. 144 tests passing (22 unit + 16 core + 106 integration). Ready for Phase 11.
 
 ## Progress
 
@@ -22,7 +22,8 @@
 | 8 | review | Exhaustive review (3 rounds, Gemini+Claude, converged) | Done (ce49935, f1e9b7a, 3be13a3) |
 | 9 | 9.1-9.10 | Token Introspection | Done (271719a) |
 | 9 | review | Standard review (2 rounds, Claude-only, converged) | Done (bf7dcae, e336f74) |
-| 10 | 10.1-10.9 | OIDC Back-Channel Logout | Pending |
+| 10 | 10.1-10.9 | OIDC Back-Channel Logout | Done (76b46d0) |
+| 10 | review | Standard review (3 rounds, Claude-only, converged) | Done (2c76c1a, 3008bf9) |
 | 11 | 11.1-11.7 | Multi-Provider Account Merging | Pending |
 | 11 | review | Exhaustive review (milestone: v4 complete) | Pending |
 
@@ -32,6 +33,7 @@ None.
 
 ## Recent Activity
 
-- Phase 9: Token Introspection — POST /oauth/introspect, client auth, RFC 7662 response, 6 integration tests (271719a)
-- Phase 9 R1 fixes: session token rejection, auth rate limit tier, cache-control headers, 2 new tests (bf7dcae)
-- Phase 9 R2: 0 MAJORs, 1 minor (rate limit unit test), fixed (e336f74). Converged.
+- Phase 10: OIDC Back-Channel Logout — migration 010, logout token JWTs, dispatch on logout/revoke/delete, admin API, discovery, 6 integration tests (76b46d0)
+- Phase 10 review R1: fixed discovery session_supported=false, reject session_required=true (2c76c1a)
+- Phase 10 review R2: fixed missing backchannel logout in delete_account and CLI delete/revoke (3008bf9)
+- Phase 10 review R3: converged — 0 MAJORs, 0 MINORs
