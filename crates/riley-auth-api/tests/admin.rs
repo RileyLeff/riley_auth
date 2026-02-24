@@ -14,7 +14,7 @@ fn admin_list_users() {
 
         let resp = client
             .get(s.url("/admin/users"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .send()
             .await
             .unwrap();
@@ -37,7 +37,7 @@ fn admin_requires_admin_role() {
 
         let resp = client
             .get(s.url("/admin/users"))
-            .header("cookie", format!("riley_auth_access={user_token}"))
+            .header("cookie", format!("auth_access={user_token}"))
             .send()
             .await
             .unwrap();
@@ -57,7 +57,7 @@ fn admin_register_and_remove_client() {
 
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "Test App",
@@ -79,7 +79,7 @@ fn admin_register_and_remove_client() {
         // List clients
         let resp = client
             .get(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .send()
             .await
             .unwrap();
@@ -90,7 +90,7 @@ fn admin_register_and_remove_client() {
         // Remove client
         let resp = client
             .delete(s.url(&format!("/admin/clients/{client_id}")))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -112,7 +112,7 @@ fn admin_register_client_with_scopes() {
         // Register client with valid scopes
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "Scoped App",
@@ -131,7 +131,7 @@ fn admin_register_client_with_scopes() {
         // List clients — verify scopes persisted
         let resp = client
             .get(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .send()
             .await
             .unwrap();
@@ -155,7 +155,7 @@ fn admin_rejects_undefined_scope() {
         // Register client with a scope that doesn't exist in config definitions
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "Bad Scope App",
@@ -183,7 +183,7 @@ fn admin_rejects_invalid_scope_name() {
         // Register client with a scope name containing whitespace (injection attempt)
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "Whitespace Scope App",
@@ -210,7 +210,7 @@ fn admin_rejects_invalid_redirect_uri_scheme() {
         // javascript: scheme should be rejected
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "Evil App",
@@ -225,7 +225,7 @@ fn admin_rejects_invalid_redirect_uri_scheme() {
         // http:// non-localhost should be rejected
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "HTTP App",
@@ -240,7 +240,7 @@ fn admin_rejects_invalid_redirect_uri_scheme() {
         // http://localhost should be allowed (development)
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "Dev App",

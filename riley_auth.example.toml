@@ -12,9 +12,9 @@
 [server]
 host = "0.0.0.0"                          # Listen address (default: 0.0.0.0)
 port = 8081                                # Listen port (default: 8081)
-cors_origins = [                           # Allowed CORS origins (empty = permissive)
-  "https://example.com",
-  "https://app.example.com",
+cors_origins = [                           # Allowed CORS origins
+  "https://example.com",                   #   empty = no CORS (same-origin only)
+  "https://app.example.com",               #   ["*"] = permissive (dev only)
 ]
 cookie_domain = ".example.com"             # Domain for auth cookies (enables subdomain SSO)
 public_url = "https://example.com"         # Public base URL (used for OAuth callbacks and post-login redirects)
@@ -33,7 +33,7 @@ max_connections = 10                       # Connection pool size (default: 10)
 [jwt]
 access_token_ttl_secs = 900                  # Access token lifetime (default: 900 = 15 minutes)
 refresh_token_ttl_secs = 2592000             # Refresh token lifetime (default: 2592000 = 30 days)
-issuer = "riley-auth"                        # JWT "iss" claim (default: riley-auth)
+issuer = "my-auth"                           # JWT "iss" claim (REQUIRED — no default)
 authorization_code_ttl_secs = 300            # OAuth authorization code lifetime (default: 300 = 5 min)
 jwks_cache_max_age_secs = 3600               # Cache-Control max-age for /.well-known/jwks.json (default: 3600)
 

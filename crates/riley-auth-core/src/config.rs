@@ -46,7 +46,7 @@ pub struct ServerConfig {
 }
 
 fn default_cookie_prefix() -> String {
-    "riley_auth".to_string()
+    "auth".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,7 +104,6 @@ pub struct JwtConfig {
     pub access_token_ttl_secs: u64,
     #[serde(default = "default_refresh_ttl")]
     pub refresh_token_ttl_secs: u64,
-    #[serde(default = "default_issuer")]
     pub issuer: String,
     #[serde(default = "default_authz_code_ttl")]
     pub authorization_code_ttl_secs: u64,
@@ -404,6 +403,12 @@ impl Config {
         while config.server.public_url.ends_with('/') {
             config.server.public_url.pop();
         }
+        // Validate issuer is not empty
+        if config.jwt.issuer.trim().is_empty() {
+            return Err(Error::Config(
+                "jwt.issuer is required and cannot be empty".to_string(),
+            ));
+        }
         // Validate JWT key config
         let resolved_keys = config.jwt.resolved_keys()?;
         if resolved_keys.is_empty() {
@@ -550,7 +555,6 @@ fn default_port() -> u16 { 8081 }
 fn default_max_connections() -> u32 { 10 }
 fn default_access_ttl() -> u64 { 900 }        // 15 minutes
 fn default_refresh_ttl() -> u64 { 2_592_000 } // 30 days
-fn default_issuer() -> String { "riley-auth".to_string() }
 fn default_authz_code_ttl() -> u64 { 300 }    // 5 minutes
 fn default_min_length() -> usize { 3 }
 fn default_max_length() -> usize { 24 }
@@ -576,10 +580,11 @@ url = "postgres://localhost/test"
 [jwt]
 private_key_path = "/tmp/private.pem"
 public_key_path = "/tmp/public.pem"
+issuer = "test-auth"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.server.port, 8081);
-        assert_eq!(config.server.cookie_prefix, "riley_auth");
+        assert_eq!(config.server.cookie_prefix, "auth");
         assert_eq!(config.jwt.access_token_ttl_secs, 900);
         assert_eq!(config.usernames.min_length, 3);
         assert!(config.oauth.google.is_none());

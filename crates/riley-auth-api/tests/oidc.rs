@@ -173,7 +173,7 @@ fn oidc_token_response_includes_id_token() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -294,7 +294,7 @@ fn oidc_nonce_round_trip() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -380,7 +380,7 @@ fn oidc_no_id_token_without_openid_scope() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -893,7 +893,7 @@ fn userinfo_full_flow_with_scopes() {
                 ("code_challenge_method", "S256"),
                 ("scope", "openid read:profile"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1257,7 +1257,7 @@ fn nonce_preserved_across_refresh() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1387,7 +1387,7 @@ fn auth_time_present_and_preserved_across_refresh() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1520,7 +1520,7 @@ fn id_token_includes_email_claims_when_email_scope_granted() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();

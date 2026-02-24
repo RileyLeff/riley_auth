@@ -240,7 +240,11 @@ async fn maintenance_worker(
 fn build_cors(config: &Config) -> CorsLayer {
     let origins = &config.server.cors_origins;
     if origins.is_empty() {
-        tracing::warn!("no cors_origins configured — using permissive CORS (not safe for production)");
+        // No CORS layer — same-origin only (secure default)
+        tracing::info!("no cors_origins configured — CORS disabled (same-origin only)");
+        CorsLayer::new()
+    } else if origins.len() == 1 && origins[0] == "*" {
+        tracing::warn!("cors_origins = [\"*\"] — using permissive CORS (not safe for production)");
         CorsLayer::permissive()
     } else {
         let origins: Vec<_> = origins
@@ -298,12 +302,12 @@ mod tests {
 
     #[test]
     fn cookie_names_default_prefix() {
-        let names = CookieNames::from_prefix("riley_auth");
-        assert_eq!(names.access, "riley_auth_access");
-        assert_eq!(names.refresh, "riley_auth_refresh");
-        assert_eq!(names.oauth_state, "riley_auth_oauth_state");
-        assert_eq!(names.pkce, "riley_auth_pkce");
-        assert_eq!(names.setup, "riley_auth_setup");
+        let names = CookieNames::from_prefix("auth");
+        assert_eq!(names.access, "auth_access");
+        assert_eq!(names.refresh, "auth_refresh");
+        assert_eq!(names.oauth_state, "auth_oauth_state");
+        assert_eq!(names.pkce, "auth_pkce");
+        assert_eq!(names.setup, "auth_setup");
     }
 
     #[test]

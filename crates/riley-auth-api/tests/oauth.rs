@@ -43,7 +43,7 @@ fn oauth_provider_full_flow() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -176,7 +176,7 @@ fn oauth_provider_rejects_bad_client() {
                 ("code_challenge", "test"),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -216,7 +216,7 @@ fn oauth_provider_rejects_wrong_redirect_uri() {
                 ("code_challenge", "test"),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -258,7 +258,7 @@ fn authorize_error_redirect_unsupported_response_type() {
                 ("code_challenge", "test"),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -358,7 +358,7 @@ fn authorize_redirects_to_consent_url_for_non_auto_approve() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -416,7 +416,7 @@ fn authorize_error_redirect_missing_pkce() {
                 ("response_type", "code"),
                 ("state", "pkce-state"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -465,7 +465,7 @@ fn authorize_error_redirect_unsupported_pkce_method() {
                 ("code_challenge", "somechallenge"),
                 ("code_challenge_method", "plain"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -498,7 +498,7 @@ fn authorize_pre_redirect_errors_return_http() {
                 ("redirect_uri", "https://evil.com/callback"),
                 ("response_type", "code"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -525,7 +525,7 @@ fn authorize_pre_redirect_errors_return_http() {
                 ("redirect_uri", "https://evil.com/callback"),
                 ("response_type", "code"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -571,7 +571,7 @@ fn prompt_none_with_session_issues_code() {
                 ("code_challenge_method", "S256"),
                 ("prompt", "none"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -673,7 +673,7 @@ fn prompt_none_with_consent_required_returns_consent_required() {
                 ("code_challenge_method", "S256"),
                 ("prompt", "none"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -726,7 +726,7 @@ fn prompt_login_without_login_url_returns_login_required() {
                 ("code_challenge_method", "S256"),
                 ("prompt", "login"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -778,7 +778,7 @@ fn prompt_unknown_value_returns_invalid_request() {
                 ("code_challenge_method", "S256"),
                 ("prompt", "select_account"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -830,7 +830,7 @@ fn prompt_none_combined_with_login_returns_invalid_request() {
                 ("code_challenge_method", "S256"),
                 ("prompt", "none login"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -882,7 +882,7 @@ fn prompt_consent_with_auto_approve_issues_code() {
                 ("code_challenge_method", "S256"),
                 ("prompt", "consent"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -935,7 +935,7 @@ fn oauth_scopes_full_flow() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1047,7 +1047,7 @@ fn oauth_rejects_unauthorized_scope() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1099,7 +1099,7 @@ fn oauth_rejects_unknown_scope() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1151,7 +1151,7 @@ fn oauth_no_scopes_omits_scope_field() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1240,7 +1240,7 @@ fn consent_get_returns_context() {
         let resp = client
             .get(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.to_string())])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1310,7 +1310,7 @@ fn consent_approve_issues_auth_code() {
         let resp = client
             .post(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.to_string())])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "XMLHttpRequest")
             .json(&serde_json::json!({"approved": true}))
             .send()
@@ -1393,7 +1393,7 @@ fn consent_deny_redirects_with_access_denied() {
         let resp = client
             .post(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.to_string())])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "XMLHttpRequest")
             .json(&serde_json::json!({"approved": false}))
             .send()
@@ -1456,7 +1456,7 @@ fn consent_rejects_expired_request() {
         let resp = client
             .get(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.to_string())])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1510,7 +1510,7 @@ fn consent_rejects_wrong_user() {
         let resp = client
             .get(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.to_string())])
-            .header("cookie", format!("riley_auth_access={access_token_b}"))
+            .header("cookie", format!("auth_access={access_token_b}"))
             .send()
             .await
             .unwrap();
@@ -1576,7 +1576,7 @@ fn consent_full_flow_via_authorize() {
                 ("code_challenge_method", "S256"),
                 ("nonce", "flow-nonce"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1592,7 +1592,7 @@ fn consent_full_flow_via_authorize() {
         let resp = client
             .get(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.as_ref())])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1604,7 +1604,7 @@ fn consent_full_flow_via_authorize() {
         let resp = client
             .post(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.as_ref())])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "XMLHttpRequest")
             .json(&serde_json::json!({"approved": true}))
             .send()
@@ -1678,7 +1678,7 @@ fn token_endpoint_basic_auth_authorization_code() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1754,7 +1754,7 @@ fn token_endpoint_basic_auth_refresh() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1845,7 +1845,7 @@ fn revoke_endpoint_basic_auth() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -2044,7 +2044,7 @@ fn oauth_deduplicates_scopes() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -2127,7 +2127,7 @@ fn oauth_refresh_reuse_revokes_family() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -2241,7 +2241,7 @@ fn oauth_authorization_code_replay_rejected() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -2328,7 +2328,7 @@ fn oauth_pkce_wrong_verifier_rejected() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -2401,7 +2401,7 @@ fn refresh_scope_downscoping() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -2539,7 +2539,7 @@ fn authorization_code_reuse_rejected() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -2605,7 +2605,7 @@ fn backchannel_logout_register_client_with_logout_uri() {
         // Register client with backchannel_logout_uri (session_required=false)
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "BCL App",
@@ -2624,7 +2624,7 @@ fn backchannel_logout_register_client_with_logout_uri() {
         // List clients — verify backchannel fields appear
         let resp = client
             .get(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .send()
             .await
             .unwrap();
@@ -2649,7 +2649,7 @@ fn backchannel_logout_rejects_non_https_uri() {
         // http:// should be rejected (no localhost exception for backchannel logout)
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "Bad BCL App",
@@ -2680,7 +2680,7 @@ fn backchannel_logout_client_without_uri_has_null() {
         // Register client without backchannel_logout_uri
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "No BCL App",
@@ -2710,7 +2710,7 @@ fn backchannel_logout_rejects_session_required() {
         // backchannel_logout_session_required=true should be rejected (sid not implemented)
         let resp = client
             .post(s.url("/admin/clients"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "name": "SID App",

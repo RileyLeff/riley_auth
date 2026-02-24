@@ -43,7 +43,7 @@ fn auth_me_authenticated() {
 
         let resp = client
             .get(s.url("/auth/me"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -68,7 +68,7 @@ fn update_display_name() {
 
         let resp = client
             .patch(s.url("/auth/me"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({ "display_name": "New Display Name" }))
             .send()
@@ -93,7 +93,7 @@ fn update_username() {
 
         let resp = client
             .patch(s.url("/auth/me/username"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({ "username": "newname" }))
             .send()
@@ -122,7 +122,7 @@ fn username_validation_rejects_invalid() {
         // Too short — validates end-to-end that username rules are enforced
         let resp = client
             .patch(s.url("/auth/me/username"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({ "username": "ab" }))
             .send()
@@ -144,7 +144,7 @@ fn refresh_token_rotation() {
 
         let resp = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_refresh={refresh_raw}"))
+            .header("cookie", format!("auth_refresh={refresh_raw}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -153,14 +153,14 @@ fn refresh_token_rotation() {
 
         let cookies: Vec<_> = resp.cookies().collect();
         assert!(
-            cookies.iter().any(|c| c.name() == "riley_auth_access"),
+            cookies.iter().any(|c| c.name() == "auth_access"),
             "should set new access token cookie"
         );
 
         // Old refresh token should be consumed
         let resp2 = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_refresh={refresh_raw}"))
+            .header("cookie", format!("auth_refresh={refresh_raw}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -183,7 +183,7 @@ fn session_refresh_reuse_revokes_family() {
         // Rotate A → B (legitimate refresh)
         let resp = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_refresh={token_a}"))
+            .header("cookie", format!("auth_refresh={token_a}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -191,7 +191,7 @@ fn session_refresh_reuse_revokes_family() {
         assert_eq!(resp.status(), StatusCode::OK);
         let token_b = resp
             .cookies()
-            .find(|c| c.name() == "riley_auth_refresh")
+            .find(|c| c.name() == "auth_refresh")
             .expect("should get new refresh token")
             .value()
             .to_string();
@@ -199,7 +199,7 @@ fn session_refresh_reuse_revokes_family() {
         // Token B should work (sanity check — rotate B → C)
         let resp = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_refresh={token_b}"))
+            .header("cookie", format!("auth_refresh={token_b}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -207,7 +207,7 @@ fn session_refresh_reuse_revokes_family() {
         assert_eq!(resp.status(), StatusCode::OK);
         let token_c = resp
             .cookies()
-            .find(|c| c.name() == "riley_auth_refresh")
+            .find(|c| c.name() == "auth_refresh")
             .expect("should get new refresh token")
             .value()
             .to_string();
@@ -215,7 +215,7 @@ fn session_refresh_reuse_revokes_family() {
         // NOW: replay token A (attacker reuse). Should fail AND revoke the entire family.
         let resp = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_refresh={token_a}"))
+            .header("cookie", format!("auth_refresh={token_a}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -225,7 +225,7 @@ fn session_refresh_reuse_revokes_family() {
         // Token C (the latest legitimate token) should ALSO be revoked
         let resp = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_refresh={token_c}"))
+            .header("cookie", format!("auth_refresh={token_c}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -274,7 +274,7 @@ fn cross_endpoint_client_token_at_session_endpoint() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -302,7 +302,7 @@ fn cross_endpoint_client_token_at_session_endpoint() {
         // Send the client-bound token to /auth/refresh — should be rejected
         let resp = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_refresh={oauth_refresh}"))
+            .header("cookie", format!("auth_refresh={oauth_refresh}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -380,7 +380,7 @@ fn cross_endpoint_session_token_at_oauth_endpoint() {
         // The session token should still work at /auth/refresh (not consumed/destroyed)
         let resp = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_refresh={session_refresh}"))
+            .header("cookie", format!("auth_refresh={session_refresh}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -408,7 +408,7 @@ fn logout() {
             .post(s.url("/auth/logout"))
             .header(
                 "cookie",
-                format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_raw}"),
+                format!("auth_access={access_token}; auth_refresh={refresh_raw}"),
             )
             .header("x-requested-with", "test")
             .send()
@@ -440,7 +440,7 @@ fn logout_all() {
 
         let resp = client
             .post(s.url("/auth/logout-all"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -464,7 +464,7 @@ fn list_links() {
 
         let resp = client
             .get(s.url("/auth/me/links"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -489,7 +489,7 @@ fn csrf_protection() {
         // PATCH without X-Requested-With header should be rejected
         let resp = client
             .patch(s.url("/auth/me"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .json(&serde_json::json!({ "display_name": "test" }))
             .send()
             .await
@@ -499,7 +499,7 @@ fn csrf_protection() {
         // With header should succeed
         let resp = client
             .patch(s.url("/auth/me"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({ "display_name": "test" }))
             .send()
@@ -521,7 +521,7 @@ fn delete_account() {
 
         let resp = client
             .delete(s.url("/auth/me"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -548,7 +548,7 @@ fn last_admin_protection() {
         // Cannot demote last admin (DB is clean, so this is the only admin)
         let resp = client
             .patch(s.url(&format!("/admin/users/{}/role", admin.id)))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({ "role": "user" }))
             .send()
@@ -583,7 +583,7 @@ fn cross_audience_token_rejected() {
 
         let resp = client
             .get(s.url("/auth/me"))
-            .header("cookie", format!("riley_auth_access={client_token}"))
+            .header("cookie", format!("auth_access={client_token}"))
             .send()
             .await
             .unwrap();
@@ -604,7 +604,7 @@ fn display_name_multibyte_characters_within_limit() {
         let name = "日".repeat(200);
         let resp = client
             .patch(s.url("/auth/me"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({ "display_name": name }))
             .send()
@@ -616,7 +616,7 @@ fn display_name_multibyte_characters_within_limit() {
         let name_too_long = "日".repeat(201);
         let resp = client
             .patch(s.url("/auth/me"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({ "display_name": name_too_long }))
             .send()
@@ -639,7 +639,7 @@ fn session_list_shows_current_session() {
 
         let resp = client
             .get(s.url("/auth/sessions"))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -688,7 +688,7 @@ fn session_list_multiple_sessions() {
         let client = s.client();
         let resp = client
             .get(s.url("/auth/sessions"))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -734,7 +734,7 @@ fn session_revoke_other_session() {
         // List sessions to find the other session's ID
         let resp = client
             .get(s.url("/auth/sessions"))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -746,7 +746,7 @@ fn session_revoke_other_session() {
         // Revoke the other session
         let resp = client
             .delete(s.url(&format!("/auth/sessions/{other_id}")))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -756,7 +756,7 @@ fn session_revoke_other_session() {
         // Verify only one session remains
         let resp = client
             .get(s.url("/auth/sessions"))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -782,7 +782,7 @@ fn session_cannot_revoke_current() {
         // Get current session ID
         let resp = client
             .get(s.url("/auth/sessions"))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -793,7 +793,7 @@ fn session_cannot_revoke_current() {
         // Try to revoke current session — should fail
         let resp = client
             .delete(s.url(&format!("/auth/sessions/{current_id}")))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -817,7 +817,7 @@ fn session_revoke_nonexistent_returns_404() {
         // Try to revoke a session that doesn't exist
         let resp = client
             .delete(s.url("/auth/sessions/00000000-0000-7000-8000-000000000001"))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -840,7 +840,7 @@ fn session_refresh_populates_last_used_at() {
         // Before refresh, last_used_at should be null
         let resp = client
             .get(s.url("/auth/sessions"))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -852,7 +852,7 @@ fn session_refresh_populates_last_used_at() {
         // Refresh the session
         let resp = client
             .post(s.url("/auth/refresh"))
-            .header("cookie", format!("riley_auth_access={access_token}; riley_auth_refresh={refresh_token}"))
+            .header("cookie", format!("auth_access={access_token}; auth_refresh={refresh_token}"))
             .header("x-requested-with", "test")
             .header("user-agent", "TestBrowser/1.0")
             .send()
@@ -861,17 +861,17 @@ fn session_refresh_populates_last_used_at() {
         assert_eq!(resp.status(), StatusCode::OK);
 
         // Extract new tokens from Set-Cookie headers
-        let new_access = resp.cookies().find(|c| c.name() == "riley_auth_access")
+        let new_access = resp.cookies().find(|c| c.name() == "auth_access")
             .map(|c| c.value().to_string())
             .expect("expected new access token cookie");
-        let new_refresh = resp.cookies().find(|c| c.name() == "riley_auth_refresh")
+        let new_refresh = resp.cookies().find(|c| c.name() == "auth_refresh")
             .map(|c| c.value().to_string())
             .expect("expected new refresh token cookie");
 
         // After refresh, the new session should have last_used_at set
         let resp = client
             .get(s.url("/auth/sessions"))
-            .header("cookie", format!("riley_auth_access={new_access}; riley_auth_refresh={new_refresh}"))
+            .header("cookie", format!("auth_access={new_access}; auth_refresh={new_refresh}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -987,7 +987,7 @@ fn link_confirm_adds_provider_to_existing_account() {
         // Verify user has exactly one provider link
         let resp = client
             .get(s.url("/auth/me/links"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1022,7 +1022,7 @@ fn link_confirm_adds_provider_to_existing_account() {
 
         // Call POST /auth/link/confirm with session + setup token cookies
         let cookie_str = format!(
-            "riley_auth_access={access_token}; riley_auth_setup={setup_token}"
+            "auth_access={access_token}; auth_setup={setup_token}"
         );
         let resp = client
             .post(s.url("/auth/link/confirm"))
@@ -1040,7 +1040,7 @@ fn link_confirm_adds_provider_to_existing_account() {
         // Verify user now has two provider links
         let resp = client
             .get(s.url("/auth/me/links"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1089,7 +1089,7 @@ fn link_confirm_rejects_already_linked_provider() {
         };
 
         let cookie_str = format!(
-            "riley_auth_access={access_token}; riley_auth_setup={setup_token}"
+            "auth_access={access_token}; auth_setup={setup_token}"
         );
         let resp = client
             .post(s.url("/auth/link/confirm"))
@@ -1118,7 +1118,7 @@ fn link_confirm_requires_both_cookies() {
         // Without setup cookie → should fail
         let resp = client
             .post(s.url("/auth/link/confirm"))
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .header("x-requested-with", "test")
             .send()
             .await

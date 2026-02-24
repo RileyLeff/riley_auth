@@ -39,7 +39,7 @@ fn metrics_test_config(
             cookie_domain: None,
             public_url: "http://localhost:3000".to_string(),
             behind_proxy: false,
-            cookie_prefix: "riley_auth".to_string(),
+            cookie_prefix: "auth".to_string(),
         },
         database: DatabaseConfig {
             url: ConfigValue::Literal("unused".to_string()),

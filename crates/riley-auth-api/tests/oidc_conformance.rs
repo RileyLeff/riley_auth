@@ -56,7 +56,7 @@ async fn authorize_and_exchange(
     let resp = client
         .get(s.url("/oauth/authorize"))
         .query(&query)
-        .header("cookie", format!("riley_auth_access={access_token}"))
+        .header("cookie", format!("auth_access={access_token}"))
         .send()
         .await
         .unwrap();
@@ -386,7 +386,7 @@ fn oidcc_response_type_missing() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -650,7 +650,7 @@ fn oidcc_prompt_login() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -739,7 +739,7 @@ fn oidcc_prompt_none_logged_in() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -790,7 +790,7 @@ fn oidcc_ensure_request_with_unknown_parameter_succeeds() {
                 ("unknown_parameter", "should-be-ignored"),
                 ("another_unknown", "also-ignored"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -831,7 +831,7 @@ fn oidcc_ensure_request_with_acr_values_succeeds() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -870,7 +870,7 @@ fn oidcc_codereuse() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -942,7 +942,7 @@ fn oidcc_ensure_registered_redirect_uri() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1006,7 +1006,7 @@ fn oidcc_server_client_secret_basic() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1329,7 +1329,7 @@ fn oidcc_prompt_unknown_value_returns_invalid_request() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();
@@ -1374,7 +1374,7 @@ fn oidcc_prompt_none_combined_invalid() {
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
-            .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("cookie", format!("auth_access={access_token}"))
             .send()
             .await
             .unwrap();

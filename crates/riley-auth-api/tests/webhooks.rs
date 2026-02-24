@@ -14,7 +14,7 @@ fn webhook_register_list_remove() {
         // Register a webhook
         let resp = client
             .post(s.url("/admin/webhooks"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "url": "https://example.com/hook",
@@ -34,7 +34,7 @@ fn webhook_register_list_remove() {
         // List webhooks
         let resp = client
             .get(s.url("/admin/webhooks"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .send()
             .await
             .unwrap();
@@ -48,7 +48,7 @@ fn webhook_register_list_remove() {
         // Remove webhook
         let resp = client
             .delete(s.url(&format!("/admin/webhooks/{webhook_id}")))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
@@ -58,7 +58,7 @@ fn webhook_register_list_remove() {
         // Verify removed
         let resp = client
             .get(s.url("/admin/webhooks"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .send()
             .await
             .unwrap();
@@ -79,7 +79,7 @@ fn webhook_rejects_unknown_event_type() {
 
         let resp = client
             .post(s.url("/admin/webhooks"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "url": "https://example.com/hook",
@@ -105,7 +105,7 @@ fn webhook_requires_admin() {
         // Regular user cannot register webhooks
         let resp = client
             .post(s.url("/admin/webhooks"))
-            .header("cookie", format!("riley_auth_access={user_token}"))
+            .header("cookie", format!("auth_access={user_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "url": "https://example.com/hook",
@@ -119,7 +119,7 @@ fn webhook_requires_admin() {
         // Regular user cannot list webhooks
         let resp = client
             .get(s.url("/admin/webhooks"))
-            .header("cookie", format!("riley_auth_access={user_token}"))
+            .header("cookie", format!("auth_access={user_token}"))
             .send()
             .await
             .unwrap();
@@ -194,7 +194,7 @@ fn webhook_deliveries_endpoint() {
         // Register a webhook
         let resp = client
             .post(s.url("/admin/webhooks"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .json(&serde_json::json!({
                 "url": "https://example.com/hook",
@@ -210,7 +210,7 @@ fn webhook_deliveries_endpoint() {
         // Deliveries should be empty initially
         let resp = client
             .get(s.url(&format!("/admin/webhooks/{webhook_id}/deliveries")))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .send()
             .await
             .unwrap();
@@ -221,7 +221,7 @@ fn webhook_deliveries_endpoint() {
         // Deliveries for non-existent webhook returns 404
         let resp = client
             .get(s.url("/admin/webhooks/00000000-0000-0000-0000-000000000000/deliveries"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .send()
             .await
             .unwrap();
@@ -241,7 +241,7 @@ fn webhook_remove_nonexistent_returns_404() {
 
         let resp = client
             .delete(s.url("/admin/webhooks/00000000-0000-0000-0000-000000000000"))
-            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("cookie", format!("auth_access={admin_token}"))
             .header("x-requested-with", "test")
             .send()
             .await
