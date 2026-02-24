@@ -307,3 +307,20 @@ pub fn router_with_redis_rate_limit(
         crate::rate_limit::redis_rate_limit_middleware(limiter, behind_proxy, req, next)
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use utoipa::OpenApi;
+
+    #[test]
+    fn openapi_spec_is_valid_json() {
+        let spec_json = ApiDoc::openapi().to_json().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&spec_json).unwrap();
+
+        // Verify it has the expected top-level structure
+        assert_eq!(parsed["info"]["title"], "riley_auth");
+        assert!(parsed["paths"].as_object().unwrap().len() >= 25);
+        assert!(parsed["components"]["schemas"].as_object().unwrap().len() >= 15);
+    }
+}
