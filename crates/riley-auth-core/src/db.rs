@@ -412,7 +412,7 @@ pub async fn find_oauth_links_by_user(
     user_id: Uuid,
 ) -> Result<Vec<OAuthLink>> {
     let links = sqlx::query_as::<_, OAuthLink>(
-        "SELECT * FROM oauth_links WHERE user_id = $1"
+        "SELECT * FROM oauth_links WHERE user_id = $1 ORDER BY created_at"
     )
     .bind(user_id)
     .fetch_all(pool)

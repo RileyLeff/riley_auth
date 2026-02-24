@@ -645,15 +645,17 @@ async fn userinfo(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, Error> {
-    // Extract Bearer token from Authorization header
+    // Extract Bearer token from Authorization header (case-insensitive prefix per RFC 6750 §2.1)
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or(Error::Unauthenticated)?;
 
-    let bearer_token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or(Error::Unauthenticated)?;
+    let bearer_token = if auth_header.len() > 7 && auth_header[..7].eq_ignore_ascii_case("bearer ") {
+        &auth_header[7..]
+    } else {
+        return Err(Error::Unauthenticated);
+    };
 
     // Validate the JWT
     let token_data = state
@@ -676,10 +678,11 @@ async fn userinfo(
     // Parse user ID
     let user_id: uuid::Uuid = claims.sub.parse().map_err(|_| Error::InvalidToken)?;
 
-    // Fetch user profile
+    // Fetch user profile — return 401 (not 404) if user was deleted,
+    // since the token is no longer valid for any resource endpoint.
     let user = db::find_user_by_id(&state.db, user_id)
         .await?
-        .ok_or(Error::UserNotFound)?;
+        .ok_or(Error::InvalidToken)?;
 
     // Parse granted scopes from the token
     let scopes: BTreeSet<&str> = claims
@@ -687,6 +690,11 @@ async fn userinfo(
         .as_deref()
         .map(|s| s.split_whitespace().collect())
         .unwrap_or_default();
+
+    // UserInfo requires the "openid" scope (OIDC Core 1.0 §5.3)
+    if !scopes.contains("openid") {
+        return Err(Error::Forbidden);
+    }
 
     // Build response based on granted scopes (OIDC Core 1.0 §5.4)
     let mut response = serde_json::Map::new();
@@ -712,10 +720,12 @@ async fn userinfo(
     }
 
     if scopes.contains("email") {
-        // Fetch email from the user's first oauth_link that has an email
+        // Fetch email from the user's oldest oauth_link that has an email (deterministic ordering)
         let links = db::find_oauth_links_by_user(&state.db, user_id).await?;
         if let Some(email) = links.iter().find_map(|l| l.provider_email.as_deref()) {
             response.insert("email".to_string(), serde_json::json!(email));
+            // All emails come from verified OAuth providers (Google, GitHub, etc.)
+            response.insert("email_verified".to_string(), serde_json::json!(true));
         }
     }
 

@@ -2276,7 +2276,7 @@ fn oidc_discovery_document() {
         // claims_supported
         assert_eq!(
             doc["claims_supported"],
-            serde_json::json!(["sub", "name", "preferred_username", "picture", "email", "updated_at"])
+            serde_json::json!(["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at"])
         );
 
         // userinfo_endpoint
@@ -3481,8 +3481,9 @@ fn userinfo_with_profile_and_email_scopes() {
         );
         assert!(userinfo.get("updated_at").is_some());
 
-        // email claim — from the oauth_link created by create_user_with_session
+        // email claims — from the oauth_link created by create_user_with_session
         assert_eq!(userinfo["email"], "profileuser@example.com");
+        assert_eq!(userinfo["email_verified"], true);
     });
 }
 
@@ -3541,6 +3542,56 @@ fn userinfo_rejects_invalid_token() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
+
+#[test]
+#[ignore]
+fn userinfo_rejects_token_without_openid_scope() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (user, _, _) = s.create_user_with_session("noopeniduser", "user").await;
+
+        // Register client
+        let client_id_str = "no-openid-client";
+        let client_secret = "no-openid-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "No OpenID Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Sign a client-scoped token with only "read:profile" (no "openid")
+        let bearer_token = s
+            .keys
+            .sign_access_token_with_scopes(
+                &s.config.jwt,
+                &user.id.to_string(),
+                &user.username,
+                &user.role,
+                client_id_str,
+                Some("read:profile"),
+            )
+            .unwrap();
+
+        // UserInfo should reject — openid scope is required per OIDC Core 1.0 §5.3
+        let resp = client
+            .get(s.url("/oauth/userinfo"))
+            .header("authorization", format!("Bearer {bearer_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     });
 }
 
