@@ -202,6 +202,10 @@ pub struct WebhooksConfig {
     /// reset to "pending" for retry. Default: 300 (5 minutes).
     #[serde(default = "default_stuck_processing_timeout_secs")]
     pub stuck_processing_timeout_secs: u64,
+    /// Maximum retry attempts for OIDC back-channel logout notifications.
+    /// Default: 3.
+    #[serde(default = "default_backchannel_logout_max_retry_attempts")]
+    pub backchannel_logout_max_retry_attempts: u32,
 }
 
 impl Default for WebhooksConfig {
@@ -211,6 +215,7 @@ impl Default for WebhooksConfig {
             max_retry_attempts: default_max_retry_attempts(),
             allow_private_ips: false,
             stuck_processing_timeout_secs: default_stuck_processing_timeout_secs(),
+            backchannel_logout_max_retry_attempts: default_backchannel_logout_max_retry_attempts(),
         }
     }
 }
@@ -218,6 +223,7 @@ impl Default for WebhooksConfig {
 fn default_max_concurrent_deliveries() -> usize { 10 }
 fn default_max_retry_attempts() -> u32 { 5 }
 fn default_stuck_processing_timeout_secs() -> u64 { 300 }
+fn default_backchannel_logout_max_retry_attempts() -> u32 { 3 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MaintenanceConfig {

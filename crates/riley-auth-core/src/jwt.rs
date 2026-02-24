@@ -43,6 +43,21 @@ pub struct IdTokenClaims {
     pub picture: Option<String>,
 }
 
+/// OIDC Back-Channel Logout Token claims (per OpenID Connect Back-Channel
+/// Logout 1.0 Section 2.4).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LogoutTokenClaims {
+    pub iss: String,
+    pub sub: String,
+    pub aud: String,
+    pub iat: i64,
+    pub exp: i64,
+    pub jti: String,
+    pub events: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
+}
+
 /// Loaded key material for signing and verification.
 #[derive(Clone)]
 pub struct Keys {
@@ -180,6 +195,39 @@ impl Keys {
 
         encode(&header, &claims, &self.encoding)
             .map_err(|e| Error::Config(format!("failed to sign id token: {e}")))
+    }
+
+    /// Create a signed OIDC Back-Channel Logout Token (per OpenID Connect
+    /// Back-Channel Logout 1.0 Section 2.4).
+    pub fn sign_logout_token(
+        &self,
+        config: &JwtConfig,
+        user_id: &str,
+        audience: &str,
+        sid: Option<&str>,
+    ) -> Result<String> {
+        let now = Utc::now();
+        // Logout tokens get a short 2-minute validity window
+        let exp = now + Duration::seconds(120);
+
+        let claims = LogoutTokenClaims {
+            iss: config.issuer.clone(),
+            sub: user_id.to_string(),
+            aud: audience.to_string(),
+            iat: now.timestamp(),
+            exp: exp.timestamp(),
+            jti: uuid::Uuid::new_v4().to_string(),
+            events: serde_json::json!({
+                "http://schemas.openid.net/event/backchannel-logout": {}
+            }),
+            sid: sid.map(String::from),
+        };
+
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(self.kid.clone());
+
+        encode(&header, &claims, &self.encoding)
+            .map_err(|e| Error::Config(format!("failed to sign logout token: {e}")))
     }
 
     /// JWKS response body.

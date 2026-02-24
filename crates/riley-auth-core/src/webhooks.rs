@@ -83,6 +83,111 @@ pub async fn dispatch_event_for_client(
     }
 }
 
+/// Dispatch OIDC back-channel logout notifications to all clients with a
+/// `backchannel_logout_uri` that have active refresh tokens for the given user.
+///
+/// For each matching client, builds a signed logout token JWT and POSTs it as
+/// `application/x-www-form-urlencoded` (`logout_token=<jwt>`) to the client's
+/// back-channel logout URI. Delivery is fire-and-forget with retries.
+pub async fn dispatch_backchannel_logout(
+    pool: &PgPool,
+    keys: &crate::jwt::Keys,
+    config: &crate::config::Config,
+    http_client: &reqwest::Client,
+    user_id: uuid::Uuid,
+) {
+    let clients = match db::find_backchannel_logout_clients_for_user(pool, user_id).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "failed to query backchannel logout clients");
+            return;
+        }
+    };
+
+    if clients.is_empty() {
+        return;
+    }
+
+    let max_retries = config.webhooks.backchannel_logout_max_retry_attempts;
+    let block_private_ips = !config.webhooks.allow_private_ips;
+
+    for client in clients {
+        let logout_uri = match client.backchannel_logout_uri {
+            Some(ref uri) => uri.clone(),
+            None => continue,
+        };
+
+        // SSRF check on the URI
+        if block_private_ips {
+            if let Err(e) = check_url_ip_literal(&logout_uri) {
+                warn!(client_id = %client.client_id, error = %e, "backchannel logout URI blocked");
+                continue;
+            }
+        }
+
+        let logout_token = match keys.sign_logout_token(
+            &config.jwt,
+            &user_id.to_string(),
+            &client.client_id,
+            None, // sid — not tracked per-session currently
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(client_id = %client.client_id, error = %e, "failed to build logout token");
+                continue;
+            }
+        };
+
+        let http = http_client.clone();
+        let client_id = client.client_id.clone();
+
+        tokio::spawn(async move {
+            for attempt in 0..=max_retries {
+                if attempt > 0 {
+                    // Exponential backoff: 1s, 3s, 9s
+                    let delay = std::time::Duration::from_secs(3u64.pow(attempt - 1));
+                    tokio::time::sleep(delay).await;
+                }
+
+                let result = http
+                    .post(&logout_uri)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(format!("logout_token={logout_token}"))
+                    .timeout(std::time::Duration::from_secs(10))
+                    .send()
+                    .await;
+
+                match result {
+                    Ok(resp) if resp.status().is_success() => {
+                        info!(client_id = %client_id, "backchannel logout delivered");
+                        return;
+                    }
+                    Ok(resp) => {
+                        warn!(
+                            client_id = %client_id,
+                            status = %resp.status(),
+                            attempt = attempt + 1,
+                            max = max_retries + 1,
+                            "backchannel logout delivery failed"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            client_id = %client_id,
+                            error = %e,
+                            attempt = attempt + 1,
+                            max = max_retries + 1,
+                            "backchannel logout delivery error"
+                        );
+                    }
+                }
+            }
+
+            warn!(client_id = %client_id, "backchannel logout delivery exhausted retries");
+        });
+    }
+}
+
 /// Check whether a webhook URL's host is a private IP literal.
 ///
 /// This complements the `SsrfSafeResolver` (which blocks hostnames that resolve

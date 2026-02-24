@@ -53,6 +53,10 @@ struct RegisterClientRequest {
     allowed_scopes: Vec<String>,
     #[serde(default)]
     auto_approve: bool,
+    #[serde(default)]
+    backchannel_logout_uri: Option<String>,
+    #[serde(default)]
+    backchannel_logout_session_required: bool,
 }
 
 #[derive(Serialize)]
@@ -64,6 +68,8 @@ struct ClientResponse {
     allowed_scopes: Vec<String>,
     auto_approve: bool,
     created_at: String,
+    backchannel_logout_uri: Option<String>,
+    backchannel_logout_session_required: bool,
 }
 
 #[derive(Serialize)]
@@ -75,6 +81,8 @@ struct RegisterClientResponse {
     redirect_uris: Vec<String>,
     allowed_scopes: Vec<String>,
     auto_approve: bool,
+    backchannel_logout_uri: Option<String>,
+    backchannel_logout_session_required: bool,
 }
 
 // --- Admin middleware helper ---
@@ -201,6 +209,11 @@ async fn delete_user(
 ) -> Result<StatusCode, Error> {
     require_admin(&state, &jar).await?;
 
+    // Dispatch back-channel logout BEFORE soft delete (which deletes tokens)
+    webhooks::dispatch_backchannel_logout(
+        &state.db, &state.keys, &state.config, &state.http_client, id,
+    ).await;
+
     match db::soft_delete_user(&state.db, id).await? {
         db::DeleteUserResult::Deleted => {
             webhooks::dispatch_event(
@@ -235,6 +248,8 @@ async fn list_clients(
         allowed_scopes: c.allowed_scopes,
         auto_approve: c.auto_approve,
         created_at: c.created_at.to_rfc3339(),
+        backchannel_logout_uri: c.backchannel_logout_uri,
+        backchannel_logout_session_required: c.backchannel_logout_session_required,
     }).collect();
 
     Ok(Json(response))
@@ -283,6 +298,18 @@ async fn register_client(
         }
     }
 
+    // Validate backchannel_logout_uri: must be https (no localhost exception)
+    if let Some(ref uri) = body.backchannel_logout_uri {
+        let parsed = url::Url::parse(uri).map_err(|_| {
+            Error::BadRequest(format!("invalid backchannel_logout_uri: {uri}"))
+        })?;
+        if parsed.scheme() != "https" {
+            return Err(Error::BadRequest(
+                "backchannel_logout_uri must use https".to_string(),
+            ));
+        }
+    }
+
     // Generate client_id and client_secret
     let mut id_bytes = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut id_bytes);
@@ -293,7 +320,7 @@ async fn register_client(
     let client_secret = hex::encode(secret_bytes);
     let secret_hash = jwt::hash_token(&client_secret);
 
-    let client = db::create_client(
+    let client = db::create_client_full(
         &state.db,
         &body.name,
         &client_id,
@@ -301,6 +328,8 @@ async fn register_client(
         &body.redirect_uris,
         &body.allowed_scopes,
         body.auto_approve,
+        body.backchannel_logout_uri.as_deref(),
+        body.backchannel_logout_session_required,
     )
     .await?;
 
@@ -312,6 +341,8 @@ async fn register_client(
         redirect_uris: client.redirect_uris,
         allowed_scopes: client.allowed_scopes,
         auto_approve: client.auto_approve,
+        backchannel_logout_uri: client.backchannel_logout_uri,
+        backchannel_logout_session_required: client.backchannel_logout_session_required,
     })))
 }
 

@@ -433,7 +433,14 @@ async fn auth_logout(
 ) -> Result<(CookieJar, StatusCode), Error> {
     if let Some(refresh) = jar.get(&state.cookie_names.refresh) {
         let hash = jwt::hash_token(refresh.value());
-        db::delete_refresh_token(&state.db, &hash).await?;
+        // Look up user_id before deleting, for back-channel logout dispatch
+        if let Some(token_row) = db::find_refresh_token(&state.db, &hash).await? {
+            db::delete_refresh_token(&state.db, &hash).await?;
+            webhooks::dispatch_backchannel_logout(
+                &state.db, &state.keys, &state.config, &state.http_client,
+                token_row.user_id,
+            ).await;
+        }
     }
 
     let jar = jar
@@ -449,8 +456,14 @@ async fn auth_logout_all(
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), Error> {
     let user = extract_user(&state, &jar)?;
+    let user_id = user.sub_uuid()?;
 
-    db::delete_all_refresh_tokens(&state.db, user.sub_uuid()?).await?;
+    // Dispatch back-channel logout BEFORE deleting tokens (query needs active tokens)
+    webhooks::dispatch_backchannel_logout(
+        &state.db, &state.keys, &state.config, &state.http_client, user_id,
+    ).await;
+
+    db::delete_all_refresh_tokens(&state.db, user_id).await?;
 
     let jar = jar
         .remove(removal_cookie(&state.cookie_names.access, "/", &state.config))
@@ -538,6 +551,11 @@ async fn revoke_session(
     if !deleted {
         return Err(Error::NotFound);
     }
+
+    // Dispatch back-channel logout for the user
+    webhooks::dispatch_backchannel_logout(
+        &state.db, &state.keys, &state.config, &state.http_client, user_id,
+    ).await;
 
     Ok(StatusCode::OK)
 }

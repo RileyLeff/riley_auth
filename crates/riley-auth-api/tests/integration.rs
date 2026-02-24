@@ -5504,3 +5504,235 @@ fn link_confirm_requires_both_cookies() {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     });
 }
+
+// --- Phase 10: Back-Channel Logout ---
+
+#[test]
+#[ignore]
+fn backchannel_logout_register_client_with_logout_uri() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("bcladmin", "admin").await;
+
+        // Register client with backchannel_logout_uri
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "BCL App",
+                "redirect_uris": ["https://app.example.com/callback"],
+                "backchannel_logout_uri": "https://app.example.com/logout",
+                "backchannel_logout_session_required": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["backchannel_logout_uri"], "https://app.example.com/logout");
+        assert_eq!(body["backchannel_logout_session_required"], true);
+
+        // List clients — verify backchannel fields appear
+        let resp = client
+            .get(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let clients: Vec<serde_json::Value> = resp.json().await.unwrap();
+        let bcl_client = clients.iter().find(|c| c["name"] == "BCL App").unwrap();
+        assert_eq!(bcl_client["backchannel_logout_uri"], "https://app.example.com/logout");
+        assert_eq!(bcl_client["backchannel_logout_session_required"], true);
+    });
+}
+
+#[test]
+#[ignore]
+fn backchannel_logout_rejects_non_https_uri() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("bclhttpadmin", "admin").await;
+
+        // http:// should be rejected (no localhost exception for backchannel logout)
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "Bad BCL App",
+                "redirect_uris": ["https://app.example.com/callback"],
+                "backchannel_logout_uri": "http://app.example.com/logout"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "bad_request");
+        assert!(body["error_description"].as_str().unwrap().contains("https"));
+    });
+}
+
+#[test]
+#[ignore]
+fn backchannel_logout_client_without_uri_has_null() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("bclnulladmin", "admin").await;
+
+        // Register client without backchannel_logout_uri
+        let resp = client
+            .post(s.url("/admin/clients"))
+            .header("cookie", format!("riley_auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "name": "No BCL App",
+                "redirect_uris": ["https://app.example.com/callback"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(body["backchannel_logout_uri"].is_null());
+        assert_eq!(body["backchannel_logout_session_required"], false);
+    });
+}
+
+#[test]
+#[ignore]
+fn backchannel_logout_discovery_document() {
+    let s = server();
+    runtime().block_on(async {
+        let client = s.client();
+
+        let resp = client
+            .get(s.url("/.well-known/openid-configuration"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let doc: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(doc["backchannel_logout_supported"], true);
+        assert_eq!(doc["backchannel_logout_session_supported"], true);
+    });
+}
+
+#[test]
+#[ignore]
+fn backchannel_logout_dispatched_on_logout_all() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Start a mock HTTP server to receive the logout token
+        let received = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let received_clone = received.clone();
+
+        let mock_app = axum::Router::new().route(
+            "/backchannel-logout",
+            axum::routing::post(move |body: String| {
+                let received = received_clone.clone();
+                async move {
+                    received.lock().await.push(body);
+                    StatusCode::OK
+                }
+            }),
+        );
+
+        let mock_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_addr = mock_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(mock_listener, mock_app).await.unwrap();
+        });
+
+        // Register client with backchannel_logout_uri pointing to mock server
+        let mock_logout_url = format!("http://127.0.0.1:{}/backchannel-logout", mock_addr.port());
+
+        let (user, _access_token, _) = s.create_user_with_session("bcluser", "user").await;
+
+        // Create OAuth client with backchannel logout URI via DB directly
+        // (bypasses https validation since tests use http://localhost)
+        let client_id_str = "bcl-test-client";
+        let secret_hash = jwt::hash_token("bcl-secret");
+        db::create_client_full(
+            &s.db,
+            "BCL Test Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+            Some(&mock_logout_url),
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Create a client-bound refresh token for this user+client (so dispatch finds it)
+        let oauth_client = db::find_client_by_client_id(&s.db, client_id_str).await.unwrap().unwrap();
+        let (_, rt_hash) = jwt::generate_refresh_token();
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(86400);
+        db::store_refresh_token(
+            &s.db, user.id, Some(oauth_client.id), &rt_hash, expires_at,
+            &[], None, None, uuid::Uuid::now_v7(), None,
+        ).await.unwrap();
+
+        // Call dispatch_backchannel_logout directly with allow_private_ips=true config
+        // (can't go through the test server because it defaults to blocking private IPs)
+        let mut test_config = (*s.config).clone();
+        test_config.webhooks.allow_private_ips = true;
+        let http_client = reqwest::Client::new();
+
+        riley_auth_core::webhooks::dispatch_backchannel_logout(
+            &s.db, &s.keys, &test_config, &http_client, user.id,
+        ).await;
+
+        // Wait for async delivery (fire-and-forget task)
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify the mock server received a logout token POST
+        let bodies = received.lock().await;
+        assert_eq!(bodies.len(), 1, "expected 1 backchannel logout delivery");
+
+        // Body should be form-encoded: logout_token=<jwt>
+        let body = &bodies[0];
+        assert!(body.starts_with("logout_token="), "body should start with logout_token=");
+
+        let token = body.strip_prefix("logout_token=").unwrap();
+
+        // Decode the JWT header to verify it's RS256
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3, "logout token should be a JWT");
+
+        // Verify the payload claims
+        let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+
+        assert_eq!(claims["iss"], "riley-auth-test");
+        assert_eq!(claims["sub"], user.id.to_string());
+        assert_eq!(claims["aud"], client_id_str);
+        assert!(claims["iat"].is_number());
+        assert!(claims["exp"].is_number());
+        assert!(claims["jti"].is_string());
+        // OIDC backchannel-logout events claim
+        assert!(claims["events"]["http://schemas.openid.net/event/backchannel-logout"].is_object());
+    });
+}
