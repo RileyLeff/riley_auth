@@ -1,28 +1,24 @@
 # v6 Workflow State
 
-**Current Phase:** 1 — Remove Avatar Storage (IN PROGRESS)
-**Current Step:** 1.1 Remove StorageConfig from config.rs
-**Status:** Starting v6 implementation.
+**Current Phase:** 4 — Generic OAuth Provider Pipeline (STARTING)
+**Current Step:** 4.1 Define new config structs
+**Status:** Phases 1-3 complete, review converged (2 rounds, 0 major). Starting Phase 4.
 
 ## Progress
 
 | Phase | Step | Description | Status |
 |-------|------|-------------|--------|
-| 1 | 1.1 | Remove StorageConfig from config.rs | In Progress |
-| 1 | 1.2 | Remove update_user_avatar from db/users.rs | Pending |
-| 1 | 1.3 | Remove [storage] from example config | Pending |
-| 1 | 1.4 | Run tests | Pending |
-| 2 | 2.1 | Replace DEFAULT uuidv7() in migrations | Pending |
-| 2 | 2.2 | Add explicit UUIDv7 to all INSERTs | Pending |
-| 2.3 | | Update test infrastructure | Pending |
-| 2 | 2.4 | Run full test suite | Pending |
-| 3 | 3.1 | Change CORS behavior | Pending |
-| 3 | 3.2 | Change cookie prefix default | Pending |
-| 3 | 3.3 | Make issuer required | Pending |
-| 3 | 3.4 | Update example config | Pending |
-| 3 | 3.5 | Update test infrastructure | Pending |
-| 3 | 3.6 | Run tests | Pending |
-| 1-3 | review | Standard review (phases 1-3 grouped) | Pending |
+| 1 | 1.1-1.4 | Remove avatar storage (config, db, example, tests) | Done |
+| 1 | commit | `6d01d49` | Done |
+| 2 | 2.1-2.4 | PG14+ UUID migration (migrations, INSERTs, tests) | Done |
+| 2 | commit | `a52d77a` | Done |
+| 3 | 3.1-3.6 | Security defaults (CORS, cookie prefix, issuer, tests) | Done |
+| 3 | commit | `5b9ef6e` | Done |
+| 1-3 | review R1 | Claude-only (Codex rate-limited, Gemini shell error). 0 real major, 6 minor fixed. | Done |
+| 1-3 | fixes | `a2f8faa` — MinIO, CLAUDE.md, build_cors, consent desc, example config | Done |
+| 1-3 | review R2 | Claude-only. 0 major, 1 in-scope minor fixed, 4 pre-existing noted. | Done |
+| 1-3 | fixes | `9c4c88a` — migration 009 comment | Done |
+| 1-3 | converge | **2 consecutive rounds with 0 major bugs** | Done |
 | 4 | 4.1 | Define new config structs | Pending |
 | 4 | 4.2 | Built-in presets (Google, GitHub) | Pending |
 | 4 | 4.3 | Provider resolution + OIDC discovery | Pending |
@@ -34,17 +30,9 @@
 | 4 | 4.9 | Unit tests | Pending |
 | 4 | 4.10 | Integration tests | Pending |
 | 4 | review | Exhaustive review | Pending |
-| 5 | 5.1 | Add utoipa dependencies | Pending |
-| 5 | 5.2 | ToSchema derives | Pending |
-| 5 | 5.3 | utoipa::path annotations | Pending |
-| 5 | 5.4 | ApiDoc + /openapi.json endpoint | Pending |
-| 5 | 5.5 | Verify spec | Pending |
+| 5 | 5.1-5.5 | OpenAPI documentation (utoipa) | Pending |
 | 5 | review | Standard review | Pending |
-| 6 | 6.1 | README.md | Pending |
-| 6 | 6.2 | Deployment guide | Pending |
-| 6 | 6.3 | Production docker-compose | Pending |
-| 6 | 6.4 | Dockerfile improvements | Pending |
-| 6 | 6.5 | Example config final pass | Pending |
+| 6 | 6.1-6.5 | Documentation (README, deployment, docker) | Pending |
 | 6 | review | Review for accuracy | Pending |
 
 ## Blockers
@@ -53,4 +41,7 @@ None.
 
 ## Recent Activity
 
-- v6 workflow started
+- Phases 1-3 implemented and committed (`6d01d49`, `a52d77a`, `5b9ef6e`)
+- Review round 1: Claude-only, 6 minors fixed (`a2f8faa`)
+- Review round 2: Claude-only, 1 minor fixed (`9c4c88a`), converged
+- All 219 tests passing (35 core unit + 26 API unit + 158 integration)
