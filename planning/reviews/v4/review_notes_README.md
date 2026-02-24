@@ -175,3 +175,18 @@ Changed `auth_refresh` to pass `token_row.nonce.as_deref()` instead of `None` fo
 
 ### Temp cookie max_age aligned with JWT TTL (R1, MINOR-09 fix)
 Setup cookie max_age was 10 minutes while the JWT TTL was 15 minutes. Aligned both to 15 minutes.
+
+### Session refresh scopes are empty by design (R2, Gemini MAJOR-05 reclassified)
+Session tokens (`auth_refresh`) pass `&[]` for scopes to `store_refresh_token`. This is intentional — sessions use role-based access control (admin/user role in JWT), not OAuth scopes. The OAuth provider refresh path preserves and downscopes per RFC 6749 §6, but session auth is a separate mechanism.
+
+### Webhook SSRF check at registration time not required (R2, Claude MINOR-03)
+Webhook URLs are validated for scheme at registration but not checked for private IPs. The real SSRF protection runs at delivery time via `SsrfSafeResolver` and `check_url_ip_literal`. Registration-time check is defense-in-depth but not needed — admins who can register webhooks already have elevated access.
+
+### logout-all consumed token recording not needed (R2, Claude MINOR-01)
+Per v3 review notes: `delete_all_refresh_tokens` deletes tokens without recording in `consumed_refresh_tokens`. The attacker's token is gone — presenting it fails with "token not found." Family revocation doesn't fire but the attacker gains nothing.
+
+### OAuth authorize returns 401 for unauthenticated (R2, Gemini MINOR-13)
+Phase 8 (Consent UI Support) will add proper login redirect support. Current behavior (401 JSON error) is acceptable for first-party auto-approve clients.
+
+### client_secret_basic not supported (R2, Gemini MINOR-11)
+Only `client_secret_post` is supported, matching the discovery document. `client_secret_basic` support is future work for third-party client compatibility.
