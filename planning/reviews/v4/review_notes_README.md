@@ -193,11 +193,22 @@ Only `client_secret_post` is supported, matching the discovery document. `client
 
 ## v4 Phase 6 — UserInfo Endpoint
 
-### Standard OIDC scopes (profile, email) require config definition
-`profile` and `email` are standard OIDC scopes but riley_auth uses a whitelist approach — all scopes (including standard ones) must be explicitly defined in the `[scopes]` config. The discovery document's `scopes_supported` correctly reflects only configured scopes. This is consistent with the soul document's design of admin-controlled scope definitions. Admins who want OIDC profile/email must add them to config and client allowed_scopes.
+### OIDC protocol-level scopes: openid, profile, email (supersedes initial Phase 6 note)
+Initially, `profile` and `email` required config definitions. Phase 6+7 review identified this prevents standard OIDC flows. Now `openid`, `profile`, and `email` are all protocol-level scopes — always accepted without config definitions or `allowed_scopes` checks. Custom/resource scopes still require config. This aligns with the architecture plan §1 which says `scopes_supported: ["openid", "profile", "email"]`.
 
 ### WWW-Authenticate header not included on 401 responses
 RFC 6750 §3.1 says resource endpoints SHOULD (not MUST) include `WWW-Authenticate: Bearer` on 401 responses. Most OIDC client libraries work without it. Low priority; could be added later as a quality-of-life improvement.
 
 ### UserInfo endpoint supersedes Phase 4 note about no /userinfo
 The Phase 4 note "UserInfo endpoint is future work" is now resolved. The `/oauth/userinfo` endpoint accepts Bearer tokens from OAuth clients (aud != issuer) and returns claims filtered by scope.
+
+## v4 Phase 7 — Authorize Error Redirects
+
+### 302 Found used for all OAuth redirects (not 307)
+RFC 6749 §4.1.2 specifies 302 Found. `Redirect::temporary()` in Axum produces 307. Using explicit `(StatusCode::FOUND, [("location", ...)])` for interoperability.
+
+### User-controlled input in error_description redirect parameter
+Scope names from user input appear in `error_description`. URL-encoded by `query_pairs_mut`, preventing direct injection. Client apps are responsible for escaping when rendering. Standard OAuth behavior per RFC 6749 §4.1.2.1.
+
+### Authorize error redirects supersede Phase 4 note
+The Phase 4 note "Authorize endpoint errors not redirected to redirect_uri" is now resolved. Pre-redirect errors (invalid client_id/redirect_uri) return HTTP errors; post-redirect errors use `?error=...` redirects per RFC 6749 §4.1.2.1.
