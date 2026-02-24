@@ -33,6 +33,16 @@ pub enum RateLimitTier {
     Public,
 }
 
+impl RateLimitTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auth => "auth",
+            Self::Standard => "standard",
+            Self::Public => "public",
+        }
+    }
+}
+
 /// Classify a request path into a rate limit tier.
 ///
 /// Routes are matched against the actual Axum route patterns in `routes/auth.rs`
@@ -237,6 +247,7 @@ pub async fn memory_rate_limit_middleware(
         headers_insert_reset(headers, retry_after);
         response
     } else {
+        metrics::counter!("riley_auth_rate_limit_hits_total", "tier" => tier.as_str()).increment(1);
         let mut response = Error::RateLimited.into_response();
         let headers = response.headers_mut();
         headers_insert_retry_after(headers, retry_after);
@@ -461,6 +472,7 @@ mod redis_impl {
             }
             response
         } else {
+            metrics::counter!("riley_auth_rate_limit_hits_total", "tier" => tier.as_str()).increment(1);
             let mut response = Error::RateLimited.into_response();
             let headers = response.headers_mut();
             if let Some(wait) = retry_after {

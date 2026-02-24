@@ -226,8 +226,10 @@ impl KeySet {
         let mut header = Header::new(active.algorithm);
         header.kid = Some(active.kid.clone());
 
-        encode(&header, &claims, &active.encoding)
-            .map_err(|e| Error::Config(format!("failed to sign token: {e}")))
+        let token = encode(&header, &claims, &active.encoding)
+            .map_err(|e| Error::Config(format!("failed to sign token: {e}")))?;
+        metrics::counter!("riley_auth_tokens_issued_total", "type" => "access").increment(1);
+        Ok(token)
     }
 
     /// Verify and decode an access token.
@@ -281,8 +283,10 @@ impl KeySet {
         let mut header = Header::new(active.algorithm);
         header.kid = Some(active.kid.clone());
 
-        encode(&header, &claims, &active.encoding)
-            .map_err(|e| Error::Config(format!("failed to sign id token: {e}")))
+        let token = encode(&header, &claims, &active.encoding)
+            .map_err(|e| Error::Config(format!("failed to sign id token: {e}")))?;
+        metrics::counter!("riley_auth_tokens_issued_total", "type" => "id").increment(1);
+        Ok(token)
     }
 
     /// Create a signed OIDC Back-Channel Logout Token (per OpenID Connect
@@ -349,6 +353,21 @@ impl KeySet {
     /// Verify and decode a token, trying kid-matched key first, then all keys.
     /// Generic over the claims type — works with access tokens, setup tokens, etc.
     pub fn verify_token<T: for<'de> Deserialize<'de>>(
+        &self,
+        config: &JwtConfig,
+        token: &str,
+    ) -> Result<TokenData<T>> {
+        let result = self.verify_token_inner(config, token);
+        let label = match &result {
+            Ok(_) => "ok",
+            Err(Error::ExpiredToken) => "expired",
+            Err(_) => "invalid",
+        };
+        metrics::counter!("riley_auth_token_verifications_total", "result" => label).increment(1);
+        result
+    }
+
+    fn verify_token_inner<T: for<'de> Deserialize<'de>>(
         &self,
         config: &JwtConfig,
         token: &str,

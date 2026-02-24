@@ -266,7 +266,13 @@ pub async fn deliver_outbox_entry(
                 Some(status.as_u16() as i16), error_msg.as_deref(),
             ).await;
 
-            if status.is_success() { Ok(()) } else { Err(format!("HTTP {}", status.as_u16())) }
+            if status.is_success() {
+                metrics::counter!("riley_auth_webhook_deliveries_total", "status" => "success").increment(1);
+                Ok(())
+            } else {
+                metrics::counter!("riley_auth_webhook_deliveries_total", "status" => "failed").increment(1);
+                Err(format!("HTTP {}", status.as_u16()))
+            }
         }
         Err(e) => {
             let error_msg = e.to_string();
@@ -274,6 +280,7 @@ pub async fn deliver_outbox_entry(
                 pool, webhook.id, &entry.event_type, &body,
                 None, Some(&error_msg),
             ).await;
+            metrics::counter!("riley_auth_webhook_deliveries_total", "status" => "failed").increment(1);
             Err(error_msg)
         }
     }

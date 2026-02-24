@@ -28,6 +28,7 @@ rand.workspace = true
 uuid.workspace = true
 url.workspace = true
 dirs.workspace = true
+metrics.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
