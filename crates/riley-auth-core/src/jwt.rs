@@ -354,9 +354,18 @@ impl KeySet {
         if let Some(ref kid) = header.kid {
             if let Some(&idx) = self.kid_index.get(kid) {
                 let entry = &self.entries[idx];
+                // Defense-in-depth: reject early if the token's claimed algorithm
+                // doesn't match the key's algorithm (jsonwebtoken also enforces this,
+                // but an explicit check makes the invariant self-documenting).
+                if header.alg != entry.algorithm {
+                    return Err(Error::InvalidToken);
+                }
                 let mut validation = Validation::new(entry.algorithm);
                 validation.set_issuer(&[&config.issuer]);
                 validation.leeway = 0;
+                // Audience validation is intentionally disabled here — different token
+                // types (access, setup, id) have different audience semantics, and aud
+                // is enforced at the call site (e.g., extract_user, oauth_provider).
                 validation.validate_aud = false;
 
                 return decode::<T>(token, &entry.decoding, &validation)
@@ -364,12 +373,12 @@ impl KeySet {
             }
         }
 
-        // Fall back: try all keys
+        // Fall back: try all keys (for tokens without kid or unknown kid)
         for entry in &self.entries {
             let mut validation = Validation::new(entry.algorithm);
             validation.set_issuer(&[&config.issuer]);
             validation.leeway = 0;
-            validation.validate_aud = false;
+            validation.validate_aud = false; // enforced at call site
 
             if let Ok(data) = decode::<T>(token, &entry.decoding, &validation) {
                 return Ok(data);

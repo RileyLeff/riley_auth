@@ -5398,7 +5398,8 @@ fn link_confirm_adds_provider_to_existing_account() {
                 "purpose": "setup"
             });
 
-            let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+            header.kid = Some(s.keys.active_kid().to_string());
             jsonwebtoken::encode(&header, &claims, &s.keys.encoding_key()).unwrap()
         };
 
@@ -5465,7 +5466,8 @@ fn link_confirm_rejects_already_linked_provider() {
                 "purpose": "setup"
             });
 
-            let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+            header.kid = Some(s.keys.active_kid().to_string());
             jsonwebtoken::encode(&header, &claims, &s.keys.encoding_key()).unwrap()
         };
 
