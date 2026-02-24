@@ -939,6 +939,7 @@ pub async fn consume_authorization_code(
     Ok(row)
 }
 
+
 // --- Consent request queries ---
 
 #[derive(Debug, Clone, FromRow)]
@@ -987,7 +988,7 @@ pub async fn store_consent_request(
     Ok(row.0)
 }
 
-/// Find a consent request by ID, only if not expired.
+/// Find a consent request by ID, only if not expired (read-only, for GET).
 pub async fn find_consent_request(
     pool: &PgPool,
     id: Uuid,
@@ -1001,7 +1002,23 @@ pub async fn find_consent_request(
     Ok(row)
 }
 
-/// Delete a consent request (after it's been used or denied).
+/// Atomically consume a consent request by deleting it and returning the row.
+/// Returns None if the consent request does not exist, is expired, or was
+/// already consumed by a concurrent request. This prevents TOCTOU races.
+pub async fn consume_consent_request(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ConsentRequestRow>> {
+    let row = sqlx::query_as::<_, ConsentRequestRow>(
+        "DELETE FROM consent_requests WHERE id = $1 AND expires_at > now() RETURNING *"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Delete a consent request (for cleanup / soft-delete).
 pub async fn delete_consent_request(pool: &PgPool, id: Uuid) -> Result<bool> {
     let result = sqlx::query("DELETE FROM consent_requests WHERE id = $1")
         .bind(id)

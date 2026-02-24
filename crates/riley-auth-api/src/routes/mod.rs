@@ -107,6 +107,7 @@ fn base_router() -> Router<AppState> {
     let csrf_protected = Router::new()
         .merge(auth::router())
         .merge(admin::router())
+        .merge(oauth_provider::consent_router())
         .layer(middleware::from_fn(require_csrf_header));
 
     Router::new()

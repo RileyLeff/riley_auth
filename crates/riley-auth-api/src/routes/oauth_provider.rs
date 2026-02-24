@@ -98,13 +98,21 @@ pub struct RevokeRequest {
     client_secret: String,
 }
 
+/// OAuth protocol routes — NOT CSRF-protected.
+/// These are called by external OAuth clients (not browser requests with cookies).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/oauth/authorize", get(authorize))
-        .route("/oauth/consent", get(consent).post(consent_decision))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
         .route("/oauth/userinfo", get(userinfo).post(userinfo))
+}
+
+/// Consent routes — browser-facing, cookie-authenticated.
+/// Should be wrapped with CSRF middleware.
+pub fn consent_router() -> Router<AppState> {
+    Router::new()
+        .route("/oauth/consent", get(consent).post(consent_decision))
 }
 
 /// Build an OAuth error redirect per RFC 6749 §4.1.2.1.
@@ -466,12 +474,14 @@ async fn consent(
             });
             continue;
         }
-        if let Some(def) = state.config.scopes.definitions.iter().find(|d| d.name == *s) {
-            scopes.push(ConsentScope {
-                name: s.clone(),
-                description: def.description.clone(),
-            });
-        }
+        let description = state.config.scopes.definitions.iter()
+            .find(|d| d.name == *s)
+            .map(|d| d.description.clone())
+            .unwrap_or_else(|| s.clone()); // Fallback: use scope name as description
+        scopes.push(ConsentScope {
+            name: s.clone(),
+            description,
+        });
     }
 
     Ok(Json(ConsentResponse {
@@ -510,17 +520,15 @@ async fn consent_decision(
 
     let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
 
-    // Look up and consume the consent request
-    let consent_req = db::find_consent_request(&state.db, query.consent_id)
+    // Atomically consume the consent request (one-time use, prevents TOCTOU race).
+    // Returns None if expired or already consumed by a concurrent request.
+    let consent_req = db::consume_consent_request(&state.db, query.consent_id)
         .await?
         .ok_or(Error::NotFound)?;
 
     if consent_req.user_id != user_id {
         return Err(Error::Forbidden);
     }
-
-    // Delete the consent request (one-time use)
-    db::delete_consent_request(&state.db, consent_req.id).await?;
 
     let redirect_uri = &consent_req.redirect_uri;
     let state_param = consent_req.state.as_deref();

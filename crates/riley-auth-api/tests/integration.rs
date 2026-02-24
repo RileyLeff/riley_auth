@@ -2051,6 +2051,7 @@ fn consent_approve_issues_auth_code() {
             .post(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.to_string())])
             .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("x-requested-with", "XMLHttpRequest")
             .json(&serde_json::json!({"approved": true}))
             .send()
             .await
@@ -2133,6 +2134,7 @@ fn consent_deny_redirects_with_access_denied() {
             .post(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.to_string())])
             .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("x-requested-with", "XMLHttpRequest")
             .json(&serde_json::json!({"approved": false}))
             .send()
             .await
@@ -2342,6 +2344,7 @@ fn consent_full_flow_via_authorize() {
             .post(s.url("/oauth/consent"))
             .query(&[("consent_id", consent_id.as_ref())])
             .header("cookie", format!("riley_auth_access={access_token}"))
+            .header("x-requested-with", "XMLHttpRequest")
             .json(&serde_json::json!({"approved": true}))
             .send()
             .await
