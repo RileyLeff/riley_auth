@@ -93,6 +93,7 @@ async fn spawn_metrics_server(
         cookie_names,
         username_regex,
         metrics_handle: Some(handle),
+        providers: Arc::new(vec![]),
     };
 
     let app = axum::Router::new()

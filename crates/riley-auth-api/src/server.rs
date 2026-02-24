@@ -10,6 +10,7 @@ use tower_http::trace::TraceLayer;
 
 use riley_auth_core::config::Config;
 use riley_auth_core::jwt::Keys;
+use riley_auth_core::oauth::ResolvedProvider;
 use riley_auth_core::webhooks;
 
 use crate::routes;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub cookie_names: CookieNames,
     pub username_regex: regex::Regex,
     pub metrics_handle: Option<PrometheusHandle>,
+    pub providers: Arc<Vec<ResolvedProvider>>,
 }
 
 pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()> {
@@ -104,6 +106,23 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     }
     let username_regex = regex::Regex::new(&config.usernames.pattern)
         .map_err(|e| anyhow::anyhow!("invalid username pattern: {e}"))?;
+
+    // Resolve OAuth providers at startup (OIDC discovery happens here)
+    let oauth_http = reqwest::Client::builder()
+        .user_agent("riley-auth")
+        .build()?;
+    let providers = riley_auth_core::oauth::resolve_providers(
+        &config.oauth.providers,
+        &oauth_http,
+    )
+    .await?;
+    if providers.is_empty() {
+        tracing::warn!("no OAuth providers configured — login will not work");
+    } else {
+        let names: Vec<_> = providers.iter().map(|p| p.name.as_str()).collect();
+        tracing::info!(providers = ?names, "resolved {} OAuth provider(s)", providers.len());
+    }
+
     let config = Arc::new(config);
     let state = AppState {
         config: Arc::clone(&config),
@@ -113,6 +132,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         cookie_names,
         username_regex,
         metrics_handle,
+        providers: Arc::new(providers),
     };
 
     let app = Router::new()

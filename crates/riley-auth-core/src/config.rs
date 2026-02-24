@@ -143,8 +143,8 @@ fn default_jwks_cache_max_age() -> u64 { 3600 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OAuthProvidersConfig {
-    pub google: Option<OAuthProviderConfig>,
-    pub github: Option<OAuthProviderConfig>,
+    #[serde(default)]
+    pub providers: Vec<ProviderEntry>,
     /// URL of the deployer's login page. When `prompt=login` is requested,
     /// riley_auth redirects here so the user can re-authenticate.
     pub login_url: Option<String>,
@@ -171,10 +171,48 @@ pub enum AccountMergePolicy {
     VerifiedEmail,
 }
 
+/// A configured OAuth/OIDC provider entry.
+///
+/// Three tiers:
+/// 1. Built-in preset: `name = "google"` or `"github"` — endpoints pre-configured
+/// 2. OIDC auto-discovery: `issuer` specified — endpoints discovered at startup
+/// 3. Manual OAuth2: `auth_url`, `token_url`, `userinfo_url` all specified
 #[derive(Debug, Clone, Deserialize)]
-pub struct OAuthProviderConfig {
+pub struct ProviderEntry {
+    /// Internal identifier, stored in `oauth_links.provider`. Must be unique,
+    /// lowercase alphanumeric + hyphens.
+    pub name: String,
+    /// Human-readable display name (defaults to capitalized `name`).
+    pub display_name: Option<String>,
     pub client_id: ConfigValue,
     pub client_secret: ConfigValue,
+    /// OIDC issuer URL for auto-discovery.
+    pub issuer: Option<String>,
+    /// Manual OAuth2 authorization endpoint.
+    pub auth_url: Option<String>,
+    /// Manual OAuth2 token endpoint.
+    pub token_url: Option<String>,
+    /// Manual OAuth2 userinfo endpoint.
+    pub userinfo_url: Option<String>,
+    /// Space-separated scopes (overrides preset/discovery defaults).
+    pub scopes: Option<String>,
+    /// Profile field mapping for non-OIDC providers.
+    pub profile_mapping: Option<ProfileMapping>,
+}
+
+/// Maps non-standard UserInfo response fields to riley_auth's profile model.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProfileMapping {
+    /// JSON field for unique user ID (required).
+    pub provider_id: String,
+    /// JSON field for email.
+    pub email: Option<String>,
+    /// JSON field for email verification boolean.
+    pub email_verified: Option<String>,
+    /// JSON field for display name.
+    pub name: Option<String>,
+    /// JSON field for avatar URL (empty string = not available).
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -364,6 +402,62 @@ pub fn validate_scope_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate provider entries: unique names, valid format, correct tier configuration.
+pub fn validate_providers(providers: &[ProviderEntry]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for entry in providers {
+        // Provider names: lowercase alphanumeric + hyphens
+        if entry.name.is_empty() {
+            return Err(Error::Config("provider name cannot be empty".to_string()));
+        }
+        for ch in entry.name.bytes() {
+            if !matches!(ch, b'a'..=b'z' | b'0'..=b'9' | b'-') {
+                return Err(Error::Config(format!(
+                    "provider name '{}' must be lowercase alphanumeric + hyphens",
+                    entry.name
+                )));
+            }
+        }
+        if !seen.insert(&entry.name) {
+            return Err(Error::Config(format!(
+                "duplicate provider name: '{}'",
+                entry.name
+            )));
+        }
+        // Tier detection: check that the config makes sense
+        let is_preset = matches!(entry.name.as_str(), "google" | "github")
+            && entry.issuer.is_none()
+            && entry.auth_url.is_none();
+        let has_issuer = entry.issuer.is_some();
+        let has_manual = entry.auth_url.is_some()
+            || entry.token_url.is_some()
+            || entry.userinfo_url.is_some();
+
+        if !is_preset && !has_issuer && !has_manual {
+            return Err(Error::Config(format!(
+                "provider '{}': must be a built-in preset (google/github), specify an issuer for OIDC discovery, or provide auth_url/token_url/userinfo_url",
+                entry.name
+            )));
+        }
+        if has_manual {
+            if entry.auth_url.is_none() || entry.token_url.is_none() || entry.userinfo_url.is_none() {
+                return Err(Error::Config(format!(
+                    "provider '{}': manual OAuth2 requires all of auth_url, token_url, and userinfo_url",
+                    entry.name
+                )));
+            }
+            // Manual OAuth2 requires profile_mapping with at least provider_id
+            if !has_issuer && entry.profile_mapping.is_none() {
+                return Err(Error::Config(format!(
+                    "provider '{}': manual OAuth2 providers require a profile_mapping with at least provider_id",
+                    entry.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 // --- ConfigValue: supports "env:VAR_NAME" syntax ---
 
 #[derive(Debug, Clone, Deserialize)]
@@ -468,6 +562,8 @@ impl Config {
                 )));
             }
         }
+        // Validate OAuth provider entries
+        validate_providers(&config.oauth.providers)?;
         Ok(config)
     }
 }
@@ -587,7 +683,7 @@ issuer = "test-auth"
         assert_eq!(config.server.cookie_prefix, "auth");
         assert_eq!(config.jwt.access_token_ttl_secs, 900);
         assert_eq!(config.usernames.min_length, 3);
-        assert!(config.oauth.google.is_none());
+        assert!(config.oauth.providers.is_empty());
         assert_eq!(config.rate_limiting.backend, "memory");
         assert!(config.rate_limiting.redis_url.is_none());
         // Tier defaults
@@ -630,11 +726,13 @@ jwks_cache_max_age_secs = 1800
 [oauth]
 consent_url = "https://auth.example.com/consent"
 
-[oauth.google]
+[[oauth.providers]]
+name = "google"
 client_id = "google-id"
 client_secret = "env:GOOGLE_SECRET"
 
-[oauth.github]
+[[oauth.providers]]
+name = "github"
 client_id = "github-id"
 client_secret = "github-secret"
 
@@ -664,7 +762,9 @@ public = { requests = 500, window_secs = 60 }
         assert_eq!(config.server.port, 9000);
         assert_eq!(config.database.max_connections, 20);
         assert_eq!(config.jwt.jwks_cache_max_age_secs, 1800);
-        assert!(config.oauth.google.is_some());
+        assert_eq!(config.oauth.providers.len(), 2);
+        assert_eq!(config.oauth.providers[0].name, "google");
+        assert_eq!(config.oauth.providers[1].name, "github");
         assert_eq!(config.oauth.consent_url.as_deref(), Some("https://auth.example.com/consent"));
         assert_eq!(config.usernames.reserved.len(), 2);
         assert_eq!(config.scopes.definitions.len(), 2);
@@ -787,6 +887,117 @@ public = { requests = 500, window_secs = 60 }
             r#"account_merge_policy = "magic""#,
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn provider_config_parsing() {
+        // Preset providers
+        let config: OAuthProvidersConfig = toml::from_str(r#"
+            [[providers]]
+            name = "google"
+            client_id = "google-id"
+            client_secret = "google-secret"
+
+            [[providers]]
+            name = "github"
+            client_id = "github-id"
+            client_secret = "github-secret"
+        "#).unwrap();
+        assert_eq!(config.providers.len(), 2);
+        assert_eq!(config.providers[0].name, "google");
+        assert_eq!(config.providers[1].name, "github");
+        assert!(config.providers[0].issuer.is_none());
+        validate_providers(&config.providers).unwrap();
+
+        // OIDC discovery provider
+        let config: OAuthProvidersConfig = toml::from_str(r#"
+            [[providers]]
+            name = "corporate-sso"
+            display_name = "Corporate SSO"
+            client_id = "sso-id"
+            client_secret = "sso-secret"
+            issuer = "https://sso.corp.example.com"
+        "#).unwrap();
+        assert_eq!(config.providers[0].name, "corporate-sso");
+        assert_eq!(config.providers[0].display_name.as_deref(), Some("Corporate SSO"));
+        assert_eq!(config.providers[0].issuer.as_deref(), Some("https://sso.corp.example.com"));
+        validate_providers(&config.providers).unwrap();
+
+        // Manual OAuth2 provider
+        let config: OAuthProvidersConfig = toml::from_str(r#"
+            [[providers]]
+            name = "custom"
+            client_id = "custom-id"
+            client_secret = "custom-secret"
+            auth_url = "https://custom.example.com/authorize"
+            token_url = "https://custom.example.com/token"
+            userinfo_url = "https://custom.example.com/userinfo"
+            [providers.profile_mapping]
+            provider_id = "uid"
+            email = "email_address"
+            name = "display_name"
+        "#).unwrap();
+        assert_eq!(config.providers[0].name, "custom");
+        assert!(config.providers[0].auth_url.is_some());
+        assert!(config.providers[0].profile_mapping.is_some());
+        validate_providers(&config.providers).unwrap();
+    }
+
+    #[test]
+    fn provider_validation_errors() {
+        // Duplicate names
+        let config: OAuthProvidersConfig = toml::from_str(r#"
+            [[providers]]
+            name = "google"
+            client_id = "id1"
+            client_secret = "secret1"
+
+            [[providers]]
+            name = "google"
+            client_id = "id2"
+            client_secret = "secret2"
+        "#).unwrap();
+        assert!(validate_providers(&config.providers).is_err());
+
+        // Invalid name (uppercase)
+        let config: OAuthProvidersConfig = toml::from_str(r#"
+            [[providers]]
+            name = "Google"
+            client_id = "id"
+            client_secret = "secret"
+        "#).unwrap();
+        assert!(validate_providers(&config.providers).is_err());
+
+        // Manual OAuth2 missing profile_mapping
+        let config: OAuthProvidersConfig = toml::from_str(r#"
+            [[providers]]
+            name = "custom"
+            client_id = "id"
+            client_secret = "secret"
+            auth_url = "https://example.com/auth"
+            token_url = "https://example.com/token"
+            userinfo_url = "https://example.com/userinfo"
+        "#).unwrap();
+        assert!(validate_providers(&config.providers).is_err());
+
+        // Manual OAuth2 incomplete URLs
+        let config: OAuthProvidersConfig = toml::from_str(r#"
+            [[providers]]
+            name = "custom"
+            client_id = "id"
+            client_secret = "secret"
+            auth_url = "https://example.com/auth"
+        "#).unwrap();
+        assert!(validate_providers(&config.providers).is_err());
+
+        // Unknown provider name without any tier info
+        let config: OAuthProvidersConfig = toml::from_str(r#"
+            [[providers]]
+            name = "unknown"
+            client_id = "id"
+            client_secret = "secret"
+        "#).unwrap();
+        assert!(validate_providers(&config.providers).is_err());
     }
 
     #[test]

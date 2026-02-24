@@ -144,6 +144,7 @@ impl TestServer {
             cookie_names,
             username_regex,
             metrics_handle: None,
+            providers: Arc::new(vec![]),
         };
 
         let app = axum::Router::new()

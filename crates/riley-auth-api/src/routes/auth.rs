@@ -16,7 +16,7 @@ use riley_auth_core::config::{AccountMergePolicy, Config};
 use riley_auth_core::db;
 use riley_auth_core::error::Error;
 use riley_auth_core::jwt::{self, Keys};
-use riley_auth_core::oauth::{self, Provider};
+use riley_auth_core::oauth::{self, ResolvedProvider};
 use riley_auth_core::webhooks;
 
 use crate::server::AppState;
@@ -90,10 +90,7 @@ async fn auth_redirect(
     Path(provider_name): Path<String>,
     jar: CookieJar,
 ) -> Result<(CookieJar, Redirect), Error> {
-    let provider = Provider::from_str(&provider_name)
-        .ok_or_else(|| Error::BadRequest(format!("unknown provider: {provider_name}")))?;
-
-    let provider_config = get_provider_config(&state.config, provider)?;
+    let provider = find_provider(&state.providers, &provider_name)?;
     let callback_url = format!(
         "{}/auth/{}/callback",
         state.config.server.public_url, provider_name
@@ -104,7 +101,6 @@ async fn auth_redirect(
 
     let auth_url = oauth::build_auth_url(
         provider,
-        provider_config,
         &callback_url,
         &oauth_state,
         &pkce_challenge,
@@ -126,8 +122,7 @@ async fn auth_callback(
     headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<(CookieJar, Redirect), Error> {
-    let provider = Provider::from_str(&provider_name)
-        .ok_or_else(|| Error::BadRequest(format!("unknown provider: {provider_name}")))?;
+    let provider = find_provider(&state.providers, &provider_name)?;
 
     // Verify state
     let saved_state = jar
@@ -145,7 +140,6 @@ async fn auth_callback(
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
-    let provider_config = get_provider_config(&state.config, provider)?;
     let callback_url = format!(
         "{}/auth/{}/callback",
         state.config.server.public_url, provider_name
@@ -154,7 +148,6 @@ async fn auth_callback(
     // Exchange code for access token
     let provider_token = oauth::exchange_code(
         provider,
-        provider_config,
         &query.code,
         &callback_url,
         &pkce_verifier,
@@ -824,10 +817,7 @@ async fn link_redirect(
     // Must be authenticated
     let _claims = extract_user(&state, &jar)?;
 
-    let provider = Provider::from_str(&provider_name)
-        .ok_or_else(|| Error::BadRequest(format!("unknown provider: {provider_name}")))?;
-
-    let provider_config = get_provider_config(&state.config, provider)?;
+    let provider = find_provider(&state.providers, &provider_name)?;
     let callback_url = format!(
         "{}/auth/link/{}/callback",
         state.config.server.public_url, provider_name
@@ -838,7 +828,6 @@ async fn link_redirect(
 
     let auth_url = oauth::build_auth_url(
         provider,
-        provider_config,
         &callback_url,
         &oauth_state,
         &pkce_challenge,
@@ -861,8 +850,7 @@ async fn link_callback(
     let claims = extract_user(&state, &jar)?;
     let user_id = claims.sub_uuid()?;
 
-    let provider = Provider::from_str(&provider_name)
-        .ok_or_else(|| Error::BadRequest(format!("unknown provider: {provider_name}")))?;
+    let provider = find_provider(&state.providers, &provider_name)?;
 
     // Verify state
     let saved_state = jar
@@ -879,7 +867,6 @@ async fn link_callback(
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
-    let provider_config = get_provider_config(&state.config, provider)?;
     let callback_url = format!(
         "{}/auth/link/{}/callback",
         state.config.server.public_url, provider_name
@@ -887,7 +874,6 @@ async fn link_callback(
 
     let provider_token = oauth::exchange_code(
         provider,
-        provider_config,
         &query.code,
         &callback_url,
         &pkce_verifier,
@@ -964,15 +950,14 @@ async fn unlink_provider(
 
 // --- Helpers ---
 
-fn get_provider_config<'a>(
-    config: &'a Config,
-    provider: Provider,
-) -> Result<&'a riley_auth_core::config::OAuthProviderConfig, Error> {
-    match provider {
-        Provider::Google => config.oauth.google.as_ref(),
-        Provider::GitHub => config.oauth.github.as_ref(),
-    }
-    .ok_or_else(|| Error::Config(format!("{} not configured", provider.as_str())))
+fn find_provider<'a>(
+    providers: &'a [ResolvedProvider],
+    name: &str,
+) -> Result<&'a ResolvedProvider, Error> {
+    providers
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| Error::BadRequest(format!("unknown provider: {name}")))
 }
 
 fn extract_user(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error> {

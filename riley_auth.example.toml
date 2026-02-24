@@ -57,7 +57,11 @@ public_key_path = "/data/keys/public.pem"
 # private_key_path = "/data/keys/private.pem"
 # public_key_path = "/data/keys/public.pem"
 
-# OAuth providers — configure one or both.
+# OAuth providers — three tiers:
+#   1. Built-in presets: name = "google" or "github" — just provide credentials
+#   2. OIDC auto-discovery: specify issuer — endpoints discovered at startup
+#   3. Manual OAuth2: specify auth_url, token_url, userinfo_url, profile_mapping
+#
 # Generate credentials at:
 #   Google: https://console.cloud.google.com/apis/credentials
 #   GitHub: https://github.com/settings/developers
@@ -79,13 +83,42 @@ public_key_path = "/data/keys/public.pem"
 # authorize flow, riley_auth redirects here with ?consent_id=<id>.
 # consent_url = "https://auth.example.com/consent"
 
-[oauth.google]
+# Built-in preset: Google (just provide credentials)
+[[oauth.providers]]
+name = "google"
 client_id = "env:GOOGLE_CLIENT_ID"
 client_secret = "env:GOOGLE_CLIENT_SECRET"
 
-[oauth.github]
+# Built-in preset: GitHub (just provide credentials)
+[[oauth.providers]]
+name = "github"
 client_id = "env:GITHUB_CLIENT_ID"
 client_secret = "env:GITHUB_CLIENT_SECRET"
+
+# OIDC auto-discovery example (uncomment to use):
+# [[oauth.providers]]
+# name = "corporate-sso"
+# display_name = "Corporate SSO"
+# client_id = "env:SSO_CLIENT_ID"
+# client_secret = "env:SSO_CLIENT_SECRET"
+# issuer = "https://sso.corp.example.com"
+# scopes = "openid email profile"              # optional, defaults to "openid email profile"
+
+# Manual OAuth2 example (uncomment to use):
+# [[oauth.providers]]
+# name = "custom-provider"
+# display_name = "Custom Provider"
+# client_id = "env:CUSTOM_CLIENT_ID"
+# client_secret = "env:CUSTOM_CLIENT_SECRET"
+# auth_url = "https://custom.example.com/authorize"
+# token_url = "https://custom.example.com/token"
+# userinfo_url = "https://custom.example.com/userinfo"
+# scopes = "user:read"
+# [oauth.providers.profile_mapping]
+# provider_id = "uid"
+# email = "email_address"
+# name = "display_name"
+# avatar_url = "photo"
 
 # Optional: Define scopes that OAuth clients can request.
 # Omit or leave empty for no scopes (backwards-compatible).
