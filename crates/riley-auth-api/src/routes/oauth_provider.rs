@@ -1060,10 +1060,9 @@ async fn userinfo(
     if scopes.contains("email") {
         // Fetch email from the user's oldest oauth_link that has an email (deterministic ordering)
         let links = db::find_oauth_links_by_user(&state.db, user_id).await?;
-        if let Some(email) = links.iter().find_map(|l| l.provider_email.as_deref()) {
-            response.insert("email".to_string(), serde_json::json!(email));
-            // All emails come from verified OAuth providers (Google, GitHub, etc.)
-            response.insert("email_verified".to_string(), serde_json::json!(true));
+        if let Some(link) = links.iter().find(|l| l.provider_email.is_some()) {
+            response.insert("email".to_string(), serde_json::json!(link.provider_email.as_deref().unwrap()));
+            response.insert("email_verified".to_string(), serde_json::json!(link.email_verified));
         }
     }
 
