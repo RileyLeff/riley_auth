@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Redirect;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use axum_extra::extract::CookieJar;
@@ -90,32 +90,89 @@ pub fn router() -> Router<AppState> {
         .route("/oauth/userinfo", get(userinfo).post(userinfo))
 }
 
-/// GET /oauth/authorize — authorization endpoint
+/// Build an OAuth error redirect per RFC 6749 §4.1.2.1.
+///
+/// Once `client_id` and `redirect_uri` are validated, all subsequent errors
+/// must be communicated back to the client via redirect with query parameters.
+fn redirect_error(
+    redirect_uri: &str,
+    error_code: &str,
+    description: &str,
+    state: Option<&str>,
+) -> Response {
+    // If the redirect_uri can't be parsed (shouldn't happen — already validated),
+    // fall back to a plain HTTP error.
+    let Ok(mut url) = url::Url::parse(redirect_uri) else {
+        return Error::InvalidRedirectUri.into_response();
+    };
+    {
+        let mut params = url.query_pairs_mut();
+        params.append_pair("error", error_code);
+        params.append_pair("error_description", description);
+        if let Some(s) = state {
+            params.append_pair("state", s);
+        }
+    }
+    Redirect::temporary(url.as_str()).into_response()
+}
+
+/// GET /oauth/authorize — authorization endpoint (RFC 6749 §4.1)
+///
+/// Error handling follows RFC 6749 §4.1.2.1:
+/// - Pre-redirect errors (invalid client_id or redirect_uri): HTTP 400
+/// - Post-redirect errors (all others): redirect to redirect_uri with ?error=...
 async fn authorize(
     State(state): State<AppState>,
     Query(query): Query<AuthorizeQuery>,
     jar: CookieJar,
-) -> Result<Redirect, Error> {
-    if query.response_type != "code" {
-        return Err(Error::BadRequest("response_type must be 'code'".to_string()));
-    }
+) -> Result<Response, Error> {
+    // --- Phase 1: Pre-redirect validation (HTTP errors) ---
+    // client_id and redirect_uri must be validated FIRST. If either is invalid,
+    // we cannot safely redirect and must return an HTTP error directly.
 
-    // PKCE is mandatory
-    let code_challenge = query.code_challenge.as_deref()
-        .ok_or_else(|| Error::BadRequest("code_challenge is required".to_string()))?;
-    let method = query.code_challenge_method.as_deref().unwrap_or("S256");
-    if method != "S256" {
-        return Err(Error::BadRequest("code_challenge_method must be 'S256'".to_string()));
-    }
-
-    // Validate client
     let client = db::find_client_by_client_id(&state.db, &query.client_id)
         .await?
         .ok_or(Error::InvalidClient)?;
 
-    // Validate redirect URI
     if !client.redirect_uris.contains(&query.redirect_uri) {
         return Err(Error::InvalidRedirectUri);
+    }
+
+    // --- Phase 2: Post-redirect validation (error redirects) ---
+    // From here on, all errors redirect back to the client with ?error=...
+    let redirect_uri = &query.redirect_uri;
+    let state_param = query.state.as_deref();
+
+    // response_type
+    if query.response_type != "code" {
+        return Ok(redirect_error(
+            redirect_uri,
+            "unsupported_response_type",
+            "response_type must be 'code'",
+            state_param,
+        ));
+    }
+
+    // PKCE is mandatory
+    let code_challenge = match query.code_challenge.as_deref() {
+        Some(c) => c,
+        None => {
+            return Ok(redirect_error(
+                redirect_uri,
+                "invalid_request",
+                "code_challenge is required",
+                state_param,
+            ));
+        }
+    };
+    let method = query.code_challenge_method.as_deref().unwrap_or("S256");
+    if method != "S256" {
+        return Ok(redirect_error(
+            redirect_uri,
+            "invalid_request",
+            "code_challenge_method must be 'S256'",
+            state_param,
+        ));
     }
 
     // Validate and deduplicate requested scopes.
@@ -125,7 +182,12 @@ async fn authorize(
     let granted_scopes: Vec<String> = if let Some(ref scope_str) = query.scope {
         let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
         if requested.is_empty() {
-            return Err(Error::BadRequest("scope parameter must not be empty".to_string()));
+            return Ok(redirect_error(
+                redirect_uri,
+                "invalid_scope",
+                "scope parameter must not be empty",
+                state_param,
+            ));
         }
         let defined_names: Vec<&str> = state.config.scopes.definitions.iter()
             .map(|d| d.name.as_str())
@@ -135,10 +197,20 @@ async fn authorize(
                 continue; // protocol-level, always accepted
             }
             if !defined_names.contains(s) {
-                return Err(Error::BadRequest(format!("unknown scope: {s}")));
+                return Ok(redirect_error(
+                    redirect_uri,
+                    "invalid_scope",
+                    &format!("unknown scope: {s}"),
+                    state_param,
+                ));
             }
             if !client.allowed_scopes.iter().any(|a| a == s) {
-                return Err(Error::BadRequest(format!("scope not allowed for this client: {s}")));
+                return Ok(redirect_error(
+                    redirect_uri,
+                    "invalid_scope",
+                    &format!("scope not allowed for this client: {s}"),
+                    state_param,
+                ));
             }
         }
         requested.into_iter().map(String::from).collect()
@@ -146,27 +218,64 @@ async fn authorize(
         vec![]
     };
 
-    // Enforce consent: non-auto-approve clients are not allowed (no consent UI yet)
+    // Consent check
     if !client.auto_approve {
-        return Err(Error::ConsentRequired);
+        return Ok(redirect_error(
+            redirect_uri,
+            "consent_required",
+            "user consent is required for this client",
+            state_param,
+        ));
     }
 
     // User must be authenticated (cookie-based)
-    let access_token = jar
-        .get(&state.cookie_names.access)
-        .map(|c| c.value().to_string())
-        .ok_or(Error::Unauthenticated)?;
+    let access_token = match jar.get(&state.cookie_names.access) {
+        Some(c) => c.value().to_string(),
+        None => {
+            return Ok(redirect_error(
+                redirect_uri,
+                "login_required",
+                "user is not authenticated",
+                state_param,
+            ));
+        }
+    };
 
-    let token_data = state.keys.verify_access_token(&state.config.jwt, &access_token)?;
+    let token_data = match state.keys.verify_access_token(&state.config.jwt, &access_token) {
+        Ok(data) => data,
+        Err(_) => {
+            return Ok(redirect_error(
+                redirect_uri,
+                "login_required",
+                "session is invalid or expired",
+                state_param,
+            ));
+        }
+    };
 
     // Enforce audience: only session tokens (aud == issuer) can authorize
     if token_data.claims.aud != state.config.jwt.issuer {
-        return Err(Error::InvalidToken);
+        return Ok(redirect_error(
+            redirect_uri,
+            "login_required",
+            "invalid session token",
+            state_param,
+        ));
     }
 
-    let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
+    let user_id: uuid::Uuid = match token_data.claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return Ok(redirect_error(
+                redirect_uri,
+                "server_error",
+                "internal error",
+                state_param,
+            ));
+        }
+    };
 
-    // Generate authorization code
+    // --- Phase 3: Issue authorization code ---
     let mut code_bytes = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut code_bytes);
     let code = URL_SAFE_NO_PAD.encode(code_bytes);
@@ -176,7 +285,7 @@ async fn authorize(
         state.config.jwt.authorization_code_ttl_secs as i64,
     );
 
-    db::store_authorization_code(
+    if let Err(e) = db::store_authorization_code(
         &state.db,
         &code_hash,
         user_id,
@@ -188,21 +297,39 @@ async fn authorize(
         query.nonce.as_deref(),
         expires_at,
     )
-    .await?;
+    .await
+    {
+        tracing::error!(error = %e, "failed to store authorization code");
+        return Ok(redirect_error(
+            redirect_uri,
+            "server_error",
+            "internal error",
+            state_param,
+        ));
+    }
 
-    // Redirect back to client
-    let mut redirect_url = url::Url::parse(&query.redirect_uri)
-        .map_err(|_| Error::InvalidRedirectUri)?;
+    // Redirect back to client with authorization code
+    let mut redirect_url = match url::Url::parse(&query.redirect_uri) {
+        Ok(url) => url,
+        Err(_) => {
+            return Ok(redirect_error(
+                redirect_uri,
+                "server_error",
+                "internal error",
+                state_param,
+            ));
+        }
+    };
 
     {
         let mut params = redirect_url.query_pairs_mut();
         params.append_pair("code", &code);
-        if let Some(ref state_param) = query.state {
-            params.append_pair("state", state_param);
+        if let Some(s) = state_param {
+            params.append_pair("state", s);
         }
     }
 
-    Ok(Redirect::temporary(redirect_url.as_str()))
+    Ok(Redirect::temporary(redirect_url.as_str()).into_response())
 }
 
 /// GET /oauth/consent — returns client name and scope descriptions for consent UI

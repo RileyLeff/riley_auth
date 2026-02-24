@@ -1271,6 +1271,253 @@ fn oauth_provider_rejects_wrong_redirect_uri() {
 
 #[test]
 #[ignore]
+fn authorize_error_redirect_unsupported_response_type() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("errrediruser", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Error Redirect Client",
+            "err-redir-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Valid client_id + redirect_uri, but invalid response_type
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "err-redir-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "token"),
+                ("state", "my-state"),
+                ("code_challenge", "test"),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        // Should redirect with error, not return HTTP error
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "unsupported_response_type");
+        assert_eq!(params["state"], "my-state");
+        assert!(params.contains_key("error_description"));
+    });
+}
+
+#[test]
+#[ignore]
+fn authorize_error_redirect_login_required() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Login Required Client",
+            "login-req-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // No cookie — user is not authenticated
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "login-req-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("state", "login-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "login_required");
+        assert_eq!(params["state"], "login-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn authorize_error_redirect_consent_required() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("consentuser", "user").await;
+
+        // Create a non-auto-approve client
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Consent Client",
+            "consent-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            false, // auto_approve = false
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "consent-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("state", "consent-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "consent_required");
+        assert_eq!(params["state"], "consent-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn authorize_error_redirect_missing_pkce() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("pkceuser", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "PKCE Client",
+            "pkce-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Missing code_challenge
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "pkce-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("state", "pkce-state"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "invalid_request");
+        assert!(params["error_description"].contains("code_challenge"));
+        assert_eq!(params["state"], "pkce-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn authorize_pre_redirect_errors_return_http() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("prerediruser", "user").await;
+
+        // Invalid client_id → HTTP 401 (not redirect)
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "nonexistent"),
+                ("redirect_uri", "https://evil.com/callback"),
+                ("response_type", "code"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Valid client_id but wrong redirect_uri → HTTP 400 (not redirect)
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Pre Redirect Client",
+            "pre-redir-client",
+            &secret_hash,
+            &["https://allowed.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "pre-redir-client"),
+                ("redirect_uri", "https://evil.com/callback"),
+                ("response_type", "code"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    });
+}
+
+#[test]
+#[ignore]
 fn last_admin_protection() {
     let s = server();
     runtime().block_on(async {
@@ -1481,7 +1728,12 @@ fn oauth_rejects_unauthorized_scope() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // Now redirects with ?error=invalid_scope per RFC 6749 §4.1.2.1
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let error = redirect_url.query_pairs().find(|(k, _)| k == "error").unwrap().1.to_string();
+        assert_eq!(error, "invalid_scope");
     });
 }
 
@@ -1525,7 +1777,12 @@ fn oauth_rejects_unknown_scope() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // Now redirects with ?error=invalid_scope per RFC 6749 §4.1.2.1
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let error = redirect_url.query_pairs().find(|(k, _)| k == "error").unwrap().1.to_string();
+        assert_eq!(error, "invalid_scope");
     });
 }
 
