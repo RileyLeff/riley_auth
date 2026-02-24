@@ -9,6 +9,10 @@
 #
 # Values support "env:VAR_NAME" syntax for secrets.
 
+# NOTE: The default cookie_prefix changed from "riley_auth" to "auth" in v6.
+# Existing deployments should set cookie_prefix = "riley_auth" to avoid
+# logging out all users on upgrade, or plan a coordinated cookie migration.
+
 [server]
 host = "0.0.0.0"                          # Listen address (default: 0.0.0.0)
 port = 8081                                # Listen port (default: 8081)

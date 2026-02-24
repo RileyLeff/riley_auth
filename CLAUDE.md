@@ -12,7 +12,7 @@ Cargo workspace with three crates:
 ## Conventions
 
 - Rust edition 2024, MSRV 1.88
-- PostgreSQL 18 with native `uuidv7()` for primary keys, `timestamptz` for all timestamps
+- PostgreSQL 14+ (`gen_random_uuid()` for DB defaults, app-side `Uuid::now_v7()` for new rows), `timestamptz` for all timestamps
 - RS256 (asymmetric) JWTs — private key signs, public key verifies via `/.well-known/jwks.json`
 - All config is TOML, loaded with the same resolution pattern as riley_cms
 - This is a general-purpose library, not "Riley's auth" — APIs and config should make sense to anyone

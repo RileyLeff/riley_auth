@@ -51,7 +51,7 @@ pub struct AppState {
 pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()> {
     let addr = SocketAddr::new(config.server.host.parse()?, config.server.port);
 
-    let cors = build_cors(&config);
+    let cors = build_cors(&config.server.cors_origins);
 
     let behind_proxy = config.server.behind_proxy;
     let rate_limit_backend = config.rate_limiting.backend.as_str();
@@ -237,10 +237,9 @@ async fn maintenance_worker(
     }
 }
 
-fn build_cors(config: &Config) -> CorsLayer {
-    let origins = &config.server.cors_origins;
+fn build_cors(origins: &[String]) -> CorsLayer {
     if origins.is_empty() {
-        // No CORS layer — same-origin only (secure default)
+        // Restrictive CORS — no origins allowed, browsers block cross-origin requests
         tracing::info!("no cors_origins configured — CORS disabled (same-origin only)");
         CorsLayer::new()
     } else if origins.len() == 1 && origins[0] == "*" {
@@ -318,5 +317,25 @@ mod tests {
         assert_eq!(names.oauth_state, "myapp_oauth_state");
         assert_eq!(names.pkce, "myapp_pkce");
         assert_eq!(names.setup, "myapp_setup");
+    }
+
+    #[test]
+    fn build_cors_empty_origins() {
+        // Empty origins produces a restrictive layer (no allowed origins)
+        let _layer = build_cors(&[]);
+    }
+
+    #[test]
+    fn build_cors_wildcard() {
+        // ["*"] produces a permissive layer
+        let _layer = build_cors(&["*".to_string()]);
+    }
+
+    #[test]
+    fn build_cors_explicit_origins() {
+        let _layer = build_cors(&[
+            "https://example.com".to_string(),
+            "https://app.example.com".to_string(),
+        ]);
     }
 }

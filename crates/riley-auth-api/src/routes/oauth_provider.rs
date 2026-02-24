@@ -568,7 +568,7 @@ async fn consent(
         if s == "profile" {
             scopes.push(ConsentScope {
                 name: "profile".to_string(),
-                description: "Read your username, display name, and avatar".to_string(),
+                description: "Read your username, display name, and profile picture".to_string(),
             });
             continue;
         }
