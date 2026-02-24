@@ -20,6 +20,8 @@ cors_origins = [                           # Allowed CORS origins
   "https://example.com",                   #   empty = no CORS (same-origin only)
   "https://app.example.com",               #   ["*"] = permissive (dev only)
 ]
+# cookie_prefix = "auth"                    # Prefix for cookie names (default: "auth")
+                                           #   Cookies: {prefix}_access, {prefix}_refresh, etc.
 cookie_domain = ".example.com"             # Domain for auth cookies (enables subdomain SSO)
 public_url = "https://example.com"         # Public base URL (used for OAuth callbacks and post-login redirects)
 behind_proxy = false                       # Trust X-Forwarded-For headers for rate limiting (default: false)
