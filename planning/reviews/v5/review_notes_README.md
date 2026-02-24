@@ -239,6 +239,23 @@ Webhook payload scrubbing in `soft_delete_user` uses `jsonb_set(payload, '{data}
 ### Protocol scopes can't be added to client allowed_scopes via admin API (pre-existing)
 `register_client` validates scopes against `config.scopes.definitions`, but protocol scopes (openid, profile, email) are not config-defined. The authorize handler allows them regardless of `allowed_scopes`, so the DB record appears to lack capabilities it actually has. UX improvement for a future phase.
 
+## v5 Phase 1 — JWKS Key Rotation & Algorithm Agility
+
+### validate_aud = false in verify_token is intentional
+Different token types have different audience semantics: access tokens for sessions use aud == issuer (enforced by extract_user), OAuth client access tokens use aud == client_id (enforced in oauth_provider.rs), and setup tokens have no aud claim. Audience is enforced at the call site, not in the generic verify_token method.
+
+### Zero leeway on token expiry is intentional
+`validation.leeway = 0` in verify_token. More secure than allowing clock skew. Servers should have synchronized clocks.
+
+### JWKS content-type is application/json (not application/jwk-set+json)
+Standard `application/json` is accepted by all OIDC clients. The more specific `application/jwk-set+json` is technically more correct per RFC 7517 but not required.
+
+### Linear fallback in verify_token is acceptable for expected key counts
+When a token has no kid or unknown kid, all keys are tried sequentially. O(N) for N keys. With 2-3 keys during rotation, this is negligible.
+
+### OpenSSL dependency for key generation is accepted
+`generate_keypair_with_algorithm` shells out to openssl. CLI-only setup-time operation. Not reachable via HTTP API. Per v4 review notes.
+
 ## v4 Phase 9 — Token Introspection
 
 ### Cross-client introspection is intentionally allowed

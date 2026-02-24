@@ -1,8 +1,8 @@
 # v5 Workflow State
 
-**Current Phase:** 1 — JWKS Key Rotation & Algorithm Agility (REVIEW)
-**Current Step:** Phase 1 standard review
-**Status:** Phase 1 implementation complete (all 7 steps). 28 unit + 111 integration tests pass. Running standard review.
+**Current Phase:** 1 — JWKS Key Rotation & Algorithm Agility (REVIEW COMPLETE)
+**Current Step:** Phase 1 review converged (2 rounds, 0 major in round 2)
+**Status:** Phase 1 done. 34 unit + 111 integration tests pass. Ready for Phase 2.
 
 ## Progress
 
@@ -15,7 +15,7 @@
 | 1 | 1.5 | Discovery document: dynamic alg_values_supported | Done |
 | 1 | 1.6 | Update existing tests | Done |
 | 1 | 1.7 | Update example config | Done |
-| 1 | review | Standard review | In Progress |
+| 1 | review | Standard review (2 rounds, Claude-only, converged) | Done |
 | 2 | 2.1-2.5 | Token endpoint auth: client_secret_basic | Pending |
 | 2 | review | Standard review | Pending |
 | 3 | 3.1-3.6 | OIDC compliance: auth_time | Pending |
@@ -40,3 +40,5 @@ None.
 
 - Created v5 architecture plan, implementation plan, and workflow state (a0cafe7)
 - Phase 1 complete: JWKS key rotation + ES256/RS256 algorithm agility (f53899e)
+- Phase 1 review R1: 3 major + 7 minor found (Claude-only). Fixed all (68c86e3)
+- Phase 1 review R2: 0 major, 2 minor found and fixed (11713a4). Converged.
