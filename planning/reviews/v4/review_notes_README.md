@@ -212,3 +212,23 @@ Scope names from user input appear in `error_description`. URL-encoded by `query
 
 ### Authorize error redirects supersede Phase 4 note
 The Phase 4 note "Authorize endpoint errors not redirected to redirect_uri" is now resolved. Pre-redirect errors (invalid client_id/redirect_uri) return HTTP errors; post-redirect errors use `?error=...` redirects per RFC 6749 §4.1.2.1.
+
+## v4 Phase 8 — Consent UI Support
+
+### gen_random_uuid() for consent_id is intentional
+Consent IDs are exposed in URLs and must not be guessable from timestamps. UUIDv4 (`gen_random_uuid()`) provides 122 bits of randomness vs UUIDv7's ~62 bits. SQL comment documents the choice.
+
+### logout-all revoking OAuth client tokens is by design
+`delete_all_refresh_tokens` deletes all tokens for the user, including OAuth client tokens. This is the intended "nuclear option." Users wanting granular control would use per-session revocation. Flagged as MAJOR by Claude R2; downgraded to NOTE.
+
+### ID token exp coupled to access_token_ttl_secs is acceptable
+OIDC only requires `exp` to be present. Using the same TTL as access tokens is a common pattern. A separate `id_token_ttl_secs` could be added later if needed. Flagged as MAJOR by Claude R2; downgraded to NOTE.
+
+### Rate limit tier for /oauth/token (pre-existing)
+The token endpoint falls under the `standard` tier (60/min) instead of the `auth` tier (15/min). Could be tightened in a future phase. Not a Phase 8 concern.
+
+### Stuck outbox next_attempt_at check (pre-existing)
+`reset_stuck_outbox_entries` checks `next_attempt_at` instead of processing start time. Could cause premature reset for entries that were pending a long time before being claimed. Low probability under normal operation.
+
+### auth_time not in refreshed ID tokens (pre-existing OIDC gap)
+OIDC Core 1.0 Section 12.2 says refreshed ID tokens SHOULD include `auth_time`. Not currently tracked. Would require an `auth_time` column on `refresh_tokens`. Low priority.
