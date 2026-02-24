@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use riley_auth_core::db;
-use riley_auth_core::error::{Error, www_authenticate_value};
+use riley_auth_core::error::{Error, ErrorBody, www_authenticate_value};
 use riley_auth_core::jwt;
 
 use crate::server::AppState;
@@ -37,7 +37,7 @@ pub struct AuthorizeQuery {
     prompt: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct TokenRequest {
     grant_type: String,
     code: Option<String>,
@@ -49,7 +49,7 @@ pub struct TokenRequest {
     scope: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct TokenResponse {
     access_token: String,
     token_type: &'static str,
@@ -66,7 +66,7 @@ pub struct ConsentQuery {
     consent_id: uuid::Uuid,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ConsentResponse {
     client: ConsentClient,
     scopes: Vec<ConsentScope>,
@@ -76,31 +76,31 @@ pub struct ConsentResponse {
     expires_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ConsentClient {
     name: String,
     client_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ConsentScope {
     name: String,
     description: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ConsentDecision {
     approved: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RevokeRequest {
     token: String,
     client_id: Option<String>,
     client_secret: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct IntrospectRequest {
     token: String,
     // Client credentials via POST body (alternative to Basic auth)
@@ -160,7 +160,27 @@ fn redirect_error(
 /// Error handling follows RFC 6749 §4.1.2.1:
 /// - Pre-redirect errors (invalid client_id or redirect_uri): HTTP 400
 /// - Post-redirect errors (all others): redirect to redirect_uri with ?error=...
-async fn authorize(
+#[utoipa::path(
+    get,
+    path = "/oauth/authorize",
+    tag = "oauth",
+    params(
+        ("client_id" = String, Query, description = "Client identifier"),
+        ("redirect_uri" = String, Query, description = "Redirect URI"),
+        ("response_type" = String, Query, description = "Must be 'code'"),
+        ("scope" = Option<String>, Query, description = "Space-separated scopes"),
+        ("state" = Option<String>, Query, description = "Client state parameter"),
+        ("code_challenge" = Option<String>, Query, description = "PKCE code challenge"),
+        ("code_challenge_method" = Option<String>, Query, description = "Must be 'S256'"),
+        ("nonce" = Option<String>, Query, description = "OIDC nonce"),
+        ("prompt" = Option<String>, Query, description = "OIDC prompt (none, login, consent)"),
+    ),
+    responses(
+        (status = 302, description = "Redirect with authorization code or error"),
+        (status = 400, description = "Invalid client or redirect URI", body = ErrorBody),
+    )
+)]
+pub(crate) async fn authorize(
     State(state): State<AppState>,
     Query(query): Query<AuthorizeQuery>,
     jar: CookieJar,
@@ -521,7 +541,18 @@ async fn authorize(
 ///
 /// Requires session cookie + consent_id query parameter. The consent request
 /// must exist, not be expired, and belong to the authenticated user.
-async fn consent(
+#[utoipa::path(
+    get,
+    path = "/oauth/consent",
+    tag = "oauth",
+    params(("consent_id" = uuid::Uuid, Query, description = "Consent request ID")),
+    responses(
+        (status = 200, description = "Consent request details", body = ConsentResponse),
+        (status = 400, description = "Invalid or expired consent request", body = ErrorBody),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn consent(
     State(state): State<AppState>,
     Query(query): Query<ConsentQuery>,
     jar: CookieJar,
@@ -606,7 +637,19 @@ async fn consent(
 /// If approved: issues authorization code and redirects to the client's redirect_uri.
 /// If denied: redirects with `?error=access_denied`.
 /// Consumes the consent request in either case.
-async fn consent_decision(
+#[utoipa::path(
+    post,
+    path = "/oauth/consent",
+    tag = "oauth",
+    params(("consent_id" = uuid::Uuid, Query, description = "Consent request ID")),
+    request_body = ConsentDecision,
+    responses(
+        (status = 302, description = "Redirect to client with code or error"),
+        (status = 400, description = "Invalid or expired consent request", body = ErrorBody),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn consent_decision(
     State(state): State<AppState>,
     Query(query): Query<ConsentQuery>,
     jar: CookieJar,
@@ -720,7 +763,18 @@ async fn consent_decision(
 }
 
 /// POST /oauth/token — token endpoint
-async fn token(
+#[utoipa::path(
+    post,
+    path = "/oauth/token",
+    tag = "oauth",
+    request_body(content = TokenRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Token response", body = TokenResponse),
+        (status = 400, description = "Invalid grant or request", body = ErrorBody),
+        (status = 401, description = "Invalid client credentials", body = ErrorBody),
+    )
+)]
+pub(crate) async fn token(
     State(state): State<AppState>,
     headers: HeaderMap,
     Form(body): Form<TokenRequest>,
@@ -981,7 +1035,17 @@ async fn token(
 }
 
 /// POST /oauth/revoke — revoke a refresh token (RFC 7009)
-async fn revoke(
+#[utoipa::path(
+    post,
+    path = "/oauth/revoke",
+    tag = "oauth",
+    request_body(content = RevokeRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Token revoked (or already invalid)"),
+        (status = 401, description = "Invalid client credentials", body = ErrorBody),
+    )
+)]
+pub(crate) async fn revoke(
     State(state): State<AppState>,
     headers: HeaderMap,
     Form(body): Form<RevokeRequest>,
@@ -1016,7 +1080,17 @@ async fn revoke(
 /// Allows registered OAuth clients to validate tokens and retrieve their claims.
 /// Accepts client authentication via HTTP Basic auth or POST body (client_id + client_secret).
 /// Returns `{"active": false}` for any invalid, expired, or revoked token.
-async fn introspect(
+#[utoipa::path(
+    post,
+    path = "/oauth/introspect",
+    tag = "oauth",
+    request_body(content = IntrospectRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Introspection response (active: true/false)"),
+        (status = 401, description = "Invalid client credentials", body = ErrorBody),
+    )
+)]
+pub(crate) async fn introspect(
     State(state): State<AppState>,
     headers: HeaderMap,
     Form(body): Form<IntrospectRequest>,
@@ -1130,7 +1204,17 @@ fn extract_client_credentials(
 /// Accepts a Bearer access token via the Authorization header. The token must
 /// have been issued to an OAuth client (aud != issuer). Returns profile claims
 /// filtered by the scopes granted in the access token.
-async fn userinfo(
+#[utoipa::path(
+    get,
+    path = "/oauth/userinfo",
+    tag = "oauth",
+    responses(
+        (status = 200, description = "User identity claims (filtered by token scopes)"),
+        (status = 401, description = "Invalid or missing bearer token", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn userinfo(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Response {

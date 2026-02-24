@@ -14,7 +14,7 @@ use subtle::ConstantTimeEq;
 
 use riley_auth_core::config::{AccountMergePolicy, Config};
 use riley_auth_core::db;
-use riley_auth_core::error::Error;
+use riley_auth_core::error::{Error, ErrorBody};
 use riley_auth_core::jwt::{self, Keys};
 use riley_auth_core::oauth::{self, ResolvedProvider};
 use riley_auth_core::webhooks;
@@ -29,12 +29,12 @@ pub struct CallbackQuery {
     state: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SetupRequest {
     username: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct MeResponse {
     id: String,
     username: String,
@@ -43,19 +43,19 @@ pub struct MeResponse {
     role: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct LinkResponse {
     provider: String,
     provider_email: Option<String>,
     created_at: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateDisplayNameRequest {
     display_name: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateUsernameRequest {
     username: String,
 }
@@ -85,7 +85,17 @@ pub fn router() -> Router<AppState> {
 // --- OAuth Consumer Endpoints ---
 
 /// GET /auth/{provider} — redirect to OAuth provider
-async fn auth_redirect(
+#[utoipa::path(
+    get,
+    path = "/auth/{provider}",
+    tag = "auth",
+    params(("provider" = String, Path, description = "OAuth provider name")),
+    responses(
+        (status = 302, description = "Redirect to OAuth provider"),
+        (status = 404, description = "Unknown provider", body = ErrorBody),
+    )
+)]
+pub(crate) async fn auth_redirect(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
     jar: CookieJar,
@@ -114,7 +124,17 @@ async fn auth_redirect(
 }
 
 /// GET /auth/{provider}/callback — OAuth callback
-async fn auth_callback(
+#[utoipa::path(
+    get,
+    path = "/auth/{provider}/callback",
+    tag = "auth",
+    params(("provider" = String, Path, description = "OAuth provider name")),
+    responses(
+        (status = 302, description = "Redirect after OAuth callback"),
+        (status = 400, description = "Invalid OAuth state or code", body = ErrorBody),
+    )
+)]
+pub(crate) async fn auth_callback(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(provider_name): Path<String>,
@@ -269,7 +289,19 @@ async fn auth_callback(
 }
 
 /// POST /auth/setup — create account with username after OAuth
-async fn auth_setup(
+#[utoipa::path(
+    post,
+    path = "/auth/setup",
+    tag = "auth",
+    request_body = SetupRequest,
+    responses(
+        (status = 200, description = "Account created", body = MeResponse),
+        (status = 400, description = "Invalid username", body = ErrorBody),
+        (status = 401, description = "Missing or invalid setup token", body = ErrorBody),
+        (status = 409, description = "Username taken", body = ErrorBody),
+    )
+)]
+pub(crate) async fn auth_setup(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
@@ -355,7 +387,16 @@ async fn auth_setup(
 /// Used when auth_callback detects an email collision and redirects to /link-accounts
 /// with a setup token. The frontend shows a "link this account?" prompt, and the user
 /// confirms by calling this endpoint with both their session cookie and the setup token.
-async fn link_confirm(
+#[utoipa::path(
+    post,
+    path = "/auth/link/confirm",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Provider linked, account merged if applicable", body = MeResponse),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn link_confirm(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, Json<MeResponse>), Error> {
@@ -420,7 +461,16 @@ async fn link_confirm(
 // --- Session Endpoints ---
 
 /// POST /auth/refresh — exchange refresh cookie for new access token
-async fn auth_refresh(
+#[utoipa::path(
+    post,
+    path = "/auth/refresh",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Tokens refreshed (new cookies set)"),
+        (status = 401, description = "Invalid or expired refresh token", body = ErrorBody),
+    )
+)]
+pub(crate) async fn auth_refresh(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
@@ -487,7 +537,15 @@ async fn auth_refresh(
 }
 
 /// POST /auth/logout — clear cookies + revoke refresh token
-async fn auth_logout(
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Logged out (cookies cleared)"),
+    )
+)]
+pub(crate) async fn auth_logout(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), Error> {
@@ -511,7 +569,16 @@ async fn auth_logout(
 }
 
 /// POST /auth/logout-all — revoke all refresh tokens
-async fn auth_logout_all(
+#[utoipa::path(
+    post,
+    path = "/auth/logout-all",
+    tag = "auth",
+    responses(
+        (status = 204, description = "All sessions revoked"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn auth_logout_all(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), Error> {
@@ -534,8 +601,8 @@ async fn auth_logout_all(
 
 // --- Session List/Revoke Endpoints ---
 
-#[derive(Serialize)]
-struct SessionResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct SessionResponse {
     id: String,
     user_agent: Option<String>,
     ip_address: Option<String>,
@@ -545,7 +612,16 @@ struct SessionResponse {
 }
 
 /// GET /auth/sessions — list active sessions for the current user
-async fn list_sessions(
+#[utoipa::path(
+    get,
+    path = "/auth/sessions",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Active sessions", body = Vec<SessionResponse>),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn list_sessions(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<Vec<SessionResponse>>, Error> {
@@ -584,7 +660,18 @@ async fn list_sessions(
 }
 
 /// DELETE /auth/sessions/{id} — revoke a specific session
-async fn revoke_session(
+#[utoipa::path(
+    delete,
+    path = "/auth/sessions/{id}",
+    tag = "auth",
+    params(("id" = String, Path, description = "Session ID to revoke")),
+    responses(
+        (status = 204, description = "Session revoked"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 404, description = "Session not found", body = ErrorBody),
+    )
+)]
+pub(crate) async fn revoke_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     jar: CookieJar,
@@ -623,7 +710,16 @@ async fn revoke_session(
 // --- Profile Endpoints ---
 
 /// GET /auth/me — current user profile
-async fn auth_me(
+#[utoipa::path(
+    get,
+    path = "/auth/me",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Current user info", body = MeResponse),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn auth_me(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<MeResponse>, Error> {
@@ -636,7 +732,17 @@ async fn auth_me(
 }
 
 /// PATCH /auth/me — update display name
-async fn update_display_name(
+#[utoipa::path(
+    patch,
+    path = "/auth/me",
+    tag = "auth",
+    request_body = UpdateDisplayNameRequest,
+    responses(
+        (status = 200, description = "Display name updated", body = MeResponse),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn update_display_name(
     State(state): State<AppState>,
     jar: CookieJar,
     Json(body): Json<UpdateDisplayNameRequest>,
@@ -672,7 +778,19 @@ async fn update_display_name(
 }
 
 /// PATCH /auth/me/username — change username
-async fn update_username(
+#[utoipa::path(
+    patch,
+    path = "/auth/me/username",
+    tag = "auth",
+    request_body = UpdateUsernameRequest,
+    responses(
+        (status = 200, description = "Username updated", body = MeResponse),
+        (status = 400, description = "Invalid username or on cooldown", body = ErrorBody),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 409, description = "Username taken", body = ErrorBody),
+    )
+)]
+pub(crate) async fn update_username(
     State(state): State<AppState>,
     jar: CookieJar,
     Json(body): Json<UpdateUsernameRequest>,
@@ -751,7 +869,16 @@ async fn update_username(
 }
 
 /// DELETE /auth/me — delete account
-async fn delete_account(
+#[utoipa::path(
+    delete,
+    path = "/auth/me",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Account deleted"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn delete_account(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), Error> {
@@ -788,7 +915,16 @@ async fn delete_account(
 }
 
 /// GET /auth/me/links — list linked providers
-async fn list_links(
+#[utoipa::path(
+    get,
+    path = "/auth/me/links",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Linked OAuth providers", body = Vec<LinkResponse>),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn list_links(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<Vec<LinkResponse>>, Error> {
@@ -810,7 +946,18 @@ async fn list_links(
 // --- Provider Linking ---
 
 /// GET /auth/link/{provider} — start linking a new provider
-async fn link_redirect(
+#[utoipa::path(
+    get,
+    path = "/auth/link/{provider}",
+    tag = "auth",
+    params(("provider" = String, Path, description = "OAuth provider name")),
+    responses(
+        (status = 302, description = "Redirect to provider for linking"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 404, description = "Unknown provider", body = ErrorBody),
+    )
+)]
+pub(crate) async fn link_redirect(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
     jar: CookieJar,
@@ -842,7 +989,17 @@ async fn link_redirect(
 }
 
 /// GET /auth/link/{provider}/callback — complete linking
-async fn link_callback(
+#[utoipa::path(
+    get,
+    path = "/auth/link/{provider}/callback",
+    tag = "auth",
+    params(("provider" = String, Path, description = "OAuth provider name")),
+    responses(
+        (status = 302, description = "Redirect after link callback"),
+        (status = 400, description = "Invalid OAuth state or code", body = ErrorBody),
+    )
+)]
+pub(crate) async fn link_callback(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
     Query(query): Query<CallbackQuery>,
@@ -924,7 +1081,18 @@ async fn link_callback(
 }
 
 /// DELETE /auth/link/{provider} — unlink provider
-async fn unlink_provider(
+#[utoipa::path(
+    delete,
+    path = "/auth/link/{provider}",
+    tag = "auth",
+    params(("provider" = String, Path, description = "OAuth provider name")),
+    responses(
+        (status = 204, description = "Provider unlinked"),
+        (status = 400, description = "Cannot unlink last provider", body = ErrorBody),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn unlink_provider(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
     jar: CookieJar,

@@ -114,9 +114,11 @@ pub enum Error {
     Internal(#[from] anyhow::Error),
 }
 
-#[derive(Serialize)]
-struct ErrorBody {
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ErrorBody {
+    /// Short, stable error code (e.g., "invalid_token", "forbidden").
     error: String,
+    /// Human-readable error description (omitted for server errors).
     #[serde(skip_serializing_if = "Option::is_none")]
     error_description: Option<String>,
 }

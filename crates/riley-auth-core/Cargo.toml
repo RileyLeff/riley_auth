@@ -29,6 +29,7 @@ uuid.workspace = true
 url.workspace = true
 dirs.workspace = true
 metrics.workspace = true
+utoipa.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

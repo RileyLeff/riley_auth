@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use riley_auth_core::config::validate_scope_name;
 use riley_auth_core::db;
-use riley_auth_core::error::Error;
+use riley_auth_core::error::{Error, ErrorBody};
 use riley_auth_core::jwt;
 use riley_auth_core::webhooks;
 
@@ -30,7 +30,7 @@ pub fn router() -> Router<AppState> {
 // --- Types ---
 
 #[derive(Deserialize)]
-struct PaginationQuery {
+pub(crate) struct PaginationQuery {
     #[serde(default = "default_limit")]
     limit: i64,
     #[serde(default)]
@@ -40,13 +40,13 @@ struct PaginationQuery {
 fn default_limit() -> i64 { 50 }
 const MAX_LIMIT: i64 = 500;
 
-#[derive(Deserialize)]
-struct UpdateRoleRequest {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct UpdateRoleRequest {
     role: String,
 }
 
-#[derive(Deserialize)]
-struct RegisterClientRequest {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct RegisterClientRequest {
     name: String,
     redirect_uris: Vec<String>,
     #[serde(default)]
@@ -59,8 +59,8 @@ struct RegisterClientRequest {
     backchannel_logout_session_required: bool,
 }
 
-#[derive(Serialize)]
-struct ClientResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ClientResponse {
     id: String,
     name: String,
     client_id: String,
@@ -72,8 +72,8 @@ struct ClientResponse {
     backchannel_logout_session_required: bool,
 }
 
-#[derive(Serialize)]
-struct RegisterClientResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct RegisterClientResponse {
     id: String,
     name: String,
     client_id: String,
@@ -115,7 +115,21 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims,
 
 // --- User admin endpoints ---
 
-async fn list_users(
+#[utoipa::path(
+    get,
+    path = "/admin/users",
+    tag = "admin",
+    params(
+        ("limit" = Option<i64>, Query, description = "Max results (default 50, max 500)"),
+        ("offset" = Option<i64>, Query, description = "Offset for pagination"),
+    ),
+    responses(
+        (status = 200, description = "Paginated user list"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+    )
+)]
+pub(crate) async fn list_users(
     State(state): State<AppState>,
     Query(query): Query<PaginationQuery>,
     jar: CookieJar,
@@ -139,7 +153,19 @@ async fn list_users(
     Ok(Json(response))
 }
 
-async fn get_user(
+#[utoipa::path(
+    get,
+    path = "/admin/users/{id}",
+    tag = "admin",
+    params(("id" = Uuid, Path, description = "User ID")),
+    responses(
+        (status = 200, description = "User details with linked providers"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+        (status = 404, description = "User not found", body = ErrorBody),
+    )
+)]
+pub(crate) async fn get_user(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     jar: CookieJar,
@@ -166,7 +192,21 @@ async fn get_user(
     })))
 }
 
-async fn update_role(
+#[utoipa::path(
+    patch,
+    path = "/admin/users/{id}/role",
+    tag = "admin",
+    params(("id" = Uuid, Path, description = "User ID")),
+    request_body = UpdateRoleRequest,
+    responses(
+        (status = 200, description = "Role updated"),
+        (status = 400, description = "Invalid role or last admin", body = ErrorBody),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+        (status = 404, description = "User not found", body = ErrorBody),
+    )
+)]
+pub(crate) async fn update_role(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     jar: CookieJar,
@@ -202,7 +242,20 @@ async fn update_role(
     }
 }
 
-async fn delete_user(
+#[utoipa::path(
+    delete,
+    path = "/admin/users/{id}",
+    tag = "admin",
+    params(("id" = Uuid, Path, description = "User ID")),
+    responses(
+        (status = 200, description = "User soft-deleted"),
+        (status = 400, description = "Cannot delete last admin", body = ErrorBody),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+        (status = 404, description = "User not found", body = ErrorBody),
+    )
+)]
+pub(crate) async fn delete_user(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     jar: CookieJar,
@@ -233,7 +286,17 @@ async fn delete_user(
 
 // --- Client admin endpoints ---
 
-async fn list_clients(
+#[utoipa::path(
+    get,
+    path = "/admin/clients",
+    tag = "admin",
+    responses(
+        (status = 200, description = "All registered OAuth clients", body = Vec<ClientResponse>),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+    )
+)]
+pub(crate) async fn list_clients(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<Vec<ClientResponse>>, Error> {
@@ -255,7 +318,19 @@ async fn list_clients(
     Ok(Json(response))
 }
 
-async fn register_client(
+#[utoipa::path(
+    post,
+    path = "/admin/clients",
+    tag = "admin",
+    request_body = RegisterClientRequest,
+    responses(
+        (status = 201, description = "Client registered (includes secret)", body = RegisterClientResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+    )
+)]
+pub(crate) async fn register_client(
     State(state): State<AppState>,
     jar: CookieJar,
     Json(body): Json<RegisterClientRequest>,
@@ -353,7 +428,19 @@ async fn register_client(
     })))
 }
 
-async fn remove_client(
+#[utoipa::path(
+    delete,
+    path = "/admin/clients/{id}",
+    tag = "admin",
+    params(("id" = Uuid, Path, description = "Client internal ID")),
+    responses(
+        (status = 200, description = "Client removed"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+        (status = 404, description = "Client not found", body = ErrorBody),
+    )
+)]
+pub(crate) async fn remove_client(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     jar: CookieJar,
@@ -370,8 +457,8 @@ async fn remove_client(
 
 // --- Webhook admin endpoints ---
 
-#[derive(Deserialize)]
-struct RegisterWebhookRequest {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct RegisterWebhookRequest {
     url: String,
     events: Vec<String>,
     #[serde(default)]
@@ -379,8 +466,8 @@ struct RegisterWebhookRequest {
 }
 
 /// Full response including secret — returned only at creation time.
-#[derive(Serialize)]
-struct WebhookResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct WebhookResponse {
     id: String,
     client_id: Option<String>,
     url: String,
@@ -405,8 +492,8 @@ impl From<db::Webhook> for WebhookResponse {
 }
 
 /// Redacted response for list endpoint — secret is never exposed.
-#[derive(Serialize)]
-struct WebhookListResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct WebhookListResponse {
     id: String,
     client_id: Option<String>,
     url: String,
@@ -428,8 +515,8 @@ impl From<db::Webhook> for WebhookListResponse {
     }
 }
 
-#[derive(Serialize)]
-struct DeliveryResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct DeliveryResponse {
     id: String,
     webhook_id: String,
     event_type: String,
@@ -453,7 +540,19 @@ impl From<db::WebhookDelivery> for DeliveryResponse {
     }
 }
 
-async fn register_webhook(
+#[utoipa::path(
+    post,
+    path = "/admin/webhooks",
+    tag = "admin",
+    request_body = RegisterWebhookRequest,
+    responses(
+        (status = 201, description = "Webhook registered (includes secret)", body = WebhookResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+    )
+)]
+pub(crate) async fn register_webhook(
     State(state): State<AppState>,
     jar: CookieJar,
     Json(body): Json<RegisterWebhookRequest>,
@@ -497,7 +596,17 @@ async fn register_webhook(
     Ok((StatusCode::CREATED, Json(webhook.into())))
 }
 
-async fn list_webhooks(
+#[utoipa::path(
+    get,
+    path = "/admin/webhooks",
+    tag = "admin",
+    responses(
+        (status = 200, description = "All registered webhooks", body = Vec<WebhookListResponse>),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+    )
+)]
+pub(crate) async fn list_webhooks(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<Vec<WebhookListResponse>>, Error> {
@@ -509,7 +618,19 @@ async fn list_webhooks(
     Ok(Json(response))
 }
 
-async fn remove_webhook(
+#[utoipa::path(
+    delete,
+    path = "/admin/webhooks/{id}",
+    tag = "admin",
+    params(("id" = Uuid, Path, description = "Webhook ID")),
+    responses(
+        (status = 200, description = "Webhook removed"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+        (status = 404, description = "Webhook not found", body = ErrorBody),
+    )
+)]
+pub(crate) async fn remove_webhook(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     jar: CookieJar,
@@ -524,7 +645,23 @@ async fn remove_webhook(
     Ok(StatusCode::OK)
 }
 
-async fn list_deliveries(
+#[utoipa::path(
+    get,
+    path = "/admin/webhooks/{id}/deliveries",
+    tag = "admin",
+    params(
+        ("id" = Uuid, Path, description = "Webhook ID"),
+        ("limit" = Option<i64>, Query, description = "Max results (default 50, max 500)"),
+        ("offset" = Option<i64>, Query, description = "Offset for pagination"),
+    ),
+    responses(
+        (status = 200, description = "Webhook delivery history", body = Vec<DeliveryResponse>),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+        (status = 404, description = "Webhook not found", body = ErrorBody),
+    )
+)]
+pub(crate) async fn list_deliveries(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Query(query): Query<PaginationQuery>,

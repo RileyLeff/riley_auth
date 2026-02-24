@@ -64,6 +64,7 @@ metrics-exporter-prometheus = { version = "0.16", default-features = false }
 # Utilities
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 url = "2"
+utoipa = { version = "5", features = ["axum_extras", "uuid"] }
 dirs = "6.0"
 
 # Workspace crates

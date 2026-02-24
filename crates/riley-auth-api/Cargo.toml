@@ -33,6 +33,7 @@ reqwest.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 subtle = "2"
+utoipa.workspace = true
 redis = { workspace = true, optional = true }
 
 [features]

@@ -9,7 +9,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use riley_auth_core::config::RateLimitTiersConfig;
-use riley_auth_core::error::Error;
+use riley_auth_core::error::{Error, ErrorBody};
 
 pub mod admin;
 pub mod auth;
@@ -42,12 +42,20 @@ pub fn extract_client_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>, behind_pr
     peer_ip
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct HealthResponse {
     status: &'static str,
     version: &'static str,
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "Server is healthy", body = HealthResponse),
+    )
+)]
 async fn health(axum::extract::State(_state): axum::extract::State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
@@ -55,6 +63,14 @@ async fn health(axum::extract::State(_state): axum::extract::State<AppState>) ->
     })
 }
 
+#[utoipa::path(
+    get,
+    path = "/.well-known/jwks.json",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "JSON Web Key Set"),
+    )
+)]
 async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> (HeaderMap, Json<serde_json::Value>) {
     let mut headers = HeaderMap::new();
     let max_age = state.config.jwt.jwks_cache_max_age_secs;
@@ -66,6 +82,14 @@ async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> (H
 }
 
 /// OpenID Connect Discovery document (per OpenID Connect Discovery 1.0).
+#[utoipa::path(
+    get,
+    path = "/.well-known/openid-configuration",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "OIDC discovery document"),
+    )
+)]
 async fn openid_configuration(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
     let base = state.config.server.public_url.trim_end_matches('/');
     let mut scope_names: Vec<&str> = vec!["openid", "profile", "email"];
@@ -101,6 +125,114 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
     }))
 }
 
+// --- OpenAPI ---
+
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(
+        title = "riley_auth",
+        description = "OAuth 2.0 + OpenID Connect identity provider",
+    ),
+    paths(
+        // Discovery
+        health,
+        jwks,
+        openid_configuration,
+        // Auth (OAuth consumer side)
+        auth::auth_redirect,
+        auth::auth_callback,
+        auth::auth_setup,
+        auth::link_confirm,
+        auth::auth_refresh,
+        auth::auth_logout,
+        auth::auth_logout_all,
+        auth::list_sessions,
+        auth::revoke_session,
+        auth::auth_me,
+        auth::update_display_name,
+        auth::update_username,
+        auth::delete_account,
+        auth::list_links,
+        auth::link_redirect,
+        auth::link_callback,
+        auth::unlink_provider,
+        // Admin
+        admin::list_users,
+        admin::get_user,
+        admin::update_role,
+        admin::delete_user,
+        admin::list_clients,
+        admin::register_client,
+        admin::remove_client,
+        admin::register_webhook,
+        admin::list_webhooks,
+        admin::remove_webhook,
+        admin::list_deliveries,
+        // OAuth provider
+        oauth_provider::authorize,
+        oauth_provider::consent,
+        oauth_provider::consent_decision,
+        oauth_provider::token,
+        oauth_provider::revoke,
+        oauth_provider::introspect,
+        oauth_provider::userinfo,
+    ),
+    components(schemas(
+        ErrorBody,
+        HealthResponse,
+        // Auth types
+        auth::SetupRequest,
+        auth::MeResponse,
+        auth::LinkResponse,
+        auth::UpdateDisplayNameRequest,
+        auth::UpdateUsernameRequest,
+        // Admin types
+        admin::UpdateRoleRequest,
+        admin::RegisterClientRequest,
+        admin::ClientResponse,
+        admin::RegisterClientResponse,
+        admin::RegisterWebhookRequest,
+        admin::WebhookResponse,
+        admin::WebhookListResponse,
+        admin::DeliveryResponse,
+        // OAuth provider types
+        oauth_provider::TokenRequest,
+        oauth_provider::TokenResponse,
+        oauth_provider::ConsentResponse,
+        oauth_provider::ConsentClient,
+        oauth_provider::ConsentScope,
+        oauth_provider::ConsentDecision,
+        oauth_provider::RevokeRequest,
+        oauth_provider::IntrospectRequest,
+    )),
+    tags(
+        (name = "auth", description = "Authentication (OAuth consumer side)"),
+        (name = "oauth", description = "OAuth/OIDC provider endpoints"),
+        (name = "admin", description = "Admin API"),
+        (name = "discovery", description = "OIDC discovery and JWKS"),
+    ),
+    security(
+        ("bearer" = []),
+    )
+)]
+struct ApiDoc;
+
+#[utoipa::path(
+    get,
+    path = "/openapi.json",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "OpenAPI specification"),
+    )
+)]
+async fn openapi_spec() -> impl axum::response::IntoResponse {
+    let spec = <ApiDoc as utoipa::OpenApi>::openapi().to_json().unwrap();
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        spec,
+    )
+}
+
 /// CSRF protection: require `X-Requested-With` header on non-safe HTTP methods.
 /// Simple form submissions and cross-origin requests cannot set custom headers
 /// without a CORS preflight, so this blocks CSRF from subdomains or foreign origins.
@@ -131,6 +263,7 @@ fn base_router() -> Router<AppState> {
 
     Router::new()
         .route("/health", get(health))
+        .route("/openapi.json", get(openapi_spec))
         .route("/metrics", get(metrics_endpoint))
         .route("/.well-known/jwks.json", get(jwks))
         .route("/.well-known/openid-configuration", get(openid_configuration))
