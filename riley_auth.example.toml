@@ -141,6 +141,14 @@ client_secret = "env:GITHUB_CLIENT_SECRET"
 # cleanup_interval_secs = 3600                 # How often to run cleanup tasks (default: 3600 = 1 hour)
 # webhook_delivery_retention_days = 7          # Days to keep webhook delivery records (default: 7)
 
+# Optional: Prometheus metrics endpoint.
+# When enabled, GET /metrics returns Prometheus text format.
+# Omit or set enabled = false to disable (default).
+
+# [metrics]
+# enabled = true                               # Enable the /metrics endpoint (default: false)
+# bearer_token = "env:METRICS_TOKEN"           # Optional: protect /metrics with a Bearer token
+
 [usernames]
 min_length = 3                             # Minimum username length (default: 3)
 max_length = 24                            # Maximum username length (default: 24)
