@@ -3479,7 +3479,7 @@ fn oidc_discovery_document() {
         // claims_supported
         assert_eq!(
             doc["claims_supported"],
-            serde_json::json!(["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at"])
+            serde_json::json!(["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at", "auth_time"])
         );
 
         // userinfo_endpoint
@@ -5503,6 +5503,141 @@ fn nonce_preserved_across_refresh() {
         let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
         let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         assert_eq!(claims["nonce"], "preserve-me-nonce-xyz", "nonce should survive multiple refresh rotations");
+    });
+}
+
+#[test]
+#[ignore]
+fn auth_time_present_and_preserved_across_refresh() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("authtime_user", "user").await;
+
+        // Register client
+        let client_id_str = "authtime-client";
+        let client_secret = "authtime-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "AuthTime Client",
+            client_id_str,
+            &secret_hash,
+            &["https://authtime.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let before = chrono::Utc::now().timestamp();
+
+        // Authorize with openid scope
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://authtime.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid read:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code for tokens
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://authtime.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let after = chrono::Utc::now().timestamp();
+
+        // Verify auth_time in initial ID token
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let id_token_str = token_resp["id_token"].as_str().expect("id_token missing");
+        let parts: Vec<&str> = id_token_str.split('.').collect();
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        let auth_time = claims["auth_time"].as_i64().expect("auth_time must be present in ID token");
+        assert!(auth_time >= before, "auth_time should be >= test start time");
+        assert!(auth_time <= after, "auth_time should be <= test end time");
+
+        // Refresh the token
+        let refresh_token = token_resp["refresh_token"].as_str().unwrap().to_string();
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp: serde_json::Value = resp.json().await.unwrap();
+        let refreshed_id_token = refresh_resp["id_token"].as_str().expect("id_token missing after refresh");
+        let parts: Vec<&str> = refreshed_id_token.split('.').collect();
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        let refreshed_auth_time = claims["auth_time"].as_i64().expect("auth_time must survive refresh");
+        assert_eq!(auth_time, refreshed_auth_time, "auth_time must be preserved through token rotation");
+
+        // Second refresh — verify auth_time still preserved
+        let refresh_token2 = refresh_resp["refresh_token"].as_str().unwrap().to_string();
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token2),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp2: serde_json::Value = resp.json().await.unwrap();
+        let id_token3 = refresh_resp2["id_token"].as_str().expect("id_token missing after second refresh");
+        let parts: Vec<&str> = id_token3.split('.').collect();
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        let auth_time3 = claims["auth_time"].as_i64().expect("auth_time must survive multiple refreshes");
+        assert_eq!(auth_time, auth_time3, "auth_time must survive multiple refresh rotations");
     });
 }
 

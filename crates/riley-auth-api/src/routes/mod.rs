@@ -90,7 +90,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "backchannel_logout_supported": true,
         "backchannel_logout_session_supported": false,
         "scopes_supported": scope_names,
-        "claims_supported": ["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at"],
+        "claims_supported": ["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at", "auth_time"],
         "code_challenge_methods_supported": ["S256"],
     }))
 }
