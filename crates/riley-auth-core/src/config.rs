@@ -12,7 +12,6 @@ pub struct Config {
     pub jwt: JwtConfig,
     #[serde(default)]
     pub oauth: OAuthProvidersConfig,
-    pub storage: Option<StorageConfig>,
     #[serde(default)]
     pub usernames: UsernameConfig,
     #[serde(default)]
@@ -177,19 +176,6 @@ pub enum AccountMergePolicy {
 pub struct OAuthProviderConfig {
     pub client_id: ConfigValue,
     pub client_secret: ConfigValue,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct StorageConfig {
-    #[serde(default = "default_storage_backend")]
-    pub backend: String,
-    pub bucket: String,
-    #[serde(default = "default_region")]
-    pub region: String,
-    pub endpoint: Option<String>,
-    pub public_url_base: String,
-    #[serde(default = "default_max_avatar_size")]
-    pub max_avatar_size: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -566,9 +552,6 @@ fn default_access_ttl() -> u64 { 900 }        // 15 minutes
 fn default_refresh_ttl() -> u64 { 2_592_000 } // 30 days
 fn default_issuer() -> String { "riley-auth".to_string() }
 fn default_authz_code_ttl() -> u64 { 300 }    // 5 minutes
-fn default_storage_backend() -> String { "s3".to_string() }
-fn default_region() -> String { "auto".to_string() }
-fn default_max_avatar_size() -> u64 { 2_097_152 } // 2MB
 fn default_min_length() -> usize { 3 }
 fn default_max_length() -> usize { 24 }
 fn default_pattern() -> String { r"^[a-zA-Z][a-zA-Z0-9_-]*$".to_string() }
@@ -650,11 +633,6 @@ client_secret = "env:GOOGLE_SECRET"
 client_id = "github-id"
 client_secret = "github-secret"
 
-[storage]
-bucket = "avatars"
-endpoint = "https://s3.example.com"
-public_url_base = "https://cdn.example.com"
-
 [usernames]
 min_length = 4
 max_length = 20
@@ -683,7 +661,6 @@ public = { requests = 500, window_secs = 60 }
         assert_eq!(config.jwt.jwks_cache_max_age_secs, 1800);
         assert!(config.oauth.google.is_some());
         assert_eq!(config.oauth.consent_url.as_deref(), Some("https://auth.example.com/consent"));
-        assert!(config.storage.is_some());
         assert_eq!(config.usernames.reserved.len(), 2);
         assert_eq!(config.scopes.definitions.len(), 2);
         assert_eq!(config.scopes.definitions[0].name, "read:profile");

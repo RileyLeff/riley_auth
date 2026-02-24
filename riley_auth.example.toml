@@ -83,17 +83,6 @@ client_secret = "env:GOOGLE_CLIENT_SECRET"
 client_id = "env:GITHUB_CLIENT_ID"
 client_secret = "env:GITHUB_CLIENT_SECRET"
 
-# Optional: S3-compatible storage for avatar uploads.
-# Omit this section to disable avatar uploads.
-
-# [storage]
-# backend = "s3"                             # Storage backend (default: s3)
-# bucket = "avatars"                         # S3 bucket name
-# region = "auto"                            # S3 region (default: auto)
-# endpoint = "https://xxx.r2.cloudflarestorage.com"  # S3-compatible endpoint
-# public_url_base = "https://avatars.example.com"    # Public URL prefix for avatars
-# max_avatar_size = 2097152                  # Max upload size in bytes (default: 2097152 = 2MB)
-
 # Optional: Define scopes that OAuth clients can request.
 # Omit or leave empty for no scopes (backwards-compatible).
 

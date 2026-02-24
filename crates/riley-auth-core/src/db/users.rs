@@ -84,24 +84,6 @@ pub async fn update_username(
     Ok(user)
 }
 
-pub async fn update_user_avatar(
-    pool: &PgPool,
-    user_id: Uuid,
-    avatar_url: Option<&str>,
-) -> Result<User> {
-    let user = sqlx::query_as::<_, User>(
-        "UPDATE users SET avatar_url = $2, updated_at = now()
-         WHERE id = $1 AND deleted_at IS NULL
-         RETURNING *"
-    )
-    .bind(user_id)
-    .bind(avatar_url)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(Error::UserNotFound)?;
-    Ok(user)
-}
-
 /// Result of attempting to soft-delete a user.
 pub enum DeleteUserResult {
     /// Successfully deleted.

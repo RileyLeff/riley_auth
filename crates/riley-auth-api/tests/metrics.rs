@@ -57,7 +57,6 @@ fn metrics_test_config(
             jwks_cache_max_age_secs: 3600,
         },
         oauth: OAuthProvidersConfig::default(),
-        storage: None,
         usernames: UsernameConfig::default(),
         scopes: ScopesConfig {
             definitions: vec![ScopeDefinition {

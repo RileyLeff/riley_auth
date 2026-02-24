@@ -115,7 +115,6 @@ impl TestServer {
                 consent_url: Some("https://auth.example.com/consent".to_string()),
                 ..OAuthProvidersConfig::default()
             },
-            storage: None,
             usernames: UsernameConfig::default(),
             scopes: ScopesConfig {
                 definitions: vec![
