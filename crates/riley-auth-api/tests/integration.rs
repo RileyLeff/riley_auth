@@ -13,6 +13,8 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 
+use base64::Engine;
+
 use reqwest::{Client, StatusCode};
 use riley_auth_api::routes;
 use riley_auth_api::server::AppState;
@@ -2380,6 +2382,293 @@ fn consent_full_flow_via_authorize() {
         let token_body: serde_json::Value = token_resp.json().await.unwrap();
         assert!(token_body["access_token"].as_str().is_some());
         assert!(token_body["id_token"].as_str().is_some());
+    });
+}
+
+// --- Token Introspection (RFC 7662) ---
+
+#[test]
+#[ignore]
+fn introspect_active_token_via_post_body() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Create user and OAuth client
+        let (user, _, _) = s.create_user_with_session("introuser", "user").await;
+        let client_secret = "introspect-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        let oauth_client = db::create_client(
+            &s.db,
+            "Introspect Client",
+            "introspect-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Issue an access token for this client
+        let access_token = s.keys.sign_access_token_with_scopes(
+            &s.config.jwt,
+            &user.id.to_string(),
+            &user.username,
+            &user.role,
+            &oauth_client.client_id,
+            Some("openid read:profile"),
+        ).unwrap();
+
+        // Introspect via POST body credentials
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[
+                ("token", access_token.as_str()),
+                ("client_id", "introspect-client"),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["active"], true);
+        assert_eq!(body["sub"], user.id.to_string());
+        assert_eq!(body["username"], "introuser");
+        assert_eq!(body["aud"], "introspect-client");
+        assert_eq!(body["iss"], s.config.jwt.issuer);
+        assert_eq!(body["token_type"], "Bearer");
+        assert_eq!(body["scope"], "openid read:profile");
+        assert_eq!(body["client_id"], "introspect-client");
+        assert!(body["exp"].as_i64().is_some());
+        assert!(body["iat"].as_i64().is_some());
+    });
+}
+
+#[test]
+#[ignore]
+fn introspect_active_token_via_basic_auth() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (user, _, _) = s.create_user_with_session("introbasic", "user").await;
+        let client_secret = "basic-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        let oauth_client = db::create_client(
+            &s.db,
+            "Basic Auth Client",
+            "basic-auth-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let access_token = s.keys.sign_access_token_with_scopes(
+            &s.config.jwt,
+            &user.id.to_string(),
+            &user.username,
+            &user.role,
+            &oauth_client.client_id,
+            Some("openid"),
+        ).unwrap();
+
+        // Introspect via Basic auth
+        let credentials = base64::engine::general_purpose::STANDARD
+            .encode(format!("basic-auth-client:{client_secret}"));
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .header("authorization", format!("Basic {credentials}"))
+            .form(&[("token", access_token.as_str())])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["active"], true);
+        assert_eq!(body["sub"], user.id.to_string());
+    });
+}
+
+#[test]
+#[ignore]
+fn introspect_invalid_token_returns_inactive() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let client_secret = "introsecret2";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Introspect Client 2",
+            "introspect-client-2",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[
+                ("token", "this-is-not-a-valid-jwt"),
+                ("client_id", "introspect-client-2"),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["active"], false);
+    });
+}
+
+#[test]
+#[ignore]
+fn introspect_deleted_user_returns_inactive() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Create two users (need second admin so we can delete the first)
+        let (user, _, _) = s.create_user_with_session("introdel", "admin").await;
+        let (_admin2, _, _) = s.create_user_with_session("intoadmin2", "admin").await;
+
+        let client_secret = "introsecret3";
+        let secret_hash = jwt::hash_token(client_secret);
+        let oauth_client = db::create_client(
+            &s.db,
+            "Introspect Client 3",
+            "introspect-client-3",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Issue a token for the user
+        let access_token = s.keys.sign_access_token_with_scopes(
+            &s.config.jwt,
+            &user.id.to_string(),
+            &user.username,
+            &user.role,
+            &oauth_client.client_id,
+            Some("openid"),
+        ).unwrap();
+
+        // Verify it's active
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[
+                ("token", access_token.as_str()),
+                ("client_id", "introspect-client-3"),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["active"], true);
+
+        // Soft-delete the user
+        db::soft_delete_user(&s.db, user.id).await.unwrap();
+
+        // Now introspect should return inactive
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[
+                ("token", access_token.as_str()),
+                ("client_id", "introspect-client-3"),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["active"], false);
+    });
+}
+
+#[test]
+#[ignore]
+fn introspect_rejects_invalid_client_credentials() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let secret_hash = jwt::hash_token("real-secret");
+        db::create_client(
+            &s.db,
+            "Introspect Client 4",
+            "introspect-client-4",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Wrong client secret
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[
+                ("token", "some-token"),
+                ("client_id", "introspect-client-4"),
+                ("client_secret", "wrong-secret"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // No credentials at all
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .form(&[("token", "some-token")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
+
+#[test]
+#[ignore]
+fn introspect_discovery_document_updated() {
+    let s = server();
+    runtime().block_on(async {
+        let client = s.client();
+        let resp = client
+            .get(s.url("/.well-known/openid-configuration"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let introspection_endpoint = body["introspection_endpoint"].as_str().unwrap();
+        assert!(introspection_endpoint.ends_with("/oauth/introspect"));
+        let auth_methods = body["introspection_endpoint_auth_methods_supported"].as_array().unwrap();
+        assert!(auth_methods.contains(&serde_json::json!("client_secret_post")));
+        assert!(auth_methods.contains(&serde_json::json!("client_secret_basic")));
     });
 }
 

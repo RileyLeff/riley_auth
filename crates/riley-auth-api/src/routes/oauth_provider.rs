@@ -99,6 +99,14 @@ pub struct RevokeRequest {
     client_secret: String,
 }
 
+#[derive(Deserialize)]
+pub struct IntrospectRequest {
+    token: String,
+    // Client credentials via POST body (alternative to Basic auth)
+    client_id: Option<String>,
+    client_secret: Option<String>,
+}
+
 /// OAuth protocol routes — NOT CSRF-protected.
 /// These are called by external OAuth clients (not browser requests with cookies).
 pub fn router() -> Router<AppState> {
@@ -106,6 +114,7 @@ pub fn router() -> Router<AppState> {
         .route("/oauth/authorize", get(authorize))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
+        .route("/oauth/introspect", post(introspect))
         .route("/oauth/userinfo", get(userinfo).post(userinfo))
 }
 
@@ -864,6 +873,94 @@ async fn revoke(
     }
 
     Ok(StatusCode::OK)
+}
+
+/// POST /oauth/introspect — Token Introspection (RFC 7662)
+///
+/// Allows registered OAuth clients to validate tokens and retrieve their claims.
+/// Accepts client authentication via HTTP Basic auth or POST body (client_id + client_secret).
+/// Returns `{"active": false}` for any invalid, expired, or revoked token.
+async fn introspect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(body): Form<IntrospectRequest>,
+) -> Result<Json<serde_json::Value>, Error> {
+    // Authenticate the client via Basic auth or POST body credentials
+    let (client_id_str, client_secret) = extract_client_credentials(&headers, &body)?;
+
+    let client = db::find_client_by_client_id(&state.db, &client_id_str)
+        .await?
+        .ok_or(Error::InvalidClient)?;
+
+    let secret_hash = jwt::hash_token(&client_secret);
+    if secret_hash.as_bytes().ct_eq(client.client_secret_hash.as_bytes()).unwrap_u8() == 0 {
+        return Err(Error::InvalidClient);
+    }
+
+    // Decode and verify the token — any failure means inactive
+    let token_data = match state.keys.verify_access_token(&state.config.jwt, &body.token) {
+        Ok(data) => data,
+        Err(_) => return Ok(Json(serde_json::json!({"active": false}))),
+    };
+
+    let claims = &token_data.claims;
+
+    // Check the user still exists and is not soft-deleted
+    let user_id: uuid::Uuid = match claims.sub.parse() {
+        Ok(id) => id,
+        Err(_) => return Ok(Json(serde_json::json!({"active": false}))),
+    };
+
+    if db::find_user_by_id(&state.db, user_id).await?.is_none() {
+        return Ok(Json(serde_json::json!({"active": false})));
+    }
+
+    // Build RFC 7662 response
+    let mut response = serde_json::json!({
+        "active": true,
+        "sub": claims.sub,
+        "aud": claims.aud,
+        "iss": claims.iss,
+        "exp": claims.exp,
+        "iat": claims.iat,
+        "username": claims.username,
+        "token_type": "Bearer",
+        "client_id": claims.aud,
+    });
+
+    if let Some(ref scope) = claims.scope {
+        response["scope"] = serde_json::Value::String(scope.clone());
+    }
+
+    Ok(Json(response))
+}
+
+/// Extract client credentials from Basic auth header or POST body.
+fn extract_client_credentials(
+    headers: &HeaderMap,
+    body: &IntrospectRequest,
+) -> Result<(String, String), Error> {
+    // Try Basic auth first
+    if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
+        if auth_header.len() > 6 && auth_header[..6].eq_ignore_ascii_case("basic ") {
+            let decoded = URL_SAFE_NO_PAD
+                .decode(&auth_header[6..])
+                .or_else(|_| {
+                    // Standard base64 (with padding) is more common for Basic auth
+                    base64::engine::general_purpose::STANDARD.decode(&auth_header[6..])
+                })
+                .map_err(|_| Error::InvalidClient)?;
+            let decoded_str = String::from_utf8(decoded).map_err(|_| Error::InvalidClient)?;
+            let (id, secret) = decoded_str.split_once(':').ok_or(Error::InvalidClient)?;
+            return Ok((id.to_string(), secret.to_string()));
+        }
+    }
+
+    // Fall back to POST body credentials
+    match (&body.client_id, &body.client_secret) {
+        (Some(id), Some(secret)) => Ok((id.clone(), secret.clone())),
+        _ => Err(Error::InvalidClient),
+    }
 }
 
 /// GET/POST /oauth/userinfo — OIDC UserInfo endpoint (OpenID Connect Core 1.0 §5.3)
