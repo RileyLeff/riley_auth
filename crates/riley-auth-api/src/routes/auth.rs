@@ -698,6 +698,11 @@ async fn delete_account(
     let claims = extract_user(&state, &jar)?;
     let user_id = claims.sub_uuid()?;
 
+    // Dispatch back-channel logout BEFORE soft delete (which deletes tokens)
+    webhooks::dispatch_backchannel_logout(
+        &state.db, &state.keys, &state.config, &state.http_client, user_id,
+    ).await;
+
     match db::soft_delete_user(&state.db, user_id).await? {
         db::DeleteUserResult::Deleted => {}
         db::DeleteUserResult::LastAdmin => {

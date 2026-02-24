@@ -186,6 +186,8 @@ async fn main() -> anyhow::Result<()> {
             let user = db::find_user_by_username(&pool, &username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("user '{}' not found", username))?;
+            // Dispatch back-channel logout BEFORE deleting tokens
+            dispatch_backchannel_logout_cli(&config, &pool, user.id).await;
             db::delete_all_refresh_tokens(&pool, user.id).await?;
             println!("All refresh tokens revoked for {}", username);
         }
@@ -193,6 +195,8 @@ async fn main() -> anyhow::Result<()> {
             let user = db::find_user_by_username(&pool, &username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("user '{}' not found", username))?;
+            // Dispatch back-channel logout BEFORE soft delete (which deletes tokens)
+            dispatch_backchannel_logout_cli(&config, &pool, user.id).await;
             match db::soft_delete_user(&pool, user.id).await? {
                 db::DeleteUserResult::Deleted => println!("User {} deleted (anonymized)", username),
                 db::DeleteUserResult::LastAdmin => {
@@ -344,4 +348,26 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Best-effort backchannel logout dispatch for CLI commands.
+/// Loads JWT keys and builds an HTTP client, then dispatches.
+/// Warns and continues if keys are unavailable (e.g., CLI on a box without signing keys).
+async fn dispatch_backchannel_logout_cli(
+    config: &riley_auth_core::config::Config,
+    pool: &sqlx::PgPool,
+    user_id: uuid::Uuid,
+) {
+    let keys = match Keys::from_pem_files(
+        &config.jwt.private_key_path,
+        &config.jwt.public_key_path,
+    ) {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::warn!("skipping backchannel logout (cannot load JWT keys: {e})");
+            return;
+        }
+    };
+    let http_client = webhooks::build_webhook_client(config.webhooks.allow_private_ips);
+    webhooks::dispatch_backchannel_logout(pool, &keys, config, &http_client, user_id).await;
 }
