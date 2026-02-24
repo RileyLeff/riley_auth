@@ -2019,7 +2019,13 @@ fn oidc_discovery_document() {
         // claims_supported
         assert_eq!(
             doc["claims_supported"],
-            serde_json::json!(["sub", "name", "preferred_username", "picture"])
+            serde_json::json!(["sub", "name", "preferred_username", "picture", "email", "updated_at"])
+        );
+
+        // userinfo_endpoint
+        assert_eq!(
+            doc["userinfo_endpoint"],
+            "http://localhost:3000/oauth/userinfo"
         );
     });
 }
@@ -3040,6 +3046,244 @@ fn oidc_no_id_token_without_openid_scope() {
                 || refresh_resp["id_token"].is_null(),
             "id_token must be absent on refresh when openid scope was not in original grant"
         );
+    });
+}
+
+#[test]
+#[ignore]
+fn userinfo_full_flow_with_scopes() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Create user with an email on the oauth_link
+        let (user, access_token, _) = s.create_user_with_session("userinfouser", "user").await;
+
+        // Register an OAuth client with openid, profile, and email scopes
+        let client_id_str = "userinfo-client";
+        let client_secret = "userinfo-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "UserInfo Test Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Authorize with openid + read:profile scopes
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("state", "userinfo-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("scope", "openid read:profile"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code for tokens
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let bearer_token = token_resp["access_token"].as_str().unwrap();
+
+        // GET /oauth/userinfo with Bearer token
+        let resp = client
+            .get(s.url("/oauth/userinfo"))
+            .header("authorization", format!("Bearer {bearer_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let userinfo: serde_json::Value = resp.json().await.unwrap();
+
+        // "sub" is always returned
+        assert_eq!(userinfo["sub"], user.id.to_string());
+
+        // "profile" scope was not granted (read:profile is a custom scope, not "profile")
+        // so preferred_username, name, picture, updated_at should be absent
+        assert!(userinfo.get("preferred_username").is_none());
+
+        // "email" scope was not granted, so email should be absent
+        assert!(userinfo.get("email").is_none());
+
+        // POST /oauth/userinfo also works
+        let resp = client
+            .post(s.url("/oauth/userinfo"))
+            .header("authorization", format!("Bearer {bearer_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let userinfo_post: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(userinfo_post["sub"], user.id.to_string());
+    });
+}
+
+#[test]
+#[ignore]
+fn userinfo_with_profile_and_email_scopes() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Create user
+        let (user, access_token, _) = s.create_user_with_session("profileuser", "user").await;
+
+        // Register a client that allows "profile" and "email" scopes.
+        // We need to add "profile" and "email" to the scope definitions first.
+        // The test config only has read:profile and write:profile.
+        // Instead, we'll sign a token directly with the scopes we want.
+        let client_id_str = "profile-email-client";
+        let client_secret = "profile-email-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Profile Email Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Sign a client-scoped access token directly with profile + email scopes
+        let bearer_token = s
+            .keys
+            .sign_access_token_with_scopes(
+                &s.config.jwt,
+                &user.id.to_string(),
+                &user.username,
+                &user.role,
+                client_id_str,
+                Some("openid profile email"),
+            )
+            .unwrap();
+
+        // GET /oauth/userinfo
+        let resp = client
+            .get(s.url("/oauth/userinfo"))
+            .header("authorization", format!("Bearer {bearer_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let userinfo: serde_json::Value = resp.json().await.unwrap();
+
+        // sub is always present
+        assert_eq!(userinfo["sub"], user.id.to_string());
+
+        // profile claims
+        assert_eq!(userinfo["preferred_username"], user.username);
+        assert_eq!(
+            userinfo["name"],
+            user.display_name.as_deref().unwrap_or("")
+        );
+        assert!(userinfo.get("updated_at").is_some());
+
+        // email claim — from the oauth_link created by create_user_with_session
+        assert_eq!(userinfo["email"], "profileuser@example.com");
+    });
+}
+
+#[test]
+#[ignore]
+fn userinfo_rejects_session_token() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("sessionuser", "user").await;
+
+        // Session token (aud == issuer) should be rejected
+        let resp = client
+            .get(s.url("/oauth/userinfo"))
+            .header("authorization", format!("Bearer {access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
+
+#[test]
+#[ignore]
+fn userinfo_rejects_missing_token() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // No Authorization header
+        let resp = client
+            .get(s.url("/oauth/userinfo"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
+
+#[test]
+#[ignore]
+fn userinfo_rejects_invalid_token() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Invalid Bearer token
+        let resp = client
+            .get(s.url("/oauth/userinfo"))
+            .header("authorization", "Bearer invalid-garbage-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     });
 }
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
@@ -87,6 +87,7 @@ pub fn router() -> Router<AppState> {
         .route("/oauth/consent", get(consent))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
+        .route("/oauth/userinfo", get(userinfo).post(userinfo))
 }
 
 /// GET /oauth/authorize — authorization endpoint
@@ -506,4 +507,90 @@ async fn revoke(
     }
 
     Ok(StatusCode::OK)
+}
+
+/// GET/POST /oauth/userinfo — OIDC UserInfo endpoint (OpenID Connect Core 1.0 §5.3)
+///
+/// Accepts a Bearer access token via the Authorization header. The token must
+/// have been issued to an OAuth client (aud != issuer). Returns profile claims
+/// filtered by the scopes granted in the access token.
+async fn userinfo(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Error> {
+    // Extract Bearer token from Authorization header
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(Error::Unauthenticated)?;
+
+    let bearer_token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or(Error::Unauthenticated)?;
+
+    // Validate the JWT
+    let token_data = state
+        .keys
+        .verify_access_token(&state.config.jwt, bearer_token)?;
+
+    let claims = &token_data.claims;
+
+    // Enforce audience: must be a client token (aud != issuer).
+    // Session tokens (aud == issuer) are not valid for UserInfo — use /auth/me instead.
+    if claims.aud == state.config.jwt.issuer {
+        return Err(Error::InvalidToken);
+    }
+
+    // Verify the audience matches a registered client
+    db::find_client_by_client_id(&state.db, &claims.aud)
+        .await?
+        .ok_or(Error::InvalidToken)?;
+
+    // Parse user ID
+    let user_id: uuid::Uuid = claims.sub.parse().map_err(|_| Error::InvalidToken)?;
+
+    // Fetch user profile
+    let user = db::find_user_by_id(&state.db, user_id)
+        .await?
+        .ok_or(Error::UserNotFound)?;
+
+    // Parse granted scopes from the token
+    let scopes: BTreeSet<&str> = claims
+        .scope
+        .as_deref()
+        .map(|s| s.split_whitespace().collect())
+        .unwrap_or_default();
+
+    // Build response based on granted scopes (OIDC Core 1.0 §5.4)
+    let mut response = serde_json::Map::new();
+
+    // "sub" is always returned per OIDC Core 1.0 §5.3.2
+    response.insert("sub".to_string(), serde_json::json!(user.id.to_string()));
+
+    if scopes.contains("profile") {
+        response.insert(
+            "preferred_username".to_string(),
+            serde_json::json!(user.username),
+        );
+        if let Some(ref name) = user.display_name {
+            response.insert("name".to_string(), serde_json::json!(name));
+        }
+        if let Some(ref picture) = user.avatar_url {
+            response.insert("picture".to_string(), serde_json::json!(picture));
+        }
+        response.insert(
+            "updated_at".to_string(),
+            serde_json::json!(user.updated_at.timestamp()),
+        );
+    }
+
+    if scopes.contains("email") {
+        // Fetch email from the user's first oauth_link that has an email
+        let links = db::find_oauth_links_by_user(&state.db, user_id).await?;
+        if let Some(email) = links.iter().find_map(|l| l.provider_email.as_deref()) {
+            response.insert("email".to_string(), serde_json::json!(email));
+        }
+    }
+
+    Ok(Json(serde_json::Value::Object(response)))
 }

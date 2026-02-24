@@ -68,6 +68,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "issuer": state.config.jwt.issuer,
         "authorization_endpoint": format!("{base}/oauth/authorize"),
         "token_endpoint": format!("{base}/oauth/token"),
+        "userinfo_endpoint": format!("{base}/oauth/userinfo"),
         "jwks_uri": format!("{base}/.well-known/jwks.json"),
         "revocation_endpoint": format!("{base}/oauth/revoke"),
         "response_types_supported": ["code"],
@@ -76,7 +77,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "id_token_signing_alg_values_supported": ["RS256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post"],
         "scopes_supported": scope_names,
-        "claims_supported": ["sub", "name", "preferred_username", "picture"],
+        "claims_supported": ["sub", "name", "preferred_username", "picture", "email", "updated_at"],
         "code_challenge_methods_supported": ["S256"],
     }))
 }
