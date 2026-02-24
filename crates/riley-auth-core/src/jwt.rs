@@ -384,7 +384,7 @@ impl KeySet {
         }
 
         // Fall back: try all keys (for tokens without kid or unknown kid)
-        let mut last_expired = false;
+        let mut any_expired = false;
         for entry in &self.entries {
             let mut validation = Validation::new(entry.algorithm);
             validation.set_issuer(&[&config.issuer]);
@@ -394,12 +394,12 @@ impl KeySet {
             match decode::<T>(token, &entry.decoding, &validation) {
                 Ok(data) => return Ok(data),
                 Err(e) => {
-                    last_expired = matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature);
+                    any_expired |= matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature);
                 }
             }
         }
 
-        Err(if last_expired { Error::ExpiredToken } else { Error::InvalidToken })
+        Err(if any_expired { Error::ExpiredToken } else { Error::InvalidToken })
     }
 }
 

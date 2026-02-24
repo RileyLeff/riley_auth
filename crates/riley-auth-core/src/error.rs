@@ -239,26 +239,25 @@ pub fn unique_violation_constraint(err: &Error) -> Option<String> {
 /// Returns `Some(value)` for errors that should include the header on
 /// Bearer-token-protected endpoints; `None` for errors where it doesn't apply.
 pub fn www_authenticate_value(issuer: &str, error: &Error) -> Option<String> {
+    // Escape `\` and `"` in the issuer for use in a quoted-string (RFC 7230 §3.2.6).
+    let realm = issuer.replace('\\', "\\\\").replace('"', "\\\"");
     match error {
         Error::Unauthenticated => {
-            Some(format!("Bearer realm=\"{}\"", issuer))
+            Some(format!("Bearer realm=\"{realm}\""))
         }
         Error::ExpiredToken => {
             Some(format!(
-                "Bearer realm=\"{}\", error=\"invalid_token\", error_description=\"token expired\"",
-                issuer
+                "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"token expired\""
             ))
         }
         Error::InvalidToken => {
             Some(format!(
-                "Bearer realm=\"{}\", error=\"invalid_token\"",
-                issuer
+                "Bearer realm=\"{realm}\", error=\"invalid_token\""
             ))
         }
         Error::Forbidden => {
             Some(format!(
-                "Bearer realm=\"{}\", error=\"insufficient_scope\"",
-                issuer
+                "Bearer realm=\"{realm}\", error=\"insufficient_scope\""
             ))
         }
         _ => None,

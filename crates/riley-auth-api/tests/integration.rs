@@ -24,7 +24,7 @@ use riley_auth_core::config::{
     SigningAlgorithm, UsernameConfig, WebhooksConfig,
 };
 use riley_auth_core::db;
-use riley_auth_core::jwt::{self, KeySet};
+use riley_auth_core::jwt::{self, Claims, KeySet};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 
@@ -4807,6 +4807,72 @@ fn userinfo_rejects_token_without_openid_scope() {
         let www_auth = resp.headers().get("www-authenticate").expect("missing WWW-Authenticate on 403");
         let www_auth_str = www_auth.to_str().unwrap();
         assert!(www_auth_str.contains("error=\"insufficient_scope\""), "expected insufficient_scope, got: {www_auth_str}");
+    });
+}
+
+#[test]
+#[ignore]
+fn userinfo_expired_token_www_authenticate() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (user, _, _) = s.create_user_with_session("expireduser", "user").await;
+
+        // Register a client so we can create a client-scoped token
+        let client_id_str = "expired-client";
+        let client_secret = "expired-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Expired Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Manually construct an expired access token with openid scope
+        let now = chrono::Utc::now().timestamp();
+        let claims = Claims {
+            sub: user.id.to_string(),
+            username: user.username.clone(),
+            role: user.role.clone(),
+            aud: client_id_str.to_string(),
+            iss: s.config.jwt.issuer.clone(),
+            iat: now - 1000,
+            exp: now - 500, // expired 500 seconds ago
+            scope: Some("openid".to_string()),
+        };
+        let mut header = jsonwebtoken::Header::new(s.keys.active_algorithm());
+        header.kid = Some(s.keys.active_kid().to_string());
+        let expired_token =
+            jsonwebtoken::encode(&header, &claims, s.keys.encoding_key()).unwrap();
+
+        let resp = client
+            .get(s.url("/oauth/userinfo"))
+            .header("authorization", format!("Bearer {expired_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let www_auth = resp
+            .headers()
+            .get("www-authenticate")
+            .expect("missing WWW-Authenticate header on expired token");
+        let www_auth_str = www_auth.to_str().unwrap();
+        assert!(
+            www_auth_str.contains("error=\"invalid_token\""),
+            "expected invalid_token error, got: {www_auth_str}"
+        );
+        assert!(
+            www_auth_str.contains("error_description=\"token expired\""),
+            "expected token expired description, got: {www_auth_str}"
+        );
     });
 }
 
