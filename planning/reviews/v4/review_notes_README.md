@@ -190,3 +190,14 @@ Phase 8 (Consent UI Support) will add proper login redirect support. Current beh
 
 ### client_secret_basic not supported (R2, Gemini MINOR-11)
 Only `client_secret_post` is supported, matching the discovery document. `client_secret_basic` support is future work for third-party client compatibility.
+
+## v4 Phase 6 — UserInfo Endpoint
+
+### Standard OIDC scopes (profile, email) require config definition
+`profile` and `email` are standard OIDC scopes but riley_auth uses a whitelist approach — all scopes (including standard ones) must be explicitly defined in the `[scopes]` config. The discovery document's `scopes_supported` correctly reflects only configured scopes. This is consistent with the soul document's design of admin-controlled scope definitions. Admins who want OIDC profile/email must add them to config and client allowed_scopes.
+
+### WWW-Authenticate header not included on 401 responses
+RFC 6750 §3.1 says resource endpoints SHOULD (not MUST) include `WWW-Authenticate: Bearer` on 401 responses. Most OIDC client libraries work without it. Low priority; could be added later as a quality-of-life improvement.
+
+### UserInfo endpoint supersedes Phase 4 note about no /userinfo
+The Phase 4 note "UserInfo endpoint is future work" is now resolved. The `/oauth/userinfo` endpoint accepts Bearer tokens from OAuth clients (aud != issuer) and returns claims filtered by scope.
