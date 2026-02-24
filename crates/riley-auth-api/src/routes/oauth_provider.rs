@@ -898,6 +898,7 @@ pub(crate) async fn token(
                     auth_time,
                     email.as_deref(),
                     email_verified,
+                    &auth_code.scopes,
                 )?)
             } else {
                 None
@@ -1016,6 +1017,7 @@ pub(crate) async fn token(
                     token_row.auth_time,
                     email.as_deref(),
                     email_verified,
+                    &effective_scopes,
                 )?)
             } else {
                 None

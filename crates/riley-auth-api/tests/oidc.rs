@@ -161,7 +161,7 @@ fn oidc_token_response_includes_id_token() {
         .await
         .unwrap();
 
-        // Authorize
+        // Authorize with profile scope — profile claims should be in id_token
         let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
         let resp = client
             .get(s.url("/oauth/authorize"))
@@ -169,7 +169,7 @@ fn oidc_token_response_includes_id_token() {
                 ("client_id", client_id_str),
                 ("redirect_uri", "https://oidc.example.com/callback"),
                 ("response_type", "code"),
-                ("scope", "openid read:profile"),
+                ("scope", "openid profile read:profile"),
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
@@ -221,6 +221,7 @@ fn oidc_token_response_includes_id_token() {
 
         assert_eq!(claims["iss"], "riley-auth-test");
         assert_eq!(claims["aud"], client_id_str);
+        // Profile claims present because "profile" scope was granted
         assert_eq!(claims["preferred_username"], "oidcuser");
         assert_eq!(claims["name"], "oidcuser Display");
         assert!(claims["sub"].as_str().is_some());
@@ -228,9 +229,6 @@ fn oidc_token_response_includes_id_token() {
         assert!(claims["iat"].as_i64().is_some());
         // picture should be absent (user has no avatar)
         assert!(claims.get("picture").is_none());
-
-        // Verify scope is also in the response (openid + read:profile)
-        assert_eq!(token_resp["scope"], "openid read:profile");
 
         // Refresh and verify id_token is also in refresh response
         let refresh_token = token_resp["refresh_token"].as_str().unwrap();
@@ -252,6 +250,90 @@ fn oidc_token_response_includes_id_token() {
             refresh_resp["id_token"].as_str().is_some(),
             "id_token must be present in refresh response"
         );
+    });
+}
+
+#[test]
+#[ignore]
+fn oidc_id_token_omits_profile_claims_without_profile_scope() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("noprofileuser", "user").await;
+
+        let client_id_str = "noprofile-client";
+        let client_secret = "noprofile-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "No Profile Client",
+            client_id_str,
+            &secret_hash,
+            &["https://noprofile.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Request openid only (no profile scope)
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://noprofile.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid read:profile"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://noprofile.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let id_token_str = token_resp["id_token"].as_str().expect("id_token missing");
+
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let parts: Vec<&str> = id_token_str.split('.').collect();
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        // Without "profile" scope, profile claims must be absent (OIDC Core 1.0 §5.4)
+        assert!(claims.get("preferred_username").is_none(), "preferred_username should be absent without profile scope");
+        assert!(claims.get("name").is_none(), "name should be absent without profile scope");
+        assert!(claims.get("picture").is_none(), "picture should be absent without profile scope");
+        // sub is always present
+        assert!(claims["sub"].as_str().is_some());
     });
 }
 

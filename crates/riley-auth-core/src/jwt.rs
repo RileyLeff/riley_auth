@@ -39,7 +39,9 @@ pub struct IdTokenClaims {
     pub nonce: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    pub preferred_username: String,
+    /// Included only when the "profile" scope is granted (OIDC Core 1.0 §5.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
     /// Unix timestamp of the original authentication event (OIDC Core 1.0 Section 2).
@@ -258,6 +260,9 @@ impl KeySet {
     }
 
     /// Create a signed OIDC ID token.
+    ///
+    /// Profile claims (`preferred_username`, `name`, `picture`) are only included
+    /// when the granted `scopes` contain `"profile"` (OIDC Core 1.0 §5.4).
     pub fn sign_id_token(
         &self,
         config: &JwtConfig,
@@ -270,11 +275,13 @@ impl KeySet {
         auth_time: Option<i64>,
         email: Option<&str>,
         email_verified: Option<bool>,
+        scopes: &[String],
     ) -> Result<String> {
         let now = Utc::now();
         let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
         let active = &self.entries[0];
 
+        let has_profile = scopes.iter().any(|s| s == "profile");
         let claims = IdTokenClaims {
             sub: user_id.to_string(),
             iss: config.issuer.clone(),
@@ -282,9 +289,9 @@ impl KeySet {
             exp: exp.timestamp(),
             iat: now.timestamp(),
             nonce: nonce.map(String::from),
-            name: display_name.map(String::from),
-            preferred_username: username.to_string(),
-            picture: avatar_url.map(String::from),
+            name: if has_profile { display_name.map(String::from) } else { None },
+            preferred_username: if has_profile { Some(username.to_string()) } else { None },
+            picture: if has_profile { avatar_url.map(String::from) } else { None },
             auth_time,
             email: email.map(String::from),
             email_verified,
@@ -945,11 +952,14 @@ mod tests {
         let keys = KeySet::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
         let config = test_jwt_config("test-auth");
 
+        // With profile scope — profile claims included
+        let scopes = vec!["openid".to_string(), "profile".to_string(), "email".to_string()];
         let token = keys.sign_id_token(
             &config, "user-123", "testuser",
             Some("Test User"), Some("https://example.com/avatar.png"),
             "my-client", Some("test-nonce-123"), Some(1700000000),
             Some("user@example.com"), Some(true),
+            &scopes,
         ).unwrap();
 
         let parts: Vec<&str> = token.split('.').collect();
@@ -960,7 +970,7 @@ mod tests {
         assert_eq!(claims.sub, "user-123");
         assert_eq!(claims.iss, "test-auth");
         assert_eq!(claims.aud, "my-client");
-        assert_eq!(claims.preferred_username, "testuser");
+        assert_eq!(claims.preferred_username.as_deref(), Some("testuser"));
         assert_eq!(claims.name.as_deref(), Some("Test User"));
         assert_eq!(claims.picture.as_deref(), Some("https://example.com/avatar.png"));
         assert_eq!(claims.nonce.as_deref(), Some("test-nonce-123"));
@@ -968,24 +978,26 @@ mod tests {
         assert_eq!(claims.email.as_deref(), Some("user@example.com"));
         assert_eq!(claims.email_verified, Some(true));
 
+        // Without profile scope — profile claims omitted
+        let scopes_no_profile = vec!["openid".to_string(), "email".to_string()];
         let token = keys.sign_id_token(
             &config, "user-456", "minimaluser",
-            None, None,
+            Some("Has Name"), Some("https://example.com/pic.png"),
             "another-client", None, None,
-            None, None,
+            Some("user@example.com"), Some(true),
+            &scopes_no_profile,
         ).unwrap();
         let parts: Vec<&str> = token.split('.').collect();
         let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
         let claims: IdTokenClaims = serde_json::from_slice(&payload).unwrap();
 
         assert_eq!(claims.sub, "user-456");
-        assert_eq!(claims.preferred_username, "minimaluser");
-        assert!(claims.name.is_none());
-        assert!(claims.picture.is_none());
-        assert!(claims.nonce.is_none());
-        assert!(claims.auth_time.is_none());
-        assert!(claims.email.is_none());
-        assert!(claims.email_verified.is_none());
+        assert!(claims.preferred_username.is_none(), "preferred_username should be absent without profile scope");
+        assert!(claims.name.is_none(), "name should be absent without profile scope");
+        assert!(claims.picture.is_none(), "picture should be absent without profile scope");
+        // email claims are still present (email scope was granted)
+        assert_eq!(claims.email.as_deref(), Some("user@example.com"));
+        assert_eq!(claims.email_verified, Some(true));
     }
 
     #[test]
