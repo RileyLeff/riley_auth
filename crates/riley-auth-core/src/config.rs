@@ -610,6 +610,8 @@ public_key_path = "/tmp/public.pem"
         // Maintenance defaults
         assert_eq!(config.maintenance.cleanup_interval_secs, 3600);
         assert_eq!(config.maintenance.webhook_delivery_retention_days, 7);
+        // JWKS cache default
+        assert_eq!(config.jwt.jwks_cache_max_age_secs, 3600);
         // Metrics defaults
         assert!(!config.metrics.enabled);
         assert!(config.metrics.bearer_token.is_none());
@@ -635,6 +637,7 @@ public_key_path = "/tmp/public.pem"
 access_token_ttl_secs = 600
 refresh_token_ttl_secs = 86400
 issuer = "my-auth"
+jwks_cache_max_age_secs = 1800
 
 [oauth]
 consent_url = "https://auth.example.com/consent"
@@ -677,6 +680,7 @@ public = { requests = 500, window_secs = 60 }
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.server.port, 9000);
         assert_eq!(config.database.max_connections, 20);
+        assert_eq!(config.jwt.jwks_cache_max_age_secs, 1800);
         assert!(config.oauth.google.is_some());
         assert_eq!(config.oauth.consent_url.as_deref(), Some("https://auth.example.com/consent"));
         assert!(config.storage.is_some());

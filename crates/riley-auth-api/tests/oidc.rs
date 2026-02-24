@@ -18,6 +18,18 @@ fn jwks_endpoint() {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
+        // Cache-Control header should reflect jwks_cache_max_age_secs config (3600)
+        let cache_control = resp
+            .headers()
+            .get("cache-control")
+            .expect("JWKS response must have Cache-Control header")
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            cache_control, "public, max-age=3600",
+            "JWKS Cache-Control should be public with configured max-age"
+        );
+
         let body: serde_json::Value = resp.json().await.unwrap();
         let keys = body["keys"].as_array().unwrap();
         assert_eq!(keys.len(), 1);
