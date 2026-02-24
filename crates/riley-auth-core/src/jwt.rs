@@ -47,6 +47,12 @@ pub struct IdTokenClaims {
     /// all new tokens always have auth_time set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_time: Option<i64>,
+    /// Email claim (OIDC Core 1.0 Section 5.1) — included when the "email" scope is granted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Whether the email is verified — included when the "email" scope is granted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email_verified: Option<bool>,
 }
 
 /// OIDC Back-Channel Logout Token claims (per OpenID Connect Back-Channel
@@ -262,6 +268,8 @@ impl KeySet {
         audience: &str,
         nonce: Option<&str>,
         auth_time: Option<i64>,
+        email: Option<&str>,
+        email_verified: Option<bool>,
     ) -> Result<String> {
         let now = Utc::now();
         let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
@@ -278,6 +286,8 @@ impl KeySet {
             preferred_username: username.to_string(),
             picture: avatar_url.map(String::from),
             auth_time,
+            email: email.map(String::from),
+            email_verified,
         };
 
         let mut header = Header::new(active.algorithm);
@@ -939,6 +949,7 @@ mod tests {
             &config, "user-123", "testuser",
             Some("Test User"), Some("https://example.com/avatar.png"),
             "my-client", Some("test-nonce-123"), Some(1700000000),
+            Some("user@example.com"), Some(true),
         ).unwrap();
 
         let parts: Vec<&str> = token.split('.').collect();
@@ -954,11 +965,14 @@ mod tests {
         assert_eq!(claims.picture.as_deref(), Some("https://example.com/avatar.png"));
         assert_eq!(claims.nonce.as_deref(), Some("test-nonce-123"));
         assert_eq!(claims.auth_time, Some(1700000000));
+        assert_eq!(claims.email.as_deref(), Some("user@example.com"));
+        assert_eq!(claims.email_verified, Some(true));
 
         let token = keys.sign_id_token(
             &config, "user-456", "minimaluser",
             None, None,
             "another-client", None, None,
+            None, None,
         ).unwrap();
         let parts: Vec<&str> = token.split('.').collect();
         let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
@@ -970,6 +984,8 @@ mod tests {
         assert!(claims.picture.is_none());
         assert!(claims.nonce.is_none());
         assert!(claims.auth_time.is_none());
+        assert!(claims.email.is_none());
+        assert!(claims.email_verified.is_none());
     }
 
     #[test]

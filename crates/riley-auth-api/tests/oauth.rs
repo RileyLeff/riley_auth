@@ -2288,7 +2288,7 @@ fn oauth_authorization_code_replay_rejected() {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["error"], "invalid_authorization_code");
+        assert_eq!(body["error"], "invalid_grant");
     });
 }
 

@@ -82,6 +82,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "revocation_endpoint": format!("{base}/oauth/revoke"),
         "introspection_endpoint": format!("{base}/oauth/introspect"),
         "response_types_supported": ["code"],
+        "response_modes_supported": ["query"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": signing_algs,
@@ -92,6 +93,9 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "backchannel_logout_session_supported": false,
         "scopes_supported": scope_names,
         "claims_supported": ["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at", "auth_time"],
+        "claims_parameter_supported": false,
+        "request_parameter_supported": false,
+        "request_uri_parameter_supported": false,
         "code_challenge_methods_supported": ["S256"],
         "prompt_values_supported": ["none", "login", "consent"],
     }))

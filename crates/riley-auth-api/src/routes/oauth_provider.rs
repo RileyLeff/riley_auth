@@ -823,6 +823,16 @@ async fn token(
 
             // Only issue ID token when openid scope was granted (OIDC Core 1.0)
             let id_token = if auth_code.scopes.iter().any(|s| s == "openid") {
+                // Include email claims when email scope is granted (OIDC Core 1.0 §5.4)
+                let (email, email_verified) = if auth_code.scopes.iter().any(|s| s == "email") {
+                    let links = db::find_oauth_links_by_user(&state.db, user.id).await?;
+                    match links.iter().find(|l| l.provider_email.is_some()) {
+                        Some(link) => (link.provider_email.clone(), Some(link.email_verified)),
+                        None => (None, None),
+                    }
+                } else {
+                    (None, None)
+                };
                 Some(state.keys.sign_id_token(
                     &state.config.jwt,
                     &user.id.to_string(),
@@ -832,6 +842,8 @@ async fn token(
                     &client.client_id,
                     auth_code.nonce.as_deref(),
                     auth_time,
+                    email.as_deref(),
+                    email_verified,
                 )?)
             } else {
                 None
@@ -929,6 +941,16 @@ async fn token(
             // Nonce and auth_time are preserved from the original authorization
             // request across refresh rotations (OIDC Core 1.0 §12.2).
             let id_token = if effective_scopes.iter().any(|s| s == "openid") {
+                // Include email claims when email scope is granted (OIDC Core 1.0 §5.4)
+                let (email, email_verified) = if effective_scopes.iter().any(|s| s == "email") {
+                    let links = db::find_oauth_links_by_user(&state.db, user.id).await?;
+                    match links.iter().find(|l| l.provider_email.is_some()) {
+                        Some(link) => (link.provider_email.clone(), Some(link.email_verified)),
+                        None => (None, None),
+                    }
+                } else {
+                    (None, None)
+                };
                 Some(state.keys.sign_id_token(
                     &state.config.jwt,
                     &user.id.to_string(),
@@ -938,6 +960,8 @@ async fn token(
                     &client.client_id,
                     token_row.nonce.as_deref(),
                     token_row.auth_time,
+                    email.as_deref(),
+                    email_verified,
                 )?)
             } else {
                 None
@@ -952,7 +976,7 @@ async fn token(
                 scope: scope_str,
             }))
         }
-        _ => Err(Error::BadRequest(format!("unsupported grant_type: {}", body.grant_type))),
+        _ => Err(Error::UnsupportedGrantType),
     }
 }
 

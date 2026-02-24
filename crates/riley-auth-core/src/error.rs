@@ -85,6 +85,9 @@ pub enum Error {
     #[error("invalid grant")]
     InvalidGrant,
 
+    #[error("unsupported grant type")]
+    UnsupportedGrantType,
+
     #[error("invalid scope")]
     InvalidScope,
 
@@ -147,6 +150,7 @@ impl Error {
             | Self::InvalidRedirectUri
             | Self::InvalidAuthorizationCode
             | Self::InvalidGrant
+            | Self::UnsupportedGrantType
             | Self::InvalidScope
             | Self::ConsentRequired
             | Self::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -181,8 +185,9 @@ impl Error {
             Self::ProviderAlreadyLinked => "provider_already_linked",
             Self::InvalidClient => "invalid_client",
             Self::InvalidRedirectUri => "invalid_redirect_uri",
-            Self::InvalidAuthorizationCode => "invalid_authorization_code",
+            Self::InvalidAuthorizationCode => "invalid_grant",
             Self::InvalidGrant => "invalid_grant",
+            Self::UnsupportedGrantType => "unsupported_grant_type",
             Self::InvalidScope => "invalid_scope",
             Self::ConsentRequired => "consent_required",
             Self::BadRequest(_) => "bad_request",
