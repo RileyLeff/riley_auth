@@ -269,3 +269,14 @@ Family revocation is an active-attack response where speed is prioritized. The a
 
 ### auth_logout ordering relies on session tokens having NULL client_id
 `auth_logout` deletes the session token first, then dispatches BCL. This works because session tokens (client_id IS NULL) don't match the BCL query's `rt.client_id = c.id` JOIN. A comment explains the ordering.
+
+## v4 Phase 11 — Multi-Provider Account Merging
+
+### Auto-merge requires BOTH sides to have verified email (R1 fix)
+The auto-merge path filters `matching_links` to only verified links (`l.email_verified = true`) before collecting user IDs. This prevents merging into accounts created via unverified email claims from less-trusted providers.
+
+### UserInfo uses per-link email_verified (R2 fix)
+The `/oauth/userinfo` endpoint uses the actual `link.email_verified` value from the database instead of hardcoding `true`. Aligns with Phase 11's per-link tracking.
+
+### find_oauth_links_by_email already excludes soft-deleted users
+The query JOINs on `users` with `u.deleted_at IS NULL`. No additional fix needed.

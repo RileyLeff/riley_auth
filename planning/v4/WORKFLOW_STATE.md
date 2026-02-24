@@ -1,8 +1,8 @@
 # v4 Workflow State
 
-**Current Phase:** 11 — Multi-Provider Account Merging (PENDING)
-**Current Step:** Starting Phase 11
-**Status:** Phase 10 complete and reviewed. 144 tests passing (22 unit + 16 core + 106 integration). Ready for Phase 11.
+**Current Phase:** 11 — Multi-Provider Account Merging (COMPLETE)
+**Current Step:** Done
+**Status:** v4 complete. All 11 phases implemented and reviewed. 134 tests passing (23 unit/core + 111 integration). Exhaustive review converged (3 rounds, Claude-only).
 
 ## Progress
 
@@ -24,8 +24,8 @@
 | 9 | review | Standard review (2 rounds, Claude-only, converged) | Done (bf7dcae, e336f74) |
 | 10 | 10.1-10.9 | OIDC Back-Channel Logout | Done (76b46d0) |
 | 10 | review | Standard review (3 rounds, Claude-only, converged) | Done (2c76c1a, 3008bf9) |
-| 11 | 11.1-11.7 | Multi-Provider Account Merging | Pending |
-| 11 | review | Exhaustive review (milestone: v4 complete) | Pending |
+| 11 | 11.1-11.7 | Multi-Provider Account Merging | Done (6446cd4) |
+| 11 | review | Exhaustive review (3 rounds, Claude-only, converged) | Done (5cff11a, bcdb4ac) |
 
 ## Blockers
 
@@ -33,7 +33,7 @@ None.
 
 ## Recent Activity
 
-- Phase 10: OIDC Back-Channel Logout — migration 010, logout token JWTs, dispatch on logout/revoke/delete, admin API, discovery, 6 integration tests (76b46d0)
-- Phase 10 review R1: fixed discovery session_supported=false, reject session_required=true (2c76c1a)
-- Phase 10 review R2: fixed missing backchannel logout in delete_account and CLI delete/revoke (3008bf9)
-- Phase 10 review R3: converged — 0 MAJORs, 0 MINORs
+- Phase 11: Multi-Provider Account Merging — migration 011, AccountMergePolicy config, email_verified on oauth_links, provider email verification capture, auto-merge logic, 5 integration tests + 1 unit test (6446cd4)
+- Phase 11 review R1: 1 MAJOR — auto-merge didn't filter existing links by email_verified. Fixed (5cff11a)
+- Phase 11 review R2: 1 MINOR — UserInfo hardcoded email_verified: true. Fixed (bcdb4ac)
+- Phase 11 review R3: CONVERGED — 0 MAJORs, 0 MINORs. v4 milestone complete.
