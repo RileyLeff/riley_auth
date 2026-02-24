@@ -48,6 +48,8 @@ pub struct AppState {
     pub username_regex: regex::Regex,
     pub metrics_handle: Option<PrometheusHandle>,
     pub providers: Arc<Vec<ResolvedProvider>>,
+    /// HTTP client for OAuth token exchange and profile fetching (reused across requests).
+    pub oauth_client: reqwest::Client,
 }
 
 pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()> {
@@ -110,6 +112,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
     // Resolve OAuth providers at startup (OIDC discovery happens here)
     let oauth_http = reqwest::Client::builder()
         .user_agent("riley-auth")
+        .timeout(std::time::Duration::from_secs(10))
         .build()?;
     let providers = riley_auth_core::oauth::resolve_providers(
         &config.oauth.providers,
@@ -133,6 +136,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         username_regex,
         metrics_handle,
         providers: Arc::new(providers),
+        oauth_client: oauth_http,
     };
 
     let app = Router::new()

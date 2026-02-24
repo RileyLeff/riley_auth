@@ -123,6 +123,10 @@ struct TierState {
     last_prune: Instant,
 }
 
+/// Maximum entries per tier before new IPs are denied.
+/// 100k entries × ~48 bytes ≈ 5MB per tier — bounded and reasonable.
+const MAX_ENTRIES_PER_TIER: usize = 100_000;
+
 /// In-memory fixed-window rate limiter for a single tier.
 struct InMemoryTierLimiter {
     state: Mutex<TierState>,
@@ -154,6 +158,12 @@ impl InMemoryTierLimiter {
                 now.duration_since(entry.window_start).as_secs() < window_secs
             });
             state.last_prune = now;
+        }
+
+        // Cap: if at capacity and this is a new IP, deny to prevent unbounded growth
+        if state.windows.len() >= MAX_ENTRIES_PER_TIER && !state.windows.contains_key(ip) {
+            let retry_after = self.window_secs.max(1);
+            return (false, 0, retry_after);
         }
 
         let entry = state.windows.entry(*ip).or_insert(WindowEntry {

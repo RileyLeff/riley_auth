@@ -300,12 +300,8 @@ pub async fn exchange_code(
     code: &str,
     callback_url: &str,
     pkce_verifier: &str,
+    client: &reqwest::Client,
 ) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .user_agent("riley-auth")
-        .build()
-        .map_err(|e| Error::OAuth(e.to_string()))?;
-
     let mut params = vec![
         ("client_id", provider.client_id.as_str()),
         ("client_secret", provider.client_secret.as_str()),
@@ -352,12 +348,8 @@ pub async fn exchange_code(
 pub async fn fetch_profile(
     provider: &ResolvedProvider,
     access_token: &str,
+    client: &reqwest::Client,
 ) -> Result<OAuthProfile> {
-    let client = reqwest::Client::builder()
-        .user_agent("riley-auth")
-        .build()
-        .map_err(|e| Error::OAuth(e.to_string()))?;
-
     let response = client
         .get(&provider.userinfo_url)
         .header("Authorization", format!("Bearer {access_token}"))

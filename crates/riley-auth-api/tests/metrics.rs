@@ -94,6 +94,7 @@ async fn spawn_metrics_server(
         username_regex,
         metrics_handle: Some(handle),
         providers: Arc::new(vec![]),
+        oauth_client: reqwest::Client::new(),
     };
 
     let app = axum::Router::new()

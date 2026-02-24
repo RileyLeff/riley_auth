@@ -151,11 +151,12 @@ async fn auth_callback(
         &query.code,
         &callback_url,
         &pkce_verifier,
+        &state.oauth_client,
     )
     .await?;
 
     // Fetch profile from provider
-    let profile = oauth::fetch_profile(provider, &provider_token).await?;
+    let profile = oauth::fetch_profile(provider, &provider_token, &state.oauth_client).await?;
 
     // Clear temp cookies
     let jar = jar
@@ -877,10 +878,11 @@ async fn link_callback(
         &query.code,
         &callback_url,
         &pkce_verifier,
+        &state.oauth_client,
     )
     .await?;
 
-    let profile = oauth::fetch_profile(provider, &provider_token).await?;
+    let profile = oauth::fetch_profile(provider, &provider_token, &state.oauth_client).await?;
 
     // Check if this provider account is already linked to someone
     if db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await?.is_some() {

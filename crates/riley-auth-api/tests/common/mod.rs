@@ -145,6 +145,7 @@ impl TestServer {
             username_regex,
             metrics_handle: None,
             providers: Arc::new(vec![]),
+            oauth_client: reqwest::Client::new(),
         };
 
         let app = axum::Router::new()
