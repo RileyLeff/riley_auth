@@ -1,7 +1,7 @@
 -- v3: persistent webhook outbox for reliable delivery
 
 CREATE TABLE webhook_outbox (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     webhook_id uuid NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
     event_type text NOT NULL,
     payload jsonb NOT NULL,

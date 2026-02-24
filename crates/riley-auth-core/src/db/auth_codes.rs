@@ -35,9 +35,10 @@ pub async fn store_authorization_code(
     expires_at: DateTime<Utc>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO authorization_codes (code_hash, user_id, client_id, redirect_uri, scopes, code_challenge, code_challenge_method, nonce, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+        "INSERT INTO authorization_codes (id, code_hash, user_id, client_id, redirect_uri, scopes, code_challenge, code_challenge_method, nonce, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
     )
+    .bind(Uuid::now_v7())
     .bind(code_hash)
     .bind(user_id)
     .bind(client_id)

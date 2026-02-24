@@ -80,10 +80,11 @@ pub async fn create_oauth_link(
     }
 
     let link = sqlx::query_as::<_, OAuthLink>(
-        "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email, email_verified)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO oauth_links (id, user_id, provider, provider_id, provider_email, email_verified)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *"
     )
+    .bind(Uuid::now_v7())
     .bind(user_id)
     .bind(provider)
     .bind(provider_id)

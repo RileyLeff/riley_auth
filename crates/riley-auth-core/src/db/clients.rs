@@ -76,10 +76,11 @@ pub async fn create_client_full(
     backchannel_logout_session_required: bool,
 ) -> Result<OAuthClient> {
     let client = sqlx::query_as::<_, OAuthClient>(
-        "INSERT INTO oauth_clients (name, client_id, client_secret_hash, redirect_uris, allowed_scopes, auto_approve, backchannel_logout_uri, backchannel_logout_session_required)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "INSERT INTO oauth_clients (id, name, client_id, client_secret_hash, redirect_uris, allowed_scopes, auto_approve, backchannel_logout_uri, backchannel_logout_session_required)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING *"
     )
+    .bind(Uuid::now_v7())
     .bind(name)
     .bind(client_id)
     .bind(client_secret_hash)

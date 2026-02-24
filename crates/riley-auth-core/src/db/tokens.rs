@@ -22,9 +22,10 @@ pub async fn store_refresh_token(
     auth_time: Option<i64>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO refresh_tokens (user_id, client_id, token_hash, expires_at, scopes, user_agent, ip_address, family_id, nonce, auth_time)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+        "INSERT INTO refresh_tokens (id, user_id, client_id, token_hash, expires_at, scopes, user_agent, ip_address, family_id, nonce, auth_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
     )
+    .bind(Uuid::now_v7())
     .bind(user_id)
     .bind(client_id)
     .bind(token_hash)

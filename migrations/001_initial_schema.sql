@@ -1,9 +1,9 @@
 -- riley_auth v1 schema
--- Requires PostgreSQL 18 (native uuidv7)
+-- Requires PostgreSQL 14+ (gen_random_uuid). Application generates UUIDv7 for new rows.
 
 -- Users
 CREATE TABLE users (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     username text UNIQUE NOT NULL,
     display_name text,
     avatar_url text,
@@ -18,7 +18,7 @@ CREATE UNIQUE INDEX idx_users_username_lower ON users(lower(username))
 
 -- OAuth links (one user can have multiple providers)
 CREATE TABLE oauth_links (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider text NOT NULL,
     provider_id text NOT NULL,
@@ -33,7 +33,7 @@ CREATE INDEX idx_oauth_links_provider_email ON oauth_links(lower(provider_email)
 
 -- OAuth clients (for cross-domain "Sign in with Riley")
 CREATE TABLE oauth_clients (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
     client_id text UNIQUE NOT NULL,
     client_secret_hash text NOT NULL,
@@ -44,7 +44,7 @@ CREATE TABLE oauth_clients (
 
 -- Refresh tokens
 CREATE TABLE refresh_tokens (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     client_id uuid REFERENCES oauth_clients(id) ON DELETE CASCADE,
     token_hash text NOT NULL UNIQUE,
@@ -58,7 +58,7 @@ CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
 
 -- Username history (tracks changes, holds old names)
 CREATE TABLE username_history (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     old_username text NOT NULL,
     changed_at timestamptz NOT NULL DEFAULT now(),
@@ -69,7 +69,7 @@ CREATE INDEX idx_username_history_old_lower ON username_history(lower(old_userna
 
 -- Authorization codes (OAuth provider flow)
 CREATE TABLE authorization_codes (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     code_hash text UNIQUE NOT NULL,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     client_id uuid NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,

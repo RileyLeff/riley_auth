@@ -36,10 +36,11 @@ pub async fn create_webhook(
     secret: &str,
 ) -> Result<Webhook> {
     let row = sqlx::query_as::<_, Webhook>(
-        "INSERT INTO webhooks (client_id, url, events, secret)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO webhooks (id, client_id, url, events, secret)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING *"
     )
+    .bind(Uuid::now_v7())
     .bind(client_id)
     .bind(url)
     .bind(events)
@@ -117,9 +118,10 @@ pub async fn record_webhook_delivery(
     error: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO webhook_deliveries (webhook_id, event_type, payload, status_code, error)
-         VALUES ($1, $2, $3, $4, $5)"
+        "INSERT INTO webhook_deliveries (id, webhook_id, event_type, payload, status_code, error)
+         VALUES ($1, $2, $3, $4, $5, $6)"
     )
+    .bind(Uuid::now_v7())
     .bind(webhook_id)
     .bind(event_type)
     .bind(payload)

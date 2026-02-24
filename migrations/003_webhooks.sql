@@ -1,7 +1,7 @@
 -- v2: webhook registration and delivery log
 
 CREATE TABLE webhooks (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     client_id uuid REFERENCES oauth_clients(id) ON DELETE CASCADE,  -- NULL = global
     url text NOT NULL,
     events text[] NOT NULL,
@@ -14,7 +14,7 @@ CREATE INDEX idx_webhooks_client_id ON webhooks(client_id);
 CREATE INDEX idx_webhooks_active ON webhooks(active) WHERE active = true;
 
 CREATE TABLE webhook_deliveries (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     webhook_id uuid NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
     event_type text NOT NULL,
     payload jsonb NOT NULL,

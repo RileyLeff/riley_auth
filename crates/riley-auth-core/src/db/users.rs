@@ -35,11 +35,13 @@ pub async fn create_user(
     display_name: Option<&str>,
     avatar_url: Option<&str>,
 ) -> Result<User> {
+    let id = Uuid::now_v7();
     let user = sqlx::query_as::<_, User>(
-        "INSERT INTO users (username, display_name, avatar_url)
-         VALUES ($1, $2, $3)
+        "INSERT INTO users (id, username, display_name, avatar_url)
+         VALUES ($1, $2, $3, $4)
          RETURNING *"
     )
+    .bind(id)
     .bind(username)
     .bind(display_name)
     .bind(avatar_url)
@@ -289,9 +291,10 @@ pub async fn record_username_change(
     held_until: DateTime<Utc>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO username_history (user_id, old_username, held_until)
-         VALUES ($1, $2, $3)"
+        "INSERT INTO username_history (id, user_id, old_username, held_until)
+         VALUES ($1, $2, $3, $4)"
     )
+    .bind(Uuid::now_v7())
     .bind(user_id)
     .bind(old_username)
     .bind(held_until)
@@ -345,10 +348,11 @@ pub async fn create_user_with_link(
     let mut tx = pool.begin().await?;
 
     let user = sqlx::query_as::<_, User>(
-        "INSERT INTO users (username, display_name, avatar_url)
-         VALUES ($1, $2, $3)
+        "INSERT INTO users (id, username, display_name, avatar_url)
+         VALUES ($1, $2, $3, $4)
          RETURNING *"
     )
+    .bind(Uuid::now_v7())
     .bind(username)
     .bind(display_name)
     .bind(avatar_url)
@@ -356,9 +360,10 @@ pub async fn create_user_with_link(
     .await?;
 
     sqlx::query(
-        "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email, email_verified)
-         VALUES ($1, $2, $3, $4, $5)"
+        "INSERT INTO oauth_links (id, user_id, provider, provider_id, provider_email, email_verified)
+         VALUES ($1, $2, $3, $4, $5, $6)"
     )
+    .bind(Uuid::now_v7())
     .bind(user.id)
     .bind(provider)
     .bind(provider_id)
@@ -382,9 +387,10 @@ pub async fn change_username(
     let mut tx = pool.begin().await?;
 
     sqlx::query(
-        "INSERT INTO username_history (user_id, old_username, held_until)
-         VALUES ($1, $2, $3)"
+        "INSERT INTO username_history (id, user_id, old_username, held_until)
+         VALUES ($1, $2, $3, $4)"
     )
+    .bind(Uuid::now_v7())
     .bind(user_id)
     .bind(old_username)
     .bind(held_until)
