@@ -188,8 +188,8 @@ Per v3 review notes: `delete_all_refresh_tokens` deletes tokens without recordin
 ### OAuth authorize returns 401 for unauthenticated (R2, Gemini MINOR-13)
 Phase 8 (Consent UI Support) will add proper login redirect support. Current behavior (401 JSON error) is acceptable for first-party auto-approve clients.
 
-### client_secret_basic not supported (R2, Gemini MINOR-11)
-Only `client_secret_post` is supported, matching the discovery document. `client_secret_basic` support is future work for third-party client compatibility.
+### client_secret_basic now supported (SUPERSEDED)
+~~Only `client_secret_post` is supported.~~ v5 Phase 2 added `client_secret_basic` support for token, revoke, and introspect endpoints (631bbb0, d5a121a).
 
 ## v4 Phase 6 — UserInfo Endpoint
 
@@ -261,11 +261,11 @@ When a token has no kid or unknown kid, all keys are tried sequentially. O(N) fo
 ### Cross-client introspection is intentionally allowed
 Any authenticated OAuth client can introspect tokens issued to any other client. This is the resource-server model: backend APIs need to validate tokens regardless of which client obtained them. If per-client isolation were needed, an `aud` check would be added. Flagged as MAJOR by Claude; accepted as intentional design.
 
-### Basic auth credentials not URL-decoded per RFC 7617
-Client IDs and secrets are server-generated alphanumeric strings that never contain special characters. URL-decoding would require adding the `percent-encoding` crate for a scenario that cannot occur in practice.
+### Basic auth credentials now URL-decoded per RFC 6749 §2.3.1 (SUPERSEDED)
+~~Client IDs and secrets are server-generated alphanumeric strings that never contain special characters.~~ v5 Phase 2 added `percent_encoding::percent_decode_str()` for full RFC compliance (d5a121a).
 
-### Base64 fallback order in Basic auth (URL-safe before STANDARD)
-The `extract_client_credentials` function tries URL_SAFE_NO_PAD first, then STANDARD. This is inverted from what HTTP clients send (STANDARD), but functionally correct: values with `+` or `/` will fail URL-safe decode and fall through correctly.
+### Base64 decode order corrected (SUPERSEDED)
+~~URL_SAFE_NO_PAD tried first.~~ v5 Phase 2 corrected to STANDARD first per RFC 7617, URL_SAFE_NO_PAD as fallback (d5a121a).
 
 ## v4 Phase 10 — OIDC Back-Channel Logout
 
@@ -297,3 +297,14 @@ The `/oauth/userinfo` endpoint uses the actual `link.email_verified` value from 
 
 ### find_oauth_links_by_email already excludes soft-deleted users
 The query JOINs on `users` with `u.deleted_at IS NULL`. No additional fix needed.
+
+## v5 Phase 2 — Token Endpoint Auth: client_secret_basic
+
+### Non-Basic Authorization headers fall through to POST body (intentional)
+If the Authorization header uses a non-Basic scheme (e.g., Bearer), `extract_client_credentials` falls through to the POST body fallback. This is pragmatic — rejecting unrecognized schemes would break interop with clients that send both Bearer and POST body credentials on different endpoints.
+
+### URL_SAFE_NO_PAD base64 fallback is intentional
+After trying STANDARD base64 per RFC 7617, URL_SAFE_NO_PAD is tried as fallback for non-conformant clients. Harmless — invalid credentials will fail on client lookup regardless.
+
+### No test for percent-encoded Basic auth credentials (accepted)
+No integration test exercises the percent-decoding path with actual encoded characters. Client_ids are server-generated plain ASCII slugs, and secrets are random tokens. If user-chosen credentials are ever supported, add a test at that time.

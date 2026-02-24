@@ -1,8 +1,8 @@
 # v5 Workflow State
 
-**Current Phase:** 1 — JWKS Key Rotation & Algorithm Agility (REVIEW COMPLETE)
-**Current Step:** Phase 1 review converged (2 rounds, 0 major in round 2)
-**Status:** Phase 1 done. 34 unit + 111 integration tests pass. Ready for Phase 2.
+**Current Phase:** 2 — Token Endpoint Auth: client_secret_basic (REVIEW COMPLETE)
+**Current Step:** Phase 2 review converged (2 rounds, 0 major in round 2)
+**Status:** Phase 2 done. 34 unit + 116 integration tests pass. Ready for Phase 3.
 
 ## Progress
 
@@ -16,8 +16,12 @@
 | 1 | 1.6 | Update existing tests | Done |
 | 1 | 1.7 | Update example config | Done |
 | 1 | review | Standard review (2 rounds, Claude-only, converged) | Done |
-| 2 | 2.1-2.5 | Token endpoint auth: client_secret_basic | Pending |
-| 2 | review | Standard review | Pending |
+| 2 | 2.1 | Extract shared credential extraction | Done |
+| 2 | 2.2 | Apply to token endpoint | Done |
+| 2 | 2.3 | Apply to revocation endpoint | Done |
+| 2 | 2.4 | Update discovery document | Done |
+| 2 | 2.5 | Integration tests (5 new + 1 discovery update) | Done |
+| 2 | review | Standard review (2 rounds, Claude-only, converged) | Done |
 | 3 | 3.1-3.6 | OIDC compliance: auth_time | Pending |
 | 3 | review | Standard review | Pending |
 | 4 | 4.1-4.4 | WWW-Authenticate headers | Pending |
@@ -38,7 +42,8 @@ None.
 
 ## Recent Activity
 
-- Created v5 architecture plan, implementation plan, and workflow state (a0cafe7)
 - Phase 1 complete: JWKS key rotation + ES256/RS256 algorithm agility (f53899e)
-- Phase 1 review R1: 3 major + 7 minor found (Claude-only). Fixed all (68c86e3)
-- Phase 1 review R2: 0 major, 2 minor found and fixed (11713a4). Converged.
+- Phase 1 review: 2 rounds, converged (68c86e3, 11713a4)
+- Phase 2 complete: client_secret_basic on token/revoke/introspect (631bbb0)
+- Phase 2 review R1: 1 major (percent-decoding), 3 minor. Fixed all (d5a121a)
+- Phase 2 review R2: 0 major, 0 minor. Converged.
