@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use sqlx::PgPool;
 use tokio::net::TcpListener;
@@ -141,6 +142,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
 
     let app = Router::new()
         .merge(base_router)
+        .layer(DefaultBodyLimit::max(1_048_576)) // 1 MiB
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

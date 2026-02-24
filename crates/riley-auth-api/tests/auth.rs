@@ -1284,3 +1284,28 @@ fn account_merge_config_defaults_to_none() {
         );
     });
 }
+
+#[test]
+#[ignore]
+fn request_body_size_limit() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("bodylimit", "user").await;
+
+        // 2 MiB payload exceeds the 1 MiB limit
+        let oversized = "x".repeat(2 * 1024 * 1024);
+        let resp = client
+            .patch(s.url("/auth/me"))
+            .header("cookie", format!("auth_access={access_token}"))
+            .header("x-requested-with", "test")
+            .header("content-type", "application/json")
+            .body(oversized)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    });
+}

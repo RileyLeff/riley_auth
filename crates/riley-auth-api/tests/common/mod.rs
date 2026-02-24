@@ -150,6 +150,7 @@ impl TestServer {
 
         let app = axum::Router::new()
             .merge(routes::router_without_rate_limit())
+            .layer(axum::extract::DefaultBodyLimit::max(1_048_576)) // 1 MiB, matches production
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .with_state(state);
 
