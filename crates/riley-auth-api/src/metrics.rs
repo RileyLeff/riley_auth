@@ -6,6 +6,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use metrics::{counter, histogram};
 
+use subtle::ConstantTimeEq;
+
 use crate::server::AppState;
 
 /// Axum middleware that records HTTP request metrics.
@@ -44,8 +46,14 @@ pub async fn http_metrics_middleware(
 
 /// Normalize request paths to prevent high-cardinality labels.
 /// Replaces path segments that look like UUIDs or IDs with a placeholder.
+/// Caps depth at 4 segments to prevent cardinality explosion from arbitrary paths.
 fn normalize_path(path: &str) -> String {
     let segments: Vec<&str> = path.split('/').collect();
+    // Cap at 5 parts (empty + 4 segments, e.g. "/a/b/c/d")
+    // to prevent cardinality explosion from deeply nested 404 paths
+    if segments.len() > 5 {
+        return "/unknown".to_string();
+    }
     let normalized: Vec<&str> = segments
         .iter()
         .map(|s| {
@@ -100,7 +108,8 @@ pub async fn metrics_endpoint(
             .and_then(|v| v.strip_prefix("Bearer "));
 
         match provided {
-            Some(token) if token == expected => {}
+            Some(token)
+                if token.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() == 1 => {}
             _ => {
                 return (StatusCode::UNAUTHORIZED, "invalid or missing bearer token")
                     .into_response();
@@ -173,5 +182,22 @@ mod tests {
         assert!(!looks_like_id("me"));
         assert!(!looks_like_id(""));
         assert!(!looks_like_id("123")); // too short for numeric
+    }
+
+    #[test]
+    fn normalize_caps_deep_paths() {
+        // Deeply nested paths get collapsed to /unknown to prevent cardinality explosion
+        assert_eq!(normalize_path("/a/b/c/d/e"), "/unknown");
+        assert_eq!(normalize_path("/a/b/c/d/e/f/g"), "/unknown");
+        // 4-segment paths are still preserved
+        assert_eq!(normalize_path("/a/b/c/d"), "/a/b/c/d");
+    }
+
+    #[test]
+    fn normalize_handles_edge_cases() {
+        assert_eq!(normalize_path("/"), "/");
+        assert_eq!(normalize_path(""), "");
+        // Double slashes produce empty segments (preserved as-is)
+        assert_eq!(normalize_path("//auth//me"), "//auth//me");
     }
 }

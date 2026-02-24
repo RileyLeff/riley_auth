@@ -410,10 +410,14 @@ impl Config {
         let content = std::fs::read_to_string(path).map_err(|e| {
             Error::Config(format!("cannot read {}: {e}", path.display()))
         })?;
-        let config: Config = toml::from_str(&content).map_err(|e| Error::ConfigParse {
+        let mut config: Config = toml::from_str(&content).map_err(|e| Error::ConfigParse {
             path: path.to_path_buf(),
             source: e,
         })?;
+        // Normalize public_url: strip trailing slashes to avoid double-slash in URLs
+        while config.server.public_url.ends_with('/') {
+            config.server.public_url.pop();
+        }
         // Validate JWT key config
         let resolved_keys = config.jwt.resolved_keys()?;
         if resolved_keys.is_empty() {

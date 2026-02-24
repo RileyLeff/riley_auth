@@ -262,7 +262,7 @@ async fn register_client(
 ) -> Result<(StatusCode, Json<RegisterClientResponse>), Error> {
     require_admin(&state, &jar).await?;
 
-    if body.name.is_empty() || body.name.len() > 256 {
+    if body.name.trim().is_empty() || body.name.len() > 256 {
         return Err(Error::BadRequest("client name must be 1-256 characters".to_string()));
     }
     if body.redirect_uris.is_empty() {
