@@ -2000,6 +2000,9 @@ fn consent_get_returns_context() {
         assert_eq!(scopes[0]["description"], "Read your profile information");
         assert_eq!(scopes[1]["name"], "write:profile");
         assert_eq!(scopes[1]["description"], "Update your profile information");
+        // expires_at should be present and parseable as RFC 3339
+        let expires_at_str = body["expires_at"].as_str().unwrap();
+        chrono::DateTime::parse_from_rfc3339(expires_at_str).unwrap();
     });
 }
 

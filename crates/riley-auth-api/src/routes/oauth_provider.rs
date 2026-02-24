@@ -72,6 +72,7 @@ pub struct ConsentResponse {
     redirect_uri: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<String>,
+    expires_at: String,
 }
 
 #[derive(Serialize)]
@@ -492,6 +493,7 @@ async fn consent(
         scopes,
         redirect_uri: consent_req.redirect_uri,
         state: consent_req.state,
+        expires_at: consent_req.expires_at.to_rfc3339(),
     }))
 }
 
@@ -556,6 +558,18 @@ async fn consent_decision(
     let client = db::find_client_by_id(&state.db, consent_req.client_id)
         .await?
         .ok_or(Error::InvalidClient)?;
+
+    // Re-validate redirect_uri against the client's current registered URIs.
+    // The URI was validated at authorize time, but the client config may have
+    // changed during the consent window (up to 10 minutes).
+    if !client.redirect_uris.contains(&consent_req.redirect_uri) {
+        return Ok(redirect_error(
+            redirect_uri,
+            "server_error",
+            "redirect_uri no longer registered for this client",
+            state_param,
+        ));
+    }
 
     if let Err(e) = db::store_authorization_code(
         &state.db,
