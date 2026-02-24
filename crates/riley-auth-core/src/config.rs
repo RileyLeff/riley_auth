@@ -145,6 +145,9 @@ fn default_jwks_cache_max_age() -> u64 { 3600 }
 pub struct OAuthProvidersConfig {
     pub google: Option<OAuthProviderConfig>,
     pub github: Option<OAuthProviderConfig>,
+    /// URL of the deployer's login page. When `prompt=login` is requested,
+    /// riley_auth redirects here so the user can re-authenticate.
+    pub login_url: Option<String>,
     /// URL of the deployer's consent page. When a non-auto-approve client
     /// triggers the authorize flow, riley_auth redirects here with
     /// `?consent_id={id}` so the frontend can render a consent UI.

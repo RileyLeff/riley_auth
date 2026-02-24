@@ -1597,6 +1597,369 @@ fn authorize_pre_redirect_errors_return_http() {
 
 #[test]
 #[ignore]
+fn prompt_none_with_session_issues_code() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("promptnone", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Prompt None Client",
+            "prompt-none-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true, // auto_approve
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // prompt=none with valid session + auto_approve → should issue code
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "prompt-none-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("state", "silent-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("prompt", "none"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert!(params.contains_key("code"), "expected code in redirect, got: {location}");
+        assert_eq!(params["state"], "silent-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn prompt_none_without_session_returns_login_required() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Prompt None NoSession",
+            "prompt-none-nosess",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // prompt=none without session → login_required error redirect
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "prompt-none-nosess"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("state", "no-session"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("prompt", "none"),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "login_required");
+        assert_eq!(params["state"], "no-session");
+    });
+}
+
+#[test]
+#[ignore]
+fn prompt_none_with_consent_required_returns_consent_required() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("promptconsent", "user").await;
+
+        // Non-auto-approve client requires consent
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Prompt None Consent",
+            "prompt-none-consent",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            false, // auto_approve = false
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // prompt=none with session but consent required → consent_required error redirect
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "prompt-none-consent"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("state", "consent-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("prompt", "none"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "consent_required");
+        assert_eq!(params["state"], "consent-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn prompt_login_without_login_url_returns_login_required() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("promptlogin", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Prompt Login Client",
+            "prompt-login-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // prompt=login with no login_url configured → login_required error redirect
+        // (test server has no login_url configured)
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "prompt-login-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("state", "login-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("prompt", "login"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "login_required");
+        assert_eq!(params["state"], "login-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn prompt_unknown_value_returns_invalid_request() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("promptunknown", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Prompt Unknown Client",
+            "prompt-unknown-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Unknown prompt value → invalid_request error redirect
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "prompt-unknown-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("state", "unknown-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("prompt", "select_account"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "invalid_request");
+        assert_eq!(params["state"], "unknown-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn prompt_none_combined_with_login_returns_invalid_request() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("promptcombo", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Prompt Combo Client",
+            "prompt-combo-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // none + login → invalid_request (none cannot combine with others)
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "prompt-combo-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("state", "combo-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("prompt", "none login"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "invalid_request");
+        assert_eq!(params["state"], "combo-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn prompt_consent_with_auto_approve_issues_code() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("promptconsentaa", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Prompt Consent Auto",
+            "prompt-consent-auto",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true, // auto_approve — overrides prompt=consent
+        )
+        .await
+        .unwrap();
+
+        let (_, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // prompt=consent with auto_approve → auto_approve wins, code issued
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "prompt-consent-auto"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("state", "consent-auto"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("prompt", "consent"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert!(params.contains_key("code"), "expected code, got: {location}");
+        assert_eq!(params["state"], "consent-auto");
+    });
+}
+
+#[test]
+#[ignore]
 fn last_admin_protection() {
     let s = server();
     runtime().block_on(async {
@@ -3486,6 +3849,12 @@ fn oidc_discovery_document() {
         assert_eq!(
             doc["userinfo_endpoint"],
             "http://localhost:3000/oauth/userinfo"
+        );
+
+        // prompt_values_supported
+        assert_eq!(
+            doc["prompt_values_supported"],
+            serde_json::json!(["none", "login", "consent"])
         );
     });
 }

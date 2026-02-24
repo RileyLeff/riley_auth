@@ -92,6 +92,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "scopes_supported": scope_names,
         "claims_supported": ["sub", "name", "preferred_username", "picture", "email", "email_verified", "updated_at", "auth_time"],
         "code_challenge_methods_supported": ["S256"],
+        "prompt_values_supported": ["none", "login", "consent"],
     }))
 }
 

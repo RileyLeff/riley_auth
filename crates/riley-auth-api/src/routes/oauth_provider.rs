@@ -34,6 +34,7 @@ pub struct AuthorizeQuery {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     nonce: Option<String>,
+    prompt: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -255,6 +256,88 @@ async fn authorize(
         vec![]
     };
 
+    // Parse and validate prompt parameter (OIDC Core 1.0 Section 3.1.2.1).
+    let prompt_values: Vec<&str> = query.prompt.as_deref()
+        .map(|p| p.split_whitespace().collect())
+        .unwrap_or_default();
+
+    for v in &prompt_values {
+        if !["none", "login", "consent"].contains(v) {
+            return Ok(redirect_error(
+                redirect_uri,
+                "invalid_request",
+                &format!("unsupported prompt value: {v}"),
+                state_param,
+            ));
+        }
+    }
+    // "none" must not be combined with other values per OIDC Core 1.0 Section 3.1.2.1.
+    if prompt_values.contains(&"none") && prompt_values.len() > 1 {
+        return Ok(redirect_error(
+            redirect_uri,
+            "invalid_request",
+            "prompt=none must not be combined with other values",
+            state_param,
+        ));
+    }
+
+    let prompt_none = prompt_values.contains(&"none");
+    let prompt_login = prompt_values.contains(&"login");
+
+    // prompt=login: force re-authentication by redirecting to login_url.
+    // The authorize request is encoded as a return_to URL so the user
+    // returns here (without prompt=login) after re-authenticating.
+    if prompt_login {
+        match state.config.oauth.login_url.as_deref() {
+            Some(login_url) => {
+                let Ok(mut login_redirect) = url::Url::parse(login_url) else {
+                    tracing::error!(login_url, "configured login_url is not a valid URL");
+                    return Ok(redirect_error(
+                        redirect_uri, "server_error", "internal error", state_param,
+                    ));
+                };
+                // Build the return-to authorize URL without prompt=login to prevent loops
+                let mut return_url = url::Url::parse(&format!(
+                    "{}/oauth/authorize", state.config.server.public_url
+                )).expect("public_url is a valid URL");
+                {
+                    let mut params = return_url.query_pairs_mut();
+                    params.append_pair("client_id", &query.client_id);
+                    params.append_pair("redirect_uri", &query.redirect_uri);
+                    params.append_pair("response_type", &query.response_type);
+                    if let Some(ref s) = query.scope {
+                        params.append_pair("scope", s);
+                    }
+                    if let Some(ref s) = query.state {
+                        params.append_pair("state", s);
+                    }
+                    if let Some(ref c) = query.code_challenge {
+                        params.append_pair("code_challenge", c);
+                    }
+                    if let Some(ref m) = query.code_challenge_method {
+                        params.append_pair("code_challenge_method", m);
+                    }
+                    if let Some(ref n) = query.nonce {
+                        params.append_pair("nonce", n);
+                    }
+                }
+                login_redirect.query_pairs_mut()
+                    .append_pair("return_to", return_url.as_str());
+                return Ok(
+                    (StatusCode::FOUND, [("location", login_redirect.to_string())]).into_response()
+                );
+            }
+            None => {
+                return Ok(redirect_error(
+                    redirect_uri,
+                    "login_required",
+                    "re-authentication required but no login_url is configured",
+                    state_param,
+                ));
+            }
+        }
+    }
+
     // User must be authenticated (cookie-based) — check BEFORE consent,
     // because consent evaluation requires knowing who the user is.
     let access_token = match jar.get(&state.cookie_names.access) {
@@ -306,7 +389,17 @@ async fn authorize(
     // Consent check — must come after authentication so the user is known.
     // For non-auto-approve clients, store the authorization request in the DB
     // and redirect to the deployer's consent URL.
+    // prompt=none: must never show UI — return consent_required error redirect
+    // instead of redirecting to consent_url.
     if !client.auto_approve {
+        if prompt_none {
+            return Ok(redirect_error(
+                redirect_uri,
+                "consent_required",
+                "user consent is required",
+                state_param,
+            ));
+        }
         let consent_url = match state.config.oauth.consent_url.as_deref() {
             Some(url) => url,
             None => {

@@ -65,6 +65,16 @@ public_key_path = "/data/keys/public.pem"
 #                      and exactly one existing user matches
 # account_merge_policy = "none"
 
+# URL of your login page. Used when prompt=login forces re-authentication.
+# riley_auth redirects here with ?return_to=<authorize_url> so the user
+# returns to the authorize flow after re-authenticating.
+# If omitted, prompt=login returns ?error=login_required to the client.
+# login_url = "https://auth.example.com/login"
+
+# URL of your consent page. When a non-auto-approve client triggers the
+# authorize flow, riley_auth redirects here with ?consent_id=<id>.
+# consent_url = "https://auth.example.com/consent"
+
 [oauth.google]
 client_id = "env:GOOGLE_CLIENT_ID"
 client_secret = "env:GOOGLE_CLIENT_SECRET"
