@@ -54,8 +54,14 @@ async fn health(axum::extract::State(_state): axum::extract::State<AppState>) ->
     })
 }
 
-async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
-    Json(state.keys.jwks())
+async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> (HeaderMap, Json<serde_json::Value>) {
+    let mut headers = HeaderMap::new();
+    let max_age = state.config.jwt.jwks_cache_max_age_secs;
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        format!("public, max-age={max_age}").parse().unwrap(),
+    );
+    (headers, Json(state.keys.jwks()))
 }
 
 /// OpenID Connect Discovery document (per OpenID Connect Discovery 1.0).
@@ -63,6 +69,8 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
     let base = state.config.server.public_url.trim_end_matches('/');
     let mut scope_names: Vec<&str> = vec!["openid", "profile", "email"];
     scope_names.extend(state.config.scopes.definitions.iter().map(|d| d.name.as_str()));
+
+    let signing_algs: Vec<String> = state.keys.algorithms().into_iter().map(|a| a.to_string()).collect();
 
     Json(serde_json::json!({
         "issuer": state.config.jwt.issuer,
@@ -75,7 +83,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": ["RS256"],
+        "id_token_signing_alg_values_supported": signing_algs,
         "token_endpoint_auth_methods_supported": ["client_secret_post"],
         "introspection_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
         "backchannel_logout_supported": true,

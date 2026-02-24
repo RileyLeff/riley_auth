@@ -1151,7 +1151,8 @@ fn create_setup_token(
         purpose: "setup".to_string(),
     };
 
-    let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    let mut header = jsonwebtoken::Header::new(keys.active_algorithm());
+    header.kid = Some(keys.active_kid().to_string());
     jsonwebtoken::encode(&header, &claims, &keys.encoding_key())
         .map_err(|e| Error::OAuth(format!("failed to create setup token: {e}")))
 }
@@ -1161,7 +1162,7 @@ fn decode_setup_token(
     config: &Config,
     token: &str,
 ) -> Result<oauth::OAuthProfile, Error> {
-    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    let mut validation = jsonwebtoken::Validation::new(keys.active_algorithm());
     validation.set_issuer(&[&config.jwt.issuer]);
     validation.validate_aud = false;
     validation.leeway = 0;

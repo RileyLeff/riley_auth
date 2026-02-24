@@ -58,10 +58,47 @@ pub struct DatabaseConfig {
     pub schema: Option<String>,
 }
 
+/// Signing algorithm for JWT keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum SigningAlgorithm {
+    /// RSA PKCS#1 v1.5 with SHA-256
+    RS256,
+    /// ECDSA with P-256 and SHA-256
+    ES256,
+}
+
+impl std::fmt::Display for SigningAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RS256 => write!(f, "RS256"),
+            Self::ES256 => write!(f, "ES256"),
+        }
+    }
+}
+
+/// Configuration for a single signing key.
 #[derive(Debug, Clone, Deserialize)]
-pub struct JwtConfig {
+pub struct KeyConfig {
+    pub algorithm: SigningAlgorithm,
     pub private_key_path: PathBuf,
     pub public_key_path: PathBuf,
+    /// Optional key ID. If omitted, computed as SHA-256 thumbprint of the public key.
+    pub kid: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JwtConfig {
+    // --- New multi-key format ---
+    /// Ordered list of signing keys. First entry is the active signing key.
+    #[serde(default)]
+    pub keys: Vec<KeyConfig>,
+
+    // --- Legacy flat format (backward compat) ---
+    /// Deprecated: use `[[jwt.keys]]` instead.
+    pub private_key_path: Option<PathBuf>,
+    /// Deprecated: use `[[jwt.keys]]` instead.
+    pub public_key_path: Option<PathBuf>,
+
     #[serde(default = "default_access_ttl")]
     pub access_token_ttl_secs: u64,
     #[serde(default = "default_refresh_ttl")]
@@ -70,7 +107,33 @@ pub struct JwtConfig {
     pub issuer: String,
     #[serde(default = "default_authz_code_ttl")]
     pub authorization_code_ttl_secs: u64,
+    #[serde(default = "default_jwks_cache_max_age")]
+    pub jwks_cache_max_age_secs: u64,
 }
+
+impl JwtConfig {
+    /// Resolve the effective key configs, handling backward compatibility.
+    /// If `[[jwt.keys]]` is present, use it. Otherwise, if flat `private_key_path`
+    /// and `public_key_path` are present, treat as a single RS256 key.
+    pub fn resolved_keys(&self) -> Result<Vec<KeyConfig>> {
+        if !self.keys.is_empty() {
+            return Ok(self.keys.clone());
+        }
+        match (&self.private_key_path, &self.public_key_path) {
+            (Some(priv_path), Some(pub_path)) => Ok(vec![KeyConfig {
+                algorithm: SigningAlgorithm::RS256,
+                private_key_path: priv_path.clone(),
+                public_key_path: pub_path.clone(),
+                kid: None,
+            }]),
+            _ => Err(Error::Config(
+                "jwt config must specify either [[jwt.keys]] or both private_key_path and public_key_path".to_string(),
+            )),
+        }
+    }
+}
+
+fn default_jwks_cache_max_age() -> u64 { 3600 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OAuthProvidersConfig {
@@ -322,6 +385,11 @@ impl Config {
             path: path.to_path_buf(),
             source: e,
         })?;
+        // Validate JWT key config
+        let resolved_keys = config.jwt.resolved_keys()?;
+        if resolved_keys.is_empty() {
+            return Err(Error::Config("jwt config must have at least one key".to_string()));
+        }
         // Validate scope definition names
         for def in &config.scopes.definitions {
             validate_scope_name(&def.name)?;

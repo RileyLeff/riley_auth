@@ -19,11 +19,12 @@ use reqwest::{Client, StatusCode};
 use riley_auth_api::routes;
 use riley_auth_api::server::AppState;
 use riley_auth_core::config::{
-    Config, ConfigValue, DatabaseConfig, JwtConfig, MaintenanceConfig, OAuthProvidersConfig,
-    RateLimitingConfig, ScopeDefinition, ScopesConfig, ServerConfig, UsernameConfig, WebhooksConfig,
+    Config, ConfigValue, DatabaseConfig, JwtConfig, KeyConfig, MaintenanceConfig,
+    OAuthProvidersConfig, RateLimitingConfig, ScopeDefinition, ScopesConfig, ServerConfig,
+    SigningAlgorithm, UsernameConfig, WebhooksConfig,
 };
 use riley_auth_core::db;
-use riley_auth_core::jwt::{self, Keys};
+use riley_auth_core::jwt::{self, KeySet};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 
@@ -48,7 +49,7 @@ fn server() -> &'static TestServer {
 struct TestServer {
     addr: SocketAddr,
     db: PgPool,
-    keys: Arc<Keys>,
+    keys: Arc<KeySet>,
     config: Arc<Config>,
     _key_dir: tempfile::TempDir,
 }
@@ -69,13 +70,19 @@ impl TestServer {
             .expect("failed to connect to database");
         db::migrate(&pool).await.expect("failed to run migrations");
 
-        // Generate test keys
+        // Generate test keys (ES256 by default)
         let key_dir = tempfile::tempdir().expect("failed to create temp dir");
         jwt::generate_keypair(key_dir.path()).expect("failed to generate keypair");
 
         let private_path = key_dir.path().join("private.pem");
         let public_path = key_dir.path().join("public.pem");
-        let keys = Keys::from_pem_files(&private_path, &public_path).expect("failed to load keys");
+        let key_config = KeyConfig {
+            algorithm: SigningAlgorithm::ES256,
+            private_key_path: private_path.clone(),
+            public_key_path: public_path.clone(),
+            kid: None,
+        };
+        let keys = KeySet::from_configs(&[key_config.clone()]).expect("failed to load keys");
 
         let config = Config {
             server: ServerConfig {
@@ -93,12 +100,14 @@ impl TestServer {
                 schema: None,
             },
             jwt: JwtConfig {
-                private_key_path: private_path,
-                public_key_path: public_path,
+                keys: vec![key_config],
+                private_key_path: None,
+                public_key_path: None,
                 access_token_ttl_secs: 900,
                 refresh_token_ttl_secs: 2_592_000,
                 issuer: "riley-auth-test".to_string(),
                 authorization_code_ttl_secs: 300,
+                jwks_cache_max_age_secs: 3600,
             },
             oauth: OAuthProvidersConfig {
                 consent_url: Some("https://auth.example.com/consent".to_string()),
@@ -309,9 +318,11 @@ fn jwks_endpoint() {
         let body: serde_json::Value = resp.json().await.unwrap();
         let keys = body["keys"].as_array().unwrap();
         assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0]["kty"], "RSA");
-        assert_eq!(keys[0]["alg"], "RS256");
-        assert!(keys[0]["n"].as_str().unwrap().len() > 100);
+        assert_eq!(keys[0]["kty"], "EC");
+        assert_eq!(keys[0]["alg"], "ES256");
+        assert_eq!(keys[0]["crv"], "P-256");
+        assert!(keys[0]["x"].as_str().unwrap().len() > 10);
+        assert!(keys[0]["y"].as_str().unwrap().len() > 10);
     });
 }
 
@@ -3075,7 +3086,7 @@ fn oidc_discovery_document() {
         assert_eq!(doc["subject_types_supported"], serde_json::json!(["public"]));
         assert_eq!(
             doc["id_token_signing_alg_values_supported"],
-            serde_json::json!(["RS256"])
+            serde_json::json!(["ES256"])
         );
         assert_eq!(
             doc["code_challenge_methods_supported"],
@@ -5387,7 +5398,7 @@ fn link_confirm_adds_provider_to_existing_account() {
                 "purpose": "setup"
             });
 
-            let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+            let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
             jsonwebtoken::encode(&header, &claims, &s.keys.encoding_key()).unwrap()
         };
 
@@ -5454,7 +5465,7 @@ fn link_confirm_rejects_already_linked_provider() {
                 "purpose": "setup"
             });
 
-            let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+            let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
             jsonwebtoken::encode(&header, &claims, &s.keys.encoding_key()).unwrap()
         };
 
@@ -5747,7 +5758,7 @@ fn backchannel_logout_dispatched_on_logout_all() {
 
         let token = body.strip_prefix("logout_token=").unwrap();
 
-        // Decode the JWT header to verify it's RS256
+        // Decode the JWT header to verify it uses the configured signing algorithm
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3, "logout token should be a JWT");
 

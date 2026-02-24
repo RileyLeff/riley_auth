@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use riley_auth_core::config::validate_scope_name;
+use riley_auth_core::config::{validate_scope_name, SigningAlgorithm};
 use riley_auth_core::db;
-use riley_auth_core::jwt::{self, Keys};
+use riley_auth_core::jwt::{self, KeySet};
 use riley_auth_core::webhooks;
 
 #[derive(Parser)]
@@ -24,11 +24,17 @@ enum Command {
     Serve,
     /// Run database migrations
     Migrate,
-    /// Generate RS256 keypair for JWT signing
+    /// Generate keypair for JWT signing
     GenerateKeys {
         /// Output directory for key files
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
+        /// Signing algorithm (es256 or rs256)
+        #[arg(short, long, default_value = "es256")]
+        algorithm: String,
+        /// RSA key size in bits (only used with rs256)
+        #[arg(long)]
+        key_size: Option<u32>,
     },
     /// Check config and database connectivity
     Validate,
@@ -107,8 +113,13 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // generate-keys doesn't need config or db
-    if let Command::GenerateKeys { output } = cli.command {
-        jwt::generate_keypair(&output)?;
+    if let Command::GenerateKeys { output, algorithm, key_size } = cli.command {
+        let alg = match algorithm.to_lowercase().as_str() {
+            "es256" => SigningAlgorithm::ES256,
+            "rs256" => SigningAlgorithm::RS256,
+            other => anyhow::bail!("unsupported algorithm '{}' (expected es256 or rs256)", other),
+        };
+        jwt::generate_keypair_with_algorithm(&output, alg, key_size)?;
         return Ok(());
     }
 
@@ -119,10 +130,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve => {
             db::migrate(&pool).await?;
             tracing::info!("migrations complete");
-            let keys = Keys::from_pem_files(
-                &config.jwt.private_key_path,
-                &config.jwt.public_key_path,
-            )?;
+            let keys = KeySet::from_configs(&config.jwt.resolved_keys()?)?;
             riley_auth_api::serve(config, pool, keys).await?;
         }
         Command::Migrate => {
@@ -133,10 +141,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("config loaded successfully");
             sqlx::query("SELECT 1").execute(&pool).await?;
             tracing::info!("database connection successful");
-            let _keys = Keys::from_pem_files(
-                &config.jwt.private_key_path,
-                &config.jwt.public_key_path,
-            )?;
+            let _keys = KeySet::from_configs(&config.jwt.resolved_keys()?)?;
             tracing::info!("JWT keys loaded successfully");
         }
         Command::ListUsers => {
@@ -358,10 +363,14 @@ async fn dispatch_backchannel_logout_cli(
     pool: &sqlx::PgPool,
     user_id: uuid::Uuid,
 ) {
-    let keys = match Keys::from_pem_files(
-        &config.jwt.private_key_path,
-        &config.jwt.public_key_path,
-    ) {
+    let key_configs = match config.jwt.resolved_keys() {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::warn!("skipping backchannel logout (cannot resolve JWT key config: {e})");
+            return;
+        }
+    };
+    let keys = match KeySet::from_configs(&key_configs) {
         Ok(k) => k,
         Err(e) => {
             tracing::warn!("skipping backchannel logout (cannot load JWT keys: {e})");

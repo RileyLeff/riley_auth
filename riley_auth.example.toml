@@ -31,12 +31,27 @@ max_connections = 10                       # Connection pool size (default: 10)
 # schema = "riley_auth"                    # Optional: SET search_path TO <schema> on each connection
 
 [jwt]
-private_key_path = "/data/keys/private.pem"  # RS256 private key (signs tokens)
-public_key_path = "/data/keys/public.pem"    # RS256 public key (verifies tokens, served at /jwks.json)
 access_token_ttl_secs = 900                  # Access token lifetime (default: 900 = 15 minutes)
 refresh_token_ttl_secs = 2592000             # Refresh token lifetime (default: 2592000 = 30 days)
 issuer = "riley-auth"                        # JWT "iss" claim (default: riley-auth)
 authorization_code_ttl_secs = 300            # OAuth authorization code lifetime (default: 300 = 5 min)
+jwks_cache_max_age_secs = 3600               # Cache-Control max-age for /.well-known/jwks.json (default: 3600)
+
+# Signing keys — the first key is the active signing key.
+# Multiple keys enable zero-downtime key rotation: add a new key first,
+# wait for caches to expire, then remove the old one.
+# Supported algorithms: ES256 (recommended) and RS256.
+# Generate with: riley-auth generate-keys --algorithm es256
+
+[[jwt.keys]]
+algorithm = "ES256"                          # ES256 (ECDSA P-256) or RS256 (RSA 2048+)
+private_key_path = "/data/keys/private.pem"
+public_key_path = "/data/keys/public.pem"
+# kid = "key-2025"                           # Optional key ID (auto-generated from key hash if omitted)
+
+# Legacy flat format is also supported (treated as a single RS256 key):
+# private_key_path = "/data/keys/private.pem"
+# public_key_path = "/data/keys/public.pem"
 
 # OAuth providers — configure one or both.
 # Generate credentials at:

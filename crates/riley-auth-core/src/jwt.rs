@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -9,7 +10,7 @@ use jsonwebtoken::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config::JwtConfig;
+use crate::config::{JwtConfig, KeyConfig, SigningAlgorithm};
 use crate::error::{Error, Result};
 
 /// JWT claims for access tokens.
@@ -58,41 +59,119 @@ pub struct LogoutTokenClaims {
     pub sid: Option<String>,
 }
 
-/// Loaded key material for signing and verification.
+/// JWKS parameters for a single key, varies by algorithm.
 #[derive(Clone)]
-pub struct Keys {
-    encoding: EncodingKey,
-    decoding: DecodingKey,
-    /// RSA public key modulus (n) for JWKS, base64url-encoded
-    pub n: String,
-    /// RSA public key exponent (e) for JWKS, base64url-encoded
-    pub e: String,
-    /// Key ID (SHA-256 thumbprint of the public key)
-    pub kid: String,
+enum JwksParams {
+    Rsa {
+        /// Base64url-encoded modulus
+        n: String,
+        /// Base64url-encoded exponent
+        e: String,
+    },
+    Ec {
+        /// P-256 curve name
+        crv: &'static str,
+        /// Base64url-encoded x coordinate
+        x: String,
+        /// Base64url-encoded y coordinate
+        y: String,
+    },
 }
 
-impl Keys {
-    /// Load RS256 keys from PEM files.
+/// A single loaded signing/verification key.
+#[derive(Clone)]
+struct KeyEntry {
+    algorithm: Algorithm,
+    encoding: EncodingKey,
+    decoding: DecodingKey,
+    kid: String,
+    jwks_params: JwksParams,
+}
+
+/// Multi-key key set supporting rotation and algorithm agility.
+/// The first key is the active signing key. All keys are available for verification.
+#[derive(Clone)]
+pub struct KeySet {
+    entries: Vec<KeyEntry>,
+    kid_index: HashMap<String, usize>,
+}
+
+/// Backward-compatible type alias.
+pub type Keys = KeySet;
+
+impl KeySet {
+    /// Load keys from a list of key configs.
+    pub fn from_configs(configs: &[KeyConfig]) -> Result<Self> {
+        if configs.is_empty() {
+            return Err(Error::Config("at least one signing key is required".to_string()));
+        }
+
+        let mut entries = Vec::with_capacity(configs.len());
+        let mut kid_index = HashMap::new();
+
+        for (i, kc) in configs.iter().enumerate() {
+            let private_pem = std::fs::read(&kc.private_key_path).map_err(|e| {
+                Error::Config(format!("cannot read private key {}: {e}", kc.private_key_path.display()))
+            })?;
+            let public_pem = std::fs::read(&kc.public_key_path).map_err(|e| {
+                Error::Config(format!("cannot read public key {}: {e}", kc.public_key_path.display()))
+            })?;
+
+            let kid = kc.kid.clone().unwrap_or_else(|| compute_kid(&public_pem));
+
+            let (algorithm, encoding, decoding, jwks_params) = match kc.algorithm {
+                SigningAlgorithm::RS256 => {
+                    let enc = EncodingKey::from_rsa_pem(&private_pem)
+                        .map_err(|e| Error::Config(format!("invalid RSA private key: {e}")))?;
+                    let dec = DecodingKey::from_rsa_pem(&public_pem)
+                        .map_err(|e| Error::Config(format!("invalid RSA public key: {e}")))?;
+                    let (n, e) = extract_rsa_components(&public_pem)?;
+                    (Algorithm::RS256, enc, dec, JwksParams::Rsa { n, e })
+                }
+                SigningAlgorithm::ES256 => {
+                    let enc = EncodingKey::from_ec_pem(&private_pem)
+                        .map_err(|e| Error::Config(format!("invalid EC private key: {e}")))?;
+                    let dec = DecodingKey::from_ec_pem(&public_pem)
+                        .map_err(|e| Error::Config(format!("invalid EC public key: {e}")))?;
+                    let (x, y) = extract_ec_point(&public_pem)?;
+                    (Algorithm::ES256, enc, dec, JwksParams::Ec { crv: "P-256", x, y })
+                }
+            };
+
+            kid_index.insert(kid.clone(), i);
+            entries.push(KeyEntry { algorithm, encoding, decoding, kid, jwks_params });
+        }
+
+        Ok(Self { entries, kid_index })
+    }
+
+    /// Load a single RS256 key from PEM files (backward compat).
     pub fn from_pem_files(private_path: &Path, public_path: &Path) -> Result<Self> {
-        let private_pem = std::fs::read(private_path).map_err(|e| {
-            Error::Config(format!("cannot read private key {}: {e}", private_path.display()))
-        })?;
-        let public_pem = std::fs::read(public_path).map_err(|e| {
-            Error::Config(format!("cannot read public key {}: {e}", public_path.display()))
-        })?;
+        let config = KeyConfig {
+            algorithm: SigningAlgorithm::RS256,
+            private_key_path: private_path.to_path_buf(),
+            public_key_path: public_path.to_path_buf(),
+            kid: None,
+        };
+        Self::from_configs(&[config])
+    }
 
-        let encoding = EncodingKey::from_rsa_pem(&private_pem)
-            .map_err(|e| Error::Config(format!("invalid private key: {e}")))?;
-        let decoding = DecodingKey::from_rsa_pem(&public_pem)
-            .map_err(|e| Error::Config(format!("invalid public key: {e}")))?;
+    /// The active signing key's kid.
+    pub fn active_kid(&self) -> &str {
+        &self.entries[0].kid
+    }
 
-        // Parse public key to extract n and e for JWKS
-        let (n, e) = extract_rsa_components(&public_pem)?;
-
-        // Key ID = truncated SHA-256 of the DER-encoded public key
-        let kid = compute_kid(&public_pem);
-
-        Ok(Self { encoding, decoding, n, e, kid })
+    /// The distinct algorithms configured across all keys.
+    pub fn algorithms(&self) -> Vec<String> {
+        let mut algs: Vec<String> = self.entries.iter()
+            .map(|e| match e.algorithm {
+                Algorithm::RS256 => "RS256".to_string(),
+                Algorithm::ES256 => "ES256".to_string(),
+                _ => format!("{:?}", e.algorithm),
+            })
+            .collect();
+        algs.dedup();
+        algs
     }
 
     /// Create a signed access token.
@@ -119,6 +198,7 @@ impl Keys {
     ) -> Result<String> {
         let now = Utc::now();
         let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
+        let active = &self.entries[0];
 
         let claims = Claims {
             sub: user_id.to_string(),
@@ -131,10 +211,10 @@ impl Keys {
             scope: scope.map(String::from),
         };
 
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(self.kid.clone());
+        let mut header = Header::new(active.algorithm);
+        header.kid = Some(active.kid.clone());
 
-        encode(&header, &claims, &self.encoding)
+        encode(&header, &claims, &active.encoding)
             .map_err(|e| Error::Config(format!("failed to sign token: {e}")))
     }
 
@@ -144,24 +224,22 @@ impl Keys {
         config: &JwtConfig,
         token: &str,
     ) -> Result<TokenData<Claims>> {
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&[&config.issuer]);
-        validation.leeway = 0;
-        // We validate audience per-route, not globally
-        validation.validate_aud = false;
-
-        decode::<Claims>(token, &self.decoding, &validation)
-            .map_err(|_| Error::InvalidToken)
+        self.verify_token(config, token)
     }
 
     /// Encoding key for signing (used by setup tokens etc.)
     pub fn encoding_key(&self) -> &EncodingKey {
-        &self.encoding
+        &self.entries[0].encoding
     }
 
-    /// Decoding key for verification.
+    /// Decoding key for verification (tries kid match first).
     pub fn decoding_key(&self) -> &DecodingKey {
-        &self.decoding
+        &self.entries[0].decoding
+    }
+
+    /// The active signing algorithm.
+    pub fn active_algorithm(&self) -> Algorithm {
+        self.entries[0].algorithm
     }
 
     /// Create a signed OIDC ID token.
@@ -177,6 +255,7 @@ impl Keys {
     ) -> Result<String> {
         let now = Utc::now();
         let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
+        let active = &self.entries[0];
 
         let claims = IdTokenClaims {
             sub: user_id.to_string(),
@@ -190,10 +269,10 @@ impl Keys {
             picture: avatar_url.map(String::from),
         };
 
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(self.kid.clone());
+        let mut header = Header::new(active.algorithm);
+        header.kid = Some(active.kid.clone());
 
-        encode(&header, &claims, &self.encoding)
+        encode(&header, &claims, &active.encoding)
             .map_err(|e| Error::Config(format!("failed to sign id token: {e}")))
     }
 
@@ -209,6 +288,7 @@ impl Keys {
         let now = Utc::now();
         // Logout tokens get a short 2-minute validity window
         let exp = now + Duration::seconds(120);
+        let active = &self.entries[0];
 
         let claims = LogoutTokenClaims {
             iss: config.issuer.clone(),
@@ -223,25 +303,77 @@ impl Keys {
             sid: sid.map(String::from),
         };
 
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(self.kid.clone());
+        let mut header = Header::new(active.algorithm);
+        header.kid = Some(active.kid.clone());
 
-        encode(&header, &claims, &self.encoding)
+        encode(&header, &claims, &active.encoding)
             .map_err(|e| Error::Config(format!("failed to sign logout token: {e}")))
     }
 
-    /// JWKS response body.
+    /// JWKS response body containing all keys.
     pub fn jwks(&self) -> serde_json::Value {
-        serde_json::json!({
-            "keys": [{
-                "kty": "RSA",
-                "use": "sig",
-                "alg": "RS256",
-                "kid": self.kid,
-                "n": self.n,
-                "e": self.e,
-            }]
-        })
+        let keys: Vec<serde_json::Value> = self.entries.iter().map(|entry| {
+            match &entry.jwks_params {
+                JwksParams::Rsa { n, e } => serde_json::json!({
+                    "kty": "RSA",
+                    "use": "sig",
+                    "alg": "RS256",
+                    "kid": entry.kid,
+                    "n": n,
+                    "e": e,
+                }),
+                JwksParams::Ec { crv, x, y } => serde_json::json!({
+                    "kty": "EC",
+                    "use": "sig",
+                    "alg": "ES256",
+                    "kid": entry.kid,
+                    "crv": crv,
+                    "x": x,
+                    "y": y,
+                }),
+            }
+        }).collect();
+
+        serde_json::json!({ "keys": keys })
+    }
+
+    /// Verify and decode a token, trying kid-matched key first, then all keys.
+    fn verify_token<T: for<'de> Deserialize<'de>>(
+        &self,
+        config: &JwtConfig,
+        token: &str,
+    ) -> Result<TokenData<T>> {
+        // Try to extract kid from the token header without full verification
+        let header = jsonwebtoken::decode_header(token)
+            .map_err(|_| Error::InvalidToken)?;
+
+        // If the token has a kid, try that key first
+        if let Some(ref kid) = header.kid {
+            if let Some(&idx) = self.kid_index.get(kid) {
+                let entry = &self.entries[idx];
+                let mut validation = Validation::new(entry.algorithm);
+                validation.set_issuer(&[&config.issuer]);
+                validation.leeway = 0;
+                validation.validate_aud = false;
+
+                return decode::<T>(token, &entry.decoding, &validation)
+                    .map_err(|_| Error::InvalidToken);
+            }
+        }
+
+        // Fall back: try all keys
+        for entry in &self.entries {
+            let mut validation = Validation::new(entry.algorithm);
+            validation.set_issuer(&[&config.issuer]);
+            validation.leeway = 0;
+            validation.validate_aud = false;
+
+            if let Ok(data) = decode::<T>(token, &entry.decoding, &validation) {
+                return Ok(data);
+            }
+        }
+
+        Err(Error::InvalidToken)
     }
 }
 
@@ -262,43 +394,88 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Generate an RS256 keypair and write PEM files.
+/// Generate a keypair and write PEM files.
 pub fn generate_keypair(output_dir: &Path) -> Result<()> {
+    generate_keypair_with_algorithm(output_dir, SigningAlgorithm::ES256, None)
+}
+
+/// Generate a keypair with the specified algorithm and write PEM files.
+pub fn generate_keypair_with_algorithm(
+    output_dir: &Path,
+    algorithm: SigningAlgorithm,
+    key_size: Option<u32>,
+) -> Result<()> {
     use std::process::Command;
 
     let private_path = output_dir.join("private.pem");
     let public_path = output_dir.join("public.pem");
 
-    // Generate private key
-    let status = Command::new("openssl")
-        .args(["genrsa", "-out"])
-        .arg(&private_path)
-        .arg("2048")
-        .status()
-        .map_err(|e| Error::Config(format!("failed to run openssl: {e}")))?;
+    match algorithm {
+        SigningAlgorithm::RS256 => {
+            let size = key_size.unwrap_or(4096).to_string();
+            let status = Command::new("openssl")
+                .args(["genrsa", "-out"])
+                .arg(&private_path)
+                .arg(&size)
+                .status()
+                .map_err(|e| Error::Config(format!("failed to run openssl: {e}")))?;
 
-    if !status.success() {
-        return Err(Error::Config("openssl genrsa failed".to_string()));
+            if !status.success() {
+                return Err(Error::Config("openssl genrsa failed".to_string()));
+            }
+
+            let status = Command::new("openssl")
+                .args(["rsa", "-in"])
+                .arg(&private_path)
+                .args(["-pubout", "-out"])
+                .arg(&public_path)
+                .status()
+                .map_err(|e| Error::Config(format!("failed to run openssl: {e}")))?;
+
+            if !status.success() {
+                return Err(Error::Config("openssl rsa -pubout failed".to_string()));
+            }
+
+            tracing::info!(
+                algorithm = "RS256",
+                key_size = %size,
+                private = %private_path.display(),
+                public = %public_path.display(),
+                "generated RS256 keypair"
+            );
+        }
+        SigningAlgorithm::ES256 => {
+            // Use genpkey to produce PKCS#8 format (required by jsonwebtoken crate)
+            let status = Command::new("openssl")
+                .args(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out"])
+                .arg(&private_path)
+                .status()
+                .map_err(|e| Error::Config(format!("failed to run openssl: {e}")))?;
+
+            if !status.success() {
+                return Err(Error::Config("openssl genpkey (ES256) failed".to_string()));
+            }
+
+            let status = Command::new("openssl")
+                .args(["pkey", "-in"])
+                .arg(&private_path)
+                .args(["-pubout", "-out"])
+                .arg(&public_path)
+                .status()
+                .map_err(|e| Error::Config(format!("failed to run openssl: {e}")))?;
+
+            if !status.success() {
+                return Err(Error::Config("openssl pkey -pubout failed".to_string()));
+            }
+
+            tracing::info!(
+                algorithm = "ES256",
+                private = %private_path.display(),
+                public = %public_path.display(),
+                "generated ES256 keypair"
+            );
+        }
     }
-
-    // Extract public key
-    let status = Command::new("openssl")
-        .args(["rsa", "-in"])
-        .arg(&private_path)
-        .args(["-pubout", "-out"])
-        .arg(&public_path)
-        .status()
-        .map_err(|e| Error::Config(format!("failed to run openssl: {e}")))?;
-
-    if !status.success() {
-        return Err(Error::Config("openssl rsa -pubout failed".to_string()));
-    }
-
-    tracing::info!(
-        private = %private_path.display(),
-        public = %public_path.display(),
-        "generated RS256 keypair"
-    );
 
     Ok(())
 }
@@ -307,10 +484,6 @@ pub fn generate_keypair(output_dir: &Path) -> Result<()> {
 
 /// Extract RSA modulus (n) and exponent (e) from a PEM public key.
 fn extract_rsa_components(public_pem: &[u8]) -> Result<(String, String)> {
-    // Use simple_asn1/pem parsing via jsonwebtoken's internal decoding
-    // The DecodingKey already validates the PEM — here we just need n and e
-    // for the JWKS endpoint. We'll parse the PEM -> DER -> ASN.1 manually.
-
     let pem_str = std::str::from_utf8(public_pem)
         .map_err(|_| Error::Config("public key is not valid UTF-8".to_string()))?;
 
@@ -326,8 +499,6 @@ fn extract_rsa_components(public_pem: &[u8]) -> Result<(String, String)> {
         .map_err(|e| Error::Config(format!("invalid PEM base64: {e}")))?;
 
     // Parse SubjectPublicKeyInfo -> RSAPublicKey
-    // SubjectPublicKeyInfo is: SEQUENCE { AlgorithmIdentifier, BIT STRING { RSAPublicKey } }
-    // RSAPublicKey is: SEQUENCE { INTEGER (n), INTEGER (e) }
     let (n_bytes, e_bytes) = parse_rsa_public_key_der(&der)
         .ok_or_else(|| Error::Config("failed to parse RSA public key DER".to_string()))?;
 
@@ -337,28 +508,64 @@ fn extract_rsa_components(public_pem: &[u8]) -> Result<(String, String)> {
     ))
 }
 
+/// Extract EC point (x, y) from a PEM public key for P-256/ES256.
+fn extract_ec_point(public_pem: &[u8]) -> Result<(String, String)> {
+    let pem_str = std::str::from_utf8(public_pem)
+        .map_err(|_| Error::Config("public key is not valid UTF-8".to_string()))?;
+
+    let b64: String = pem_str
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect();
+
+    use base64::engine::general_purpose::STANDARD;
+    let der = STANDARD
+        .decode(&b64)
+        .map_err(|e| Error::Config(format!("invalid PEM base64: {e}")))?;
+
+    // SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
+    let (_, inner) = parse_sequence(&der)
+        .ok_or_else(|| Error::Config("invalid EC public key DER".to_string()))?;
+
+    // Skip AlgorithmIdentifier
+    let (rest, _alg_id) = parse_tlv(inner)
+        .ok_or_else(|| Error::Config("invalid EC public key DER: missing algorithm".to_string()))?;
+
+    // BIT STRING containing the uncompressed point
+    let (_, bit_string) = parse_tlv(rest)
+        .ok_or_else(|| Error::Config("invalid EC public key DER: missing bit string".to_string()))?;
+
+    // Skip unused-bits byte (should be 0x00)
+    if bit_string.is_empty() {
+        return Err(Error::Config("empty EC public key bit string".to_string()));
+    }
+    let point = &bit_string[1..];
+
+    // Uncompressed point format: 0x04 || x (32 bytes) || y (32 bytes)
+    if point.len() != 65 || point[0] != 0x04 {
+        return Err(Error::Config(format!(
+            "expected uncompressed P-256 point (65 bytes starting with 0x04), got {} bytes starting with 0x{:02x}",
+            point.len(),
+            point.first().copied().unwrap_or(0)
+        )));
+    }
+
+    let x = URL_SAFE_NO_PAD.encode(&point[1..33]);
+    let y = URL_SAFE_NO_PAD.encode(&point[33..65]);
+
+    Ok((x, y))
+}
+
 /// Minimal ASN.1 DER parser for RSA public keys.
 fn parse_rsa_public_key_der(der: &[u8]) -> Option<(&[u8], &[u8])> {
-    // SubjectPublicKeyInfo ::= SEQUENCE {
-    //   algorithm AlgorithmIdentifier,
-    //   subjectPublicKey BIT STRING
-    // }
     let (_, inner) = parse_sequence(der)?;
-
-    // Skip AlgorithmIdentifier (first element)
     let (rest, _alg_id) = parse_tlv(inner)?;
-
-    // BIT STRING containing RSAPublicKey
     let (_, bit_string_content) = parse_tlv(rest)?;
-    // Skip the unused-bits byte
     if bit_string_content.is_empty() { return None; }
     let rsa_pub_key_der = &bit_string_content[1..];
-
-    // RSAPublicKey ::= SEQUENCE { modulus INTEGER, exponent INTEGER }
     let (_, rsa_inner) = parse_sequence(rsa_pub_key_der)?;
     let (rest, n_bytes) = parse_integer(rsa_inner)?;
     let (_, e_bytes) = parse_integer(rest)?;
-
     Some((n_bytes, e_bytes))
 }
 
@@ -370,7 +577,6 @@ fn parse_sequence(data: &[u8]) -> Option<(&[u8], &[u8])> {
 fn parse_integer(data: &[u8]) -> Option<(&[u8], &[u8])> {
     if data.first()? != &0x02 { return None; }
     let (rest, content) = parse_tlv(data)?;
-    // Strip leading zero byte (ASN.1 sign byte for positive integers)
     let content = if content.first() == Some(&0x00) && content.len() > 1 {
         &content[1..]
     } else {
@@ -418,20 +624,18 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    fn generate_test_keys() -> (NamedTempFile, NamedTempFile) {
+    fn generate_rsa_test_keys() -> (NamedTempFile, NamedTempFile) {
         use std::process::Command;
 
         let mut private_file = NamedTempFile::new().unwrap();
         let mut public_file = NamedTempFile::new().unwrap();
 
-        // Generate private key
         let output = Command::new("openssl")
             .args(["genrsa", "2048"])
             .output()
             .unwrap();
         private_file.write_all(&output.stdout).unwrap();
 
-        // Extract public key
         let output = Command::new("openssl")
             .args(["rsa", "-pubout"])
             .stdin(std::process::Stdio::piped())
@@ -448,18 +652,54 @@ mod tests {
         (private_file, public_file)
     }
 
-    #[test]
-    fn sign_and_verify_token() {
-        let (priv_file, pub_file) = generate_test_keys();
-        let keys = Keys::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
-        let config = JwtConfig {
-            private_key_path: priv_file.path().to_path_buf(),
-            public_key_path: pub_file.path().to_path_buf(),
+    fn generate_ec_test_keys() -> (NamedTempFile, NamedTempFile) {
+        use std::process::Command;
+
+        let mut private_file = NamedTempFile::new().unwrap();
+        let mut public_file = NamedTempFile::new().unwrap();
+
+        // Generate PKCS#8 format EC key (required by jsonwebtoken crate)
+        let output = Command::new("openssl")
+            .args(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "openssl genpkey failed");
+        private_file.write_all(&output.stdout).unwrap();
+
+        let output = Command::new("openssl")
+            .args(["pkey", "-pubout"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.take().unwrap().write_all(&std::fs::read(private_file.path()).unwrap()).unwrap();
+                child.wait_with_output()
+            })
+            .unwrap();
+        public_file.write_all(&output.stdout).unwrap();
+
+        (private_file, public_file)
+    }
+
+    fn test_jwt_config(issuer: &str) -> JwtConfig {
+        JwtConfig {
+            keys: vec![],
+            private_key_path: None,
+            public_key_path: None,
             access_token_ttl_secs: 900,
             refresh_token_ttl_secs: 2_592_000,
-            issuer: "test-auth".to_string(),
+            issuer: issuer.to_string(),
             authorization_code_ttl_secs: 300,
-        };
+            jwks_cache_max_age_secs: 3600,
+        }
+    }
+
+    #[test]
+    fn sign_and_verify_token() {
+        let (priv_file, pub_file) = generate_rsa_test_keys();
+        let keys = KeySet::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+        let config = test_jwt_config("test-auth");
 
         let token = keys.sign_access_token(&config, "user-123", "testuser", "user", "test-auth").unwrap();
         let decoded = keys.verify_access_token(&config, &token).unwrap();
@@ -471,51 +711,92 @@ mod tests {
     }
 
     #[test]
-    fn expired_token_rejected() {
-        let (priv_file, pub_file) = generate_test_keys();
-        let keys = Keys::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
-        let config = JwtConfig {
+    fn es256_sign_and_verify() {
+        let (priv_file, pub_file) = generate_ec_test_keys();
+        let keys = KeySet::from_configs(&[KeyConfig {
+            algorithm: SigningAlgorithm::ES256,
             private_key_path: priv_file.path().to_path_buf(),
             public_key_path: pub_file.path().to_path_buf(),
-            access_token_ttl_secs: 0, // Immediate expiry
-            refresh_token_ttl_secs: 0,
-            issuer: "test-auth".to_string(),
-            authorization_code_ttl_secs: 300,
-        };
+            kid: Some("test-ec-key".to_string()),
+        }]).unwrap();
+        let config = test_jwt_config("test-auth");
+
+        let token = keys.sign_access_token(&config, "user-456", "ecuser", "user", "test-auth").unwrap();
+        let decoded = keys.verify_access_token(&config, &token).unwrap();
+
+        assert_eq!(decoded.claims.sub, "user-456");
+        assert_eq!(decoded.claims.username, "ecuser");
+    }
+
+    #[test]
+    fn multi_key_rotation() {
+        let (rsa_priv, rsa_pub) = generate_rsa_test_keys();
+        let (ec_priv, ec_pub) = generate_ec_test_keys();
+
+        // Start with RSA only, sign a token
+        let rsa_only = KeySet::from_pem_files(rsa_priv.path(), rsa_pub.path()).unwrap();
+        let config = test_jwt_config("test-auth");
+        let rsa_token = rsa_only.sign_access_token(&config, "user-1", "rsa_user", "user", "test-auth").unwrap();
+
+        // Now create a key set with EC as primary, RSA as secondary (rotation)
+        let rotated = KeySet::from_configs(&[
+            KeyConfig {
+                algorithm: SigningAlgorithm::ES256,
+                private_key_path: ec_priv.path().to_path_buf(),
+                public_key_path: ec_pub.path().to_path_buf(),
+                kid: Some("new-ec".to_string()),
+            },
+            KeyConfig {
+                algorithm: SigningAlgorithm::RS256,
+                private_key_path: rsa_priv.path().to_path_buf(),
+                public_key_path: rsa_pub.path().to_path_buf(),
+                kid: None,
+            },
+        ]).unwrap();
+
+        // Old RSA token should still verify against the rotated key set
+        let decoded = rotated.verify_access_token(&config, &rsa_token).unwrap();
+        assert_eq!(decoded.claims.sub, "user-1");
+
+        // New tokens should be signed with ES256
+        let new_token = rotated.sign_access_token(&config, "user-2", "ec_user", "user", "test-auth").unwrap();
+        let decoded = rotated.verify_access_token(&config, &new_token).unwrap();
+        assert_eq!(decoded.claims.sub, "user-2");
+
+        // Verify the new token header uses ES256
+        let header = jsonwebtoken::decode_header(&new_token).unwrap();
+        assert_eq!(header.alg, Algorithm::ES256);
+        assert_eq!(header.kid, Some("new-ec".to_string()));
+    }
+
+    #[test]
+    fn expired_token_rejected() {
+        let (priv_file, pub_file) = generate_rsa_test_keys();
+        let keys = KeySet::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+        let mut config = test_jwt_config("test-auth");
+        config.access_token_ttl_secs = 0;
 
         let token = keys.sign_access_token(&config, "user-123", "testuser", "user", "test-auth").unwrap();
-        // Token should be expired immediately
         std::thread::sleep(std::time::Duration::from_secs(1));
         assert!(keys.verify_access_token(&config, &token).is_err());
     }
 
     #[test]
     fn wrong_issuer_rejected() {
-        let (priv_file, pub_file) = generate_test_keys();
-        let keys = Keys::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+        let (priv_file, pub_file) = generate_rsa_test_keys();
+        let keys = KeySet::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
 
-        let sign_config = JwtConfig {
-            private_key_path: priv_file.path().to_path_buf(),
-            public_key_path: pub_file.path().to_path_buf(),
-            access_token_ttl_secs: 900,
-            refresh_token_ttl_secs: 2_592_000,
-            issuer: "issuer-a".to_string(),
-            authorization_code_ttl_secs: 300,
-        };
-
-        let verify_config = JwtConfig {
-            issuer: "issuer-b".to_string(),
-            ..sign_config.clone()
-        };
+        let sign_config = test_jwt_config("issuer-a");
+        let verify_config = test_jwt_config("issuer-b");
 
         let token = keys.sign_access_token(&sign_config, "user-123", "testuser", "user", "test").unwrap();
         assert!(keys.verify_access_token(&verify_config, &token).is_err());
     }
 
     #[test]
-    fn jwks_format() {
-        let (priv_file, pub_file) = generate_test_keys();
-        let keys = Keys::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+    fn jwks_format_rsa() {
+        let (priv_file, pub_file) = generate_rsa_test_keys();
+        let keys = KeySet::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
         let jwks = keys.jwks();
 
         let keys_array = jwks["keys"].as_array().unwrap();
@@ -529,19 +810,63 @@ mod tests {
     }
 
     #[test]
-    fn sign_and_verify_token_with_scopes() {
-        let (priv_file, pub_file) = generate_test_keys();
-        let keys = Keys::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
-        let config = JwtConfig {
+    fn jwks_format_ec() {
+        let (priv_file, pub_file) = generate_ec_test_keys();
+        let keys = KeySet::from_configs(&[KeyConfig {
+            algorithm: SigningAlgorithm::ES256,
             private_key_path: priv_file.path().to_path_buf(),
             public_key_path: pub_file.path().to_path_buf(),
-            access_token_ttl_secs: 900,
-            refresh_token_ttl_secs: 2_592_000,
-            issuer: "test-auth".to_string(),
-            authorization_code_ttl_secs: 300,
-        };
+            kid: Some("ec-kid".to_string()),
+        }]).unwrap();
+        let jwks = keys.jwks();
 
-        // With scopes
+        let keys_array = jwks["keys"].as_array().unwrap();
+        assert_eq!(keys_array.len(), 1);
+        let key = &keys_array[0];
+        assert_eq!(key["kty"], "EC");
+        assert_eq!(key["alg"], "ES256");
+        assert_eq!(key["crv"], "P-256");
+        assert_eq!(key["kid"], "ec-kid");
+        // P-256 x and y are 32 bytes = 43 base64url chars
+        assert_eq!(key["x"].as_str().unwrap().len(), 43);
+        assert_eq!(key["y"].as_str().unwrap().len(), 43);
+    }
+
+    #[test]
+    fn jwks_multi_key() {
+        let (rsa_priv, rsa_pub) = generate_rsa_test_keys();
+        let (ec_priv, ec_pub) = generate_ec_test_keys();
+
+        let keys = KeySet::from_configs(&[
+            KeyConfig {
+                algorithm: SigningAlgorithm::ES256,
+                private_key_path: ec_priv.path().to_path_buf(),
+                public_key_path: ec_pub.path().to_path_buf(),
+                kid: Some("ec-1".to_string()),
+            },
+            KeyConfig {
+                algorithm: SigningAlgorithm::RS256,
+                private_key_path: rsa_priv.path().to_path_buf(),
+                public_key_path: rsa_pub.path().to_path_buf(),
+                kid: Some("rsa-1".to_string()),
+            },
+        ]).unwrap();
+
+        let jwks = keys.jwks();
+        let keys_array = jwks["keys"].as_array().unwrap();
+        assert_eq!(keys_array.len(), 2);
+        assert_eq!(keys_array[0]["alg"], "ES256");
+        assert_eq!(keys_array[0]["kid"], "ec-1");
+        assert_eq!(keys_array[1]["alg"], "RS256");
+        assert_eq!(keys_array[1]["kid"], "rsa-1");
+    }
+
+    #[test]
+    fn sign_and_verify_token_with_scopes() {
+        let (priv_file, pub_file) = generate_rsa_test_keys();
+        let keys = KeySet::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+        let config = test_jwt_config("test-auth");
+
         let token = keys.sign_access_token_with_scopes(
             &config, "user-123", "testuser", "user", "my-client",
             Some("read:profile write:profile"),
@@ -550,7 +875,6 @@ mod tests {
         assert_eq!(decoded.claims.scope.as_deref(), Some("read:profile write:profile"));
         assert_eq!(decoded.claims.aud, "my-client");
 
-        // Without scopes (session token)
         let token = keys.sign_access_token(&config, "user-123", "testuser", "user", "test-auth").unwrap();
         let decoded = keys.verify_access_token(&config, &token).unwrap();
         assert!(decoded.claims.scope.is_none());
@@ -558,25 +882,16 @@ mod tests {
 
     #[test]
     fn sign_id_token_claims() {
-        let (priv_file, pub_file) = generate_test_keys();
-        let keys = Keys::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
-        let config = JwtConfig {
-            private_key_path: priv_file.path().to_path_buf(),
-            public_key_path: pub_file.path().to_path_buf(),
-            access_token_ttl_secs: 900,
-            refresh_token_ttl_secs: 2_592_000,
-            issuer: "test-auth".to_string(),
-            authorization_code_ttl_secs: 300,
-        };
+        let (priv_file, pub_file) = generate_rsa_test_keys();
+        let keys = KeySet::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+        let config = test_jwt_config("test-auth");
 
-        // With display name, avatar, and nonce
         let token = keys.sign_id_token(
             &config, "user-123", "testuser",
             Some("Test User"), Some("https://example.com/avatar.png"),
             "my-client", Some("test-nonce-123"),
         ).unwrap();
 
-        // Decode manually to verify IdTokenClaims shape
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3);
         let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
@@ -590,7 +905,6 @@ mod tests {
         assert_eq!(claims.picture.as_deref(), Some("https://example.com/avatar.png"));
         assert_eq!(claims.nonce.as_deref(), Some("test-nonce-123"));
 
-        // Without display name, avatar, or nonce (optional fields omitted)
         let token = keys.sign_id_token(
             &config, "user-456", "minimaluser",
             None, None,
@@ -612,14 +926,27 @@ mod tests {
         let (raw1, hash1) = generate_refresh_token();
         let (raw2, hash2) = generate_refresh_token();
 
-        // Tokens should be unique
         assert_ne!(raw1, raw2);
         assert_ne!(hash1, hash2);
-
-        // Hash should be deterministic
         assert_eq!(hash_token(&raw1), hash1);
-
-        // Raw should be base64url
         assert!(URL_SAFE_NO_PAD.decode(&raw1).is_ok());
+    }
+
+    #[test]
+    fn algorithms_returns_configured_algs() {
+        let (priv_file, pub_file) = generate_rsa_test_keys();
+        let keys = KeySet::from_pem_files(priv_file.path(), pub_file.path()).unwrap();
+        assert_eq!(keys.algorithms(), vec!["RS256"]);
+
+        let (ec_priv, ec_pub) = generate_ec_test_keys();
+        let keys = KeySet::from_configs(&[
+            KeyConfig {
+                algorithm: SigningAlgorithm::ES256,
+                private_key_path: ec_priv.path().to_path_buf(),
+                public_key_path: ec_pub.path().to_path_buf(),
+                kid: None,
+            },
+        ]).unwrap();
+        assert_eq!(keys.algorithms(), vec!["ES256"]);
     }
 }
