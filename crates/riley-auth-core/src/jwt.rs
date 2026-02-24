@@ -42,6 +42,8 @@ pub struct IdTokenClaims {
     pub preferred_username: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_time: Option<i64>,
 }
 
 /// OIDC Back-Channel Logout Token claims (per OpenID Connect Back-Channel
@@ -254,6 +256,7 @@ impl KeySet {
         avatar_url: Option<&str>,
         audience: &str,
         nonce: Option<&str>,
+        auth_time: Option<i64>,
     ) -> Result<String> {
         let now = Utc::now();
         let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
@@ -269,6 +272,7 @@ impl KeySet {
             name: display_name.map(String::from),
             preferred_username: username.to_string(),
             picture: avatar_url.map(String::from),
+            auth_time,
         };
 
         let mut header = Header::new(active.algorithm);
@@ -904,7 +908,7 @@ mod tests {
         let token = keys.sign_id_token(
             &config, "user-123", "testuser",
             Some("Test User"), Some("https://example.com/avatar.png"),
-            "my-client", Some("test-nonce-123"),
+            "my-client", Some("test-nonce-123"), Some(1700000000),
         ).unwrap();
 
         let parts: Vec<&str> = token.split('.').collect();
@@ -919,11 +923,12 @@ mod tests {
         assert_eq!(claims.name.as_deref(), Some("Test User"));
         assert_eq!(claims.picture.as_deref(), Some("https://example.com/avatar.png"));
         assert_eq!(claims.nonce.as_deref(), Some("test-nonce-123"));
+        assert_eq!(claims.auth_time, Some(1700000000));
 
         let token = keys.sign_id_token(
             &config, "user-456", "minimaluser",
             None, None,
-            "another-client", None,
+            "another-client", None, None,
         ).unwrap();
         let parts: Vec<&str> = token.split('.').collect();
         let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
@@ -934,6 +939,7 @@ mod tests {
         assert!(claims.name.is_none());
         assert!(claims.picture.is_none());
         assert!(claims.nonce.is_none());
+        assert!(claims.auth_time.is_none());
     }
 
     #[test]

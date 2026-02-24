@@ -85,6 +85,7 @@ pub struct RefreshTokenRow {
     pub ip_address: Option<String>,
     pub family_id: Uuid,
     pub nonce: Option<String>,
+    pub auth_time: Option<i64>,
 }
 
 // --- User queries ---
@@ -534,10 +535,11 @@ pub async fn store_refresh_token(
     ip_address: Option<&str>,
     family_id: Uuid,
     nonce: Option<&str>,
+    auth_time: Option<i64>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO refresh_tokens (user_id, client_id, token_hash, expires_at, scopes, user_agent, ip_address, family_id, nonce)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+        "INSERT INTO refresh_tokens (user_id, client_id, token_hash, expires_at, scopes, user_agent, ip_address, family_id, nonce, auth_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
     )
     .bind(user_id)
     .bind(client_id)
@@ -548,6 +550,7 @@ pub async fn store_refresh_token(
     .bind(ip_address)
     .bind(family_id)
     .bind(nonce)
+    .bind(auth_time)
     .execute(pool)
     .await?;
     Ok(())

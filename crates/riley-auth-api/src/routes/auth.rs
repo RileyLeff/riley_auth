@@ -477,6 +477,7 @@ async fn auth_refresh(
     db::store_refresh_token(
         &state.db, user.id, None, &new_refresh_hash, expires_at,
         &[], ua_truncated, Some(&ip), token_row.family_id, token_row.nonce.as_deref(),
+        token_row.auth_time,
     ).await?;
 
     // Mark the new token as just used (session was actively refreshed)
@@ -1056,7 +1057,8 @@ async fn issue_tokens(
     let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
     let family_id = uuid::Uuid::now_v7();
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
-    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], ua_truncated, ip_address, family_id, None).await?;
+    let auth_time = Some(Utc::now().timestamp());
+    db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], ua_truncated, ip_address, family_id, None, auth_time).await?;
 
     let jar = jar
         .add(build_access_cookie(&state.cookie_names.access, &access_token, &state.config))

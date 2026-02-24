@@ -224,7 +224,7 @@ impl TestServer {
         let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
         let expires_at = chrono::Utc::now()
             + chrono::Duration::seconds(self.config.jwt.refresh_token_ttl_secs as i64);
-        db::store_refresh_token(&self.db, user.id, None, &refresh_hash, expires_at, &[], None, None, uuid::Uuid::now_v7(), None)
+        db::store_refresh_token(&self.db, user.id, None, &refresh_hash, expires_at, &[], None, None, uuid::Uuid::now_v7(), None, None)
             .await
             .expect("failed to store refresh token");
 
@@ -864,7 +864,7 @@ fn logout_all() {
 
         let (_, hash2) = jwt::generate_refresh_token();
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(86400);
-        db::store_refresh_token(&s.db, user.id, None, &hash2, expires_at, &[], None, None, uuid::Uuid::now_v7(), None)
+        db::store_refresh_token(&s.db, user.id, None, &hash2, expires_at, &[], None, None, uuid::Uuid::now_v7(), None, None)
             .await
             .unwrap();
 
@@ -3666,6 +3666,7 @@ fn session_list_multiple_sessions() {
             Some("10.0.0.1"),
             uuid::Uuid::now_v7(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3709,7 +3710,7 @@ fn session_revoke_other_session() {
         let expires_at = chrono::Utc::now()
             + chrono::Duration::seconds(s.config.jwt.refresh_token_ttl_secs as i64);
         db::store_refresh_token(
-            &s.db, user.id, None, &second_hash, expires_at, &[], None, None, uuid::Uuid::now_v7(), None,
+            &s.db, user.id, None, &second_hash, expires_at, &[], None, None, uuid::Uuid::now_v7(), None, None,
         )
         .await
         .unwrap();
@@ -6104,7 +6105,7 @@ fn backchannel_logout_dispatched_on_logout_all() {
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(86400);
         db::store_refresh_token(
             &s.db, user.id, Some(oauth_client.id), &rt_hash, expires_at,
-            &[], None, None, uuid::Uuid::now_v7(), None,
+            &[], None, None, uuid::Uuid::now_v7(), None, None,
         ).await.unwrap();
 
         // Call dispatch_backchannel_logout directly with allow_private_ips=true config

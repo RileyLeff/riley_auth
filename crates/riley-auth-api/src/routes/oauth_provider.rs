@@ -712,6 +712,7 @@ async fn token(
             let expires_at = Utc::now() + Duration::seconds(
                 state.config.jwt.refresh_token_ttl_secs as i64,
             );
+            let auth_time = Some(auth_code.created_at.timestamp());
             db::store_refresh_token(
                 &state.db,
                 user.id,
@@ -723,6 +724,7 @@ async fn token(
                 None,
                 family_id,
                 auth_code.nonce.as_deref(),
+                auth_time,
             )
             .await?;
 
@@ -736,6 +738,7 @@ async fn token(
                     user.avatar_url.as_deref(),
                     &client.client_id,
                     auth_code.nonce.as_deref(),
+                    auth_time,
                 )?)
             } else {
                 None
@@ -825,12 +828,13 @@ async fn token(
                 None,
                 token_row.family_id,
                 token_row.nonce.as_deref(),
+                token_row.auth_time,
             )
             .await?;
 
             // Only issue ID token when openid scope is in the effective scopes.
-            // Nonce is preserved from the original authorization request across
-            // refresh rotations (OIDC Core 1.0 §12.2).
+            // Nonce and auth_time are preserved from the original authorization
+            // request across refresh rotations (OIDC Core 1.0 §12.2).
             let id_token = if effective_scopes.iter().any(|s| s == "openid") {
                 Some(state.keys.sign_id_token(
                     &state.config.jwt,
@@ -840,6 +844,7 @@ async fn token(
                     user.avatar_url.as_deref(),
                     &client.client_id,
                     token_row.nonce.as_deref(),
+                    token_row.auth_time,
                 )?)
             } else {
                 None
