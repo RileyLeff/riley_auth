@@ -236,7 +236,7 @@ async fn auth_setup(
     if db::find_user_by_username(&state.db, &body.username).await?.is_some() {
         return Err(Error::UsernameTaken);
     }
-    if db::is_username_held(&state.db, &body.username).await? {
+    if db::is_username_held(&state.db, &body.username, uuid::Uuid::nil()).await? {
         return Err(Error::UsernameTaken);
     }
 
@@ -259,11 +259,17 @@ async fn auth_setup(
         profile.email.as_deref(),
     )
     .await
-    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
-        // Race: username taken between check and insert
-        Error::UsernameTaken
-    } else {
-        e
+    .map_err(|e| {
+        // Race between pre-check and insert: distinguish which constraint was violated
+        if let Some(constraint) = riley_auth_core::error::unique_violation_constraint(&e) {
+            if constraint.contains("oauth_links") {
+                Error::ProviderAlreadyLinked
+            } else {
+                Error::UsernameTaken
+            }
+        } else {
+            e
+        }
     })?;
 
     // Issue tokens, clear setup cookie
@@ -615,7 +621,7 @@ async fn update_username(
     if db::find_user_by_username(&state.db, &body.username).await?.is_some() {
         return Err(Error::UsernameTaken);
     }
-    if db::is_username_held(&state.db, &body.username).await? {
+    if db::is_username_held(&state.db, &body.username, user_id).await? {
         return Err(Error::UsernameTaken);
     }
 

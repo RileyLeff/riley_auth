@@ -395,7 +395,7 @@ fn update_username() {
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["username"], "newname");
 
-        let held = db::is_username_held(&s.db, "oldname").await.unwrap();
+        let held = db::is_username_held(&s.db, "oldname", uuid::Uuid::nil()).await.unwrap();
         assert!(held);
     });
 }

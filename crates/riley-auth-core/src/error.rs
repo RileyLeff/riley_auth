@@ -220,4 +220,14 @@ pub fn is_unique_violation(err: &Error) -> bool {
     false
 }
 
+/// Return the constraint name from a unique violation error, if available.
+pub fn unique_violation_constraint(err: &Error) -> Option<String> {
+    if let Error::Database(sqlx::Error::Database(db_err)) = err {
+        if db_err.code().as_deref() == Some("23505") {
+            return db_err.constraint().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

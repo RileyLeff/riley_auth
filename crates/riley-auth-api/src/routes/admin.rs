@@ -172,6 +172,10 @@ async fn update_role(
 
     match db::update_user_role(&state.db, id, &body.role).await? {
         db::RoleUpdateResult::Updated(_) => {
+            // Force re-authentication so the user gets fresh tokens with the
+            // updated role claim. Without this, the old access token (with the
+            // previous role) remains valid until TTL expiry.
+            db::delete_all_refresh_tokens(&state.db, id).await?;
             webhooks::dispatch_event(
                 &state.db,
                 webhooks::USER_ROLE_CHANGED,

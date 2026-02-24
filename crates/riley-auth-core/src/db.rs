@@ -774,13 +774,15 @@ pub async fn last_username_change(
     Ok(row.map(|r| r.0))
 }
 
-pub async fn is_username_held(pool: &PgPool, username: &str) -> Result<bool> {
+pub async fn is_username_held(pool: &PgPool, username: &str, requesting_user_id: Uuid) -> Result<bool> {
     let row: Option<(DateTime<Utc>,)> = sqlx::query_as(
         "SELECT held_until FROM username_history
          WHERE lower(old_username) = lower($1) AND held_until > now()
+           AND user_id != $2
          LIMIT 1"
     )
     .bind(username)
+    .bind(requesting_user_id)
     .fetch_optional(pool)
     .await?;
     Ok(row.is_some())
