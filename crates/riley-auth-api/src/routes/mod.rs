@@ -15,6 +15,7 @@ pub mod admin;
 pub mod auth;
 pub mod oauth_provider;
 
+use crate::metrics::{http_metrics_middleware, metrics_endpoint};
 use crate::rate_limit::{InMemoryRateLimiter, memory_rate_limit_middleware};
 use crate::server::AppState;
 
@@ -126,10 +127,12 @@ fn base_router() -> Router<AppState> {
 
     Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics_endpoint))
         .route("/.well-known/jwks.json", get(jwks))
         .route("/.well-known/openid-configuration", get(openid_configuration))
         .merge(csrf_protected)
         .merge(oauth_provider::router())
+        .layer(middleware::from_fn(http_metrics_middleware))
 }
 
 /// Build the application router with in-memory tiered rate limiting.

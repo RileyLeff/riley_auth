@@ -23,6 +23,8 @@ pub struct Config {
     pub webhooks: WebhooksConfig,
     #[serde(default)]
     pub maintenance: MaintenanceConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -334,6 +336,24 @@ impl Default for MaintenanceConfig {
 fn default_cleanup_interval() -> u64 { 3600 }      // 1 hour
 fn default_delivery_retention() -> u32 { 7 }        // 7 days
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct MetricsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Optional bearer token to protect the /metrics endpoint.
+    /// Supports `env:VAR_NAME` syntax.
+    pub bearer_token: Option<ConfigValue>,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bearer_token: None,
+        }
+    }
+}
+
 /// Validate that a scope name uses only safe characters.
 /// Allowed: lowercase ASCII letters, digits, colons, dots, underscores, hyphens.
 /// Must start with a letter and be non-empty.
@@ -586,6 +606,9 @@ public_key_path = "/tmp/public.pem"
         // Maintenance defaults
         assert_eq!(config.maintenance.cleanup_interval_secs, 3600);
         assert_eq!(config.maintenance.webhook_delivery_retention_days, 7);
+        // Metrics defaults
+        assert!(!config.metrics.enabled);
+        assert!(config.metrics.bearer_token.is_none());
     }
 
     #[test]
@@ -774,5 +797,33 @@ public = { requests = 500, window_secs = 60 }
             r#"account_merge_policy = "magic""#,
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn metrics_config_parsing() {
+        // Defaults
+        let config: MetricsConfig = toml::from_str("").unwrap();
+        assert!(!config.enabled);
+        assert!(config.bearer_token.is_none());
+
+        // Enabled with bearer token
+        let config: MetricsConfig = toml::from_str(r#"
+            enabled = true
+            bearer_token = "my-secret-token"
+        "#).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.bearer_token.unwrap().resolve().unwrap(), "my-secret-token");
+
+        // Enabled with env reference
+        let config: MetricsConfig = toml::from_str(r#"
+            enabled = true
+            bearer_token = "env:METRICS_TOKEN"
+        "#).unwrap();
+        assert!(config.enabled);
+        // Don't resolve — env var may not be set in test
+        match &config.bearer_token {
+            Some(ConfigValue::Literal(s)) => assert_eq!(s, "env:METRICS_TOKEN"),
+            None => panic!("expected bearer_token"),
+        }
     }
 }

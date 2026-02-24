@@ -30,6 +30,8 @@ hex = "0.4"
 url.workspace = true
 percent-encoding = "2"
 reqwest.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 subtle = "2"
 redis = { workspace = true, optional = true }
 

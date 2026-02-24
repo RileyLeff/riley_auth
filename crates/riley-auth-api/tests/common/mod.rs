@@ -25,7 +25,7 @@ pub use url;
 use riley_auth_api::routes;
 use riley_auth_api::server::AppState;
 use riley_auth_core::config::{
-    Config, ConfigValue, DatabaseConfig, JwtConfig, KeyConfig, MaintenanceConfig,
+    Config, ConfigValue, DatabaseConfig, JwtConfig, KeyConfig, MaintenanceConfig, MetricsConfig,
     OAuthProvidersConfig, RateLimitingConfig, ScopeDefinition, ScopesConfig, ServerConfig,
     SigningAlgorithm, UsernameConfig, WebhooksConfig,
 };
@@ -132,6 +132,7 @@ impl TestServer {
             rate_limiting: RateLimitingConfig::default(),
             webhooks: WebhooksConfig::default(),
             maintenance: MaintenanceConfig::default(),
+            metrics: MetricsConfig::default(),
         };
 
         let cookie_names = riley_auth_api::server::CookieNames::from_prefix(&config.server.cookie_prefix);
@@ -143,6 +144,7 @@ impl TestServer {
             http_client: reqwest::Client::new(),
             cookie_names,
             username_regex,
+            metrics_handle: None,
         };
 
         let app = axum::Router::new()

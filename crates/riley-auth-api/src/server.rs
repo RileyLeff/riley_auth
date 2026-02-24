@@ -4,6 +4,7 @@ use std::sync::Arc;
 use axum::Router;
 use sqlx::PgPool;
 use tokio::net::TcpListener;
+use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -44,6 +45,7 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub cookie_names: CookieNames,
     pub username_regex: regex::Regex,
+    pub metrics_handle: Option<PrometheusHandle>,
 }
 
 pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()> {
@@ -84,6 +86,17 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         }
     };
 
+    // Initialize Prometheus metrics recorder if enabled
+    let metrics_handle = if config.metrics.enabled {
+        let handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+            .install_recorder()
+            .map_err(|e| anyhow::anyhow!("failed to install metrics recorder: {e}"))?;
+        tracing::info!("metrics enabled, /metrics endpoint active");
+        Some(handle)
+    } else {
+        None
+    };
+
     let cookie_names = CookieNames::from_prefix(&config.server.cookie_prefix);
     let http_client = webhooks::build_webhook_client(config.webhooks.allow_private_ips);
     if !config.webhooks.allow_private_ips {
@@ -99,6 +112,7 @@ pub async fn serve(config: Config, db: PgPool, keys: Keys) -> anyhow::Result<()>
         http_client: http_client.clone(),
         cookie_names,
         username_regex,
+        metrics_handle,
     };
 
     let app = Router::new()
