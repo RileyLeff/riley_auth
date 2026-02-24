@@ -62,20 +62,33 @@ pub struct TokenResponse {
 
 #[derive(Deserialize)]
 pub struct ConsentQuery {
-    client_id: String,
-    scope: Option<String>,
+    consent_id: uuid::Uuid,
 }
 
 #[derive(Serialize)]
 pub struct ConsentResponse {
-    client_name: String,
+    client: ConsentClient,
     scopes: Vec<ConsentScope>,
+    redirect_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ConsentClient {
+    name: String,
+    client_id: String,
 }
 
 #[derive(Serialize)]
 pub struct ConsentScope {
     name: String,
     description: String,
+}
+
+#[derive(Deserialize)]
+pub struct ConsentDecision {
+    approved: bool,
 }
 
 #[derive(Deserialize)]
@@ -88,7 +101,7 @@ pub struct RevokeRequest {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/oauth/authorize", get(authorize))
-        .route("/oauth/consent", get(consent))
+        .route("/oauth/consent", get(consent).post(consent_decision))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
         .route("/oauth/userinfo", get(userinfo).post(userinfo))
@@ -260,16 +273,6 @@ async fn authorize(
         ));
     }
 
-    // Consent check — must come after authentication so the user is known
-    if !client.auto_approve {
-        return Ok(redirect_error(
-            redirect_uri,
-            "consent_required",
-            "user consent is required for this client",
-            state_param,
-        ));
-    }
-
     let user_id: uuid::Uuid = match token_data.claims.sub.parse() {
         Ok(id) => id,
         Err(_) => {
@@ -281,6 +284,70 @@ async fn authorize(
             ));
         }
     };
+
+    // Consent check — must come after authentication so the user is known.
+    // For non-auto-approve clients, store the authorization request in the DB
+    // and redirect to the deployer's consent URL.
+    if !client.auto_approve {
+        let consent_url = match state.config.oauth.consent_url.as_deref() {
+            Some(url) => url,
+            None => {
+                // No consent_url configured — cannot redirect to consent UI
+                return Ok(redirect_error(
+                    redirect_uri,
+                    "consent_required",
+                    "user consent is required but no consent_url is configured",
+                    state_param,
+                ));
+            }
+        };
+
+        let expires_at = Utc::now() + Duration::seconds(600); // 10 minutes
+
+        let consent_id = match db::store_consent_request(
+            &state.db,
+            client.id,
+            user_id,
+            &granted_scopes,
+            &query.redirect_uri,
+            query.state.as_deref(),
+            query.code_challenge.as_deref(),
+            query.code_challenge_method.as_deref(),
+            query.nonce.as_deref(),
+            expires_at,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to store consent request");
+                return Ok(redirect_error(
+                    redirect_uri,
+                    "server_error",
+                    "internal error",
+                    state_param,
+                ));
+            }
+        };
+
+        // Redirect to deployer's consent page with consent_id
+        let Ok(mut consent_redirect) = url::Url::parse(consent_url) else {
+            tracing::error!(consent_url, "configured consent_url is not a valid URL");
+            return Ok(redirect_error(
+                redirect_uri,
+                "server_error",
+                "internal error",
+                state_param,
+            ));
+        };
+        consent_redirect
+            .query_pairs_mut()
+            .append_pair("consent_id", &consent_id.to_string());
+
+        return Ok(
+            (StatusCode::FOUND, [("location", consent_redirect.to_string())]).into_response()
+        );
+    }
 
     // --- Phase 3: Issue authorization code ---
     let mut code_bytes = [0u8; 32];
@@ -339,7 +406,10 @@ async fn authorize(
     Ok((StatusCode::FOUND, [("location", redirect_url.to_string())]).into_response())
 }
 
-/// GET /oauth/consent — returns client name and scope descriptions for consent UI
+/// GET /oauth/consent — returns consent context for the deployer's consent UI.
+///
+/// Requires session cookie + consent_id query parameter. The consent request
+/// must exist, not be expired, and belong to the authenticated user.
 async fn consent(
     State(state): State<AppState>,
     Query(query): Query<ConsentQuery>,
@@ -358,55 +428,172 @@ async fn consent(
         return Err(Error::InvalidToken);
     }
 
-    // Look up client
-    let client = db::find_client_by_client_id(&state.db, &query.client_id)
+    let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
+
+    // Look up the consent request
+    let consent_req = db::find_consent_request(&state.db, query.consent_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    // The consent request must belong to the authenticated user
+    if consent_req.user_id != user_id {
+        return Err(Error::Forbidden);
+    }
+
+    // Look up the client (by internal id)
+    let client = db::find_client_by_id(&state.db, consent_req.client_id)
         .await?
         .ok_or(Error::InvalidClient)?;
 
-    // Resolve requested scopes to descriptions (validate like authorize endpoint).
-    // OIDC protocol-level scopes (openid, profile, email) have hardcoded descriptions.
-    let scopes = if let Some(ref scope_str) = query.scope {
-        let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
-        let mut result = Vec::new();
-        for s in &requested {
-            if *s == "openid" {
-                continue; // protocol-level, no consent description needed
-            }
-            // Check for OIDC standard scopes with hardcoded descriptions
-            if *s == "profile" {
-                result.push(ConsentScope {
-                    name: "profile".to_string(),
-                    description: "Read your username, display name, and avatar".to_string(),
-                });
-                continue;
-            }
-            if *s == "email" {
-                result.push(ConsentScope {
-                    name: "email".to_string(),
-                    description: "Read your email address".to_string(),
-                });
-                continue;
-            }
-            let def = state.config.scopes.definitions.iter()
-                .find(|d| d.name == *s)
-                .ok_or_else(|| Error::BadRequest(format!("unknown scope: {s}")))?;
-            if !client.allowed_scopes.iter().any(|a| a == s) {
-                return Err(Error::BadRequest(format!("scope not allowed for this client: {s}")));
-            }
-            result.push(ConsentScope {
-                name: s.to_string(),
+    // Resolve scopes to descriptions.
+    // OIDC protocol-level scopes have hardcoded descriptions.
+    let mut scopes = Vec::new();
+    for s in &consent_req.scopes {
+        if s == "openid" {
+            continue; // protocol-level, no consent description needed
+        }
+        if s == "profile" {
+            scopes.push(ConsentScope {
+                name: "profile".to_string(),
+                description: "Read your username, display name, and avatar".to_string(),
+            });
+            continue;
+        }
+        if s == "email" {
+            scopes.push(ConsentScope {
+                name: "email".to_string(),
+                description: "Read your email address".to_string(),
+            });
+            continue;
+        }
+        if let Some(def) = state.config.scopes.definitions.iter().find(|d| d.name == *s) {
+            scopes.push(ConsentScope {
+                name: s.clone(),
                 description: def.description.clone(),
             });
         }
-        result
-    } else {
-        vec![]
-    };
+    }
 
     Ok(Json(ConsentResponse {
-        client_name: client.name,
+        client: ConsentClient {
+            name: client.name,
+            client_id: client.client_id,
+        },
         scopes,
+        redirect_uri: consent_req.redirect_uri,
+        state: consent_req.state,
     }))
+}
+
+/// POST /oauth/consent — user approves or denies the consent request.
+///
+/// If approved: issues authorization code and redirects to the client's redirect_uri.
+/// If denied: redirects with `?error=access_denied`.
+/// Consumes the consent request in either case.
+async fn consent_decision(
+    State(state): State<AppState>,
+    Query(query): Query<ConsentQuery>,
+    jar: CookieJar,
+    Json(body): Json<ConsentDecision>,
+) -> Result<Response, Error> {
+    // User must be authenticated
+    let access_token = jar
+        .get(&state.cookie_names.access)
+        .map(|c| c.value().to_string())
+        .ok_or(Error::Unauthenticated)?;
+
+    let token_data = state.keys.verify_access_token(&state.config.jwt, &access_token)?;
+
+    if token_data.claims.aud != state.config.jwt.issuer {
+        return Err(Error::InvalidToken);
+    }
+
+    let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
+
+    // Look up and consume the consent request
+    let consent_req = db::find_consent_request(&state.db, query.consent_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    if consent_req.user_id != user_id {
+        return Err(Error::Forbidden);
+    }
+
+    // Delete the consent request (one-time use)
+    db::delete_consent_request(&state.db, consent_req.id).await?;
+
+    let redirect_uri = &consent_req.redirect_uri;
+    let state_param = consent_req.state.as_deref();
+
+    if !body.approved {
+        return Ok(redirect_error(
+            redirect_uri,
+            "access_denied",
+            "user denied the authorization request",
+            state_param,
+        ));
+    }
+
+    // Issue authorization code (same logic as auto-approve path in authorize)
+    let mut code_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut code_bytes);
+    let code = URL_SAFE_NO_PAD.encode(code_bytes);
+    let code_hash = jwt::hash_token(&code);
+
+    let expires_at = Utc::now() + Duration::seconds(
+        state.config.jwt.authorization_code_ttl_secs as i64,
+    );
+
+    // Look up the client to get the internal id
+    let client = db::find_client_by_id(&state.db, consent_req.client_id)
+        .await?
+        .ok_or(Error::InvalidClient)?;
+
+    if let Err(e) = db::store_authorization_code(
+        &state.db,
+        &code_hash,
+        user_id,
+        client.id,
+        &consent_req.redirect_uri,
+        &consent_req.scopes,
+        consent_req.code_challenge.as_deref(),
+        consent_req.code_challenge_method.as_deref(),
+        consent_req.nonce.as_deref(),
+        expires_at,
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to store authorization code");
+        return Ok(redirect_error(
+            redirect_uri,
+            "server_error",
+            "internal error",
+            state_param,
+        ));
+    }
+
+    // Redirect back to client with authorization code
+    let mut redirect_url = match url::Url::parse(&consent_req.redirect_uri) {
+        Ok(url) => url,
+        Err(_) => {
+            return Ok(redirect_error(
+                redirect_uri,
+                "server_error",
+                "internal error",
+                state_param,
+            ));
+        }
+    };
+
+    {
+        let mut params = redirect_url.query_pairs_mut();
+        params.append_pair("code", &code);
+        if let Some(s) = state_param {
+            params.append_pair("state", s);
+        }
+    }
+
+    Ok((StatusCode::FOUND, [("location", redirect_url.to_string())]).into_response())
 }
 
 /// POST /oauth/token — token endpoint

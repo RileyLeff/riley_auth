@@ -98,7 +98,10 @@ impl TestServer {
                 issuer: "riley-auth-test".to_string(),
                 authorization_code_ttl_secs: 300,
             },
-            oauth: OAuthProvidersConfig::default(),
+            oauth: OAuthProvidersConfig {
+                consent_url: Some("https://auth.example.com/consent".to_string()),
+                ..OAuthProvidersConfig::default()
+            },
             storage: None,
             usernames: UsernameConfig::default(),
             scopes: ScopesConfig {
@@ -1368,7 +1371,7 @@ fn authorize_error_redirect_login_required() {
 
 #[test]
 #[ignore]
-fn authorize_error_redirect_consent_required() {
+fn authorize_redirects_to_consent_url_for_non_auto_approve() {
     let s = server();
     runtime().block_on(async {
         s.cleanup().await;
@@ -1384,7 +1387,7 @@ fn authorize_error_redirect_consent_required() {
             "consent-client",
             &secret_hash,
             &["https://app.example.com/callback".to_string()],
-            &[],
+            &["read:profile".to_string()],
             false, // auto_approve = false
         )
         .await
@@ -1398,6 +1401,7 @@ fn authorize_error_redirect_consent_required() {
                 ("client_id", "consent-client"),
                 ("redirect_uri", "https://app.example.com/callback"),
                 ("response_type", "code"),
+                ("scope", "openid read:profile"),
                 ("state", "consent-state"),
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
@@ -1410,9 +1414,21 @@ fn authorize_error_redirect_consent_required() {
         assert_eq!(resp.status(), StatusCode::FOUND);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
+
+        // Should redirect to consent_url with consent_id
+        assert_eq!(redirect_url.host_str(), Some("auth.example.com"));
+        assert_eq!(redirect_url.path(), "/consent");
         let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
-        assert_eq!(params["error"], "consent_required");
-        assert_eq!(params["state"], "consent-state");
+        assert!(params.contains_key("consent_id"), "should have consent_id parameter");
+        // Verify the consent_id is a valid UUID
+        let consent_id: uuid::Uuid = params["consent_id"].parse().expect("consent_id should be a UUID");
+
+        // Verify the consent request was stored in the DB
+        let consent_req = db::find_consent_request(&s.db, consent_id).await.unwrap().unwrap();
+        assert_eq!(consent_req.redirect_uri, "https://app.example.com/callback");
+        assert_eq!(consent_req.state.as_deref(), Some("consent-state"));
+        assert!(consent_req.scopes.contains(&"openid".to_string()));
+        assert!(consent_req.scopes.contains(&"read:profile".to_string()));
     });
 }
 
@@ -1926,33 +1942,47 @@ fn oauth_no_scopes_omits_scope_field() {
 
 #[test]
 #[ignore]
-fn consent_endpoint_returns_scope_descriptions() {
+fn consent_get_returns_context() {
     let s = server();
     runtime().block_on(async {
         s.cleanup().await;
         let client = s.client();
 
-        let (_, access_token, _) = s.create_user_with_session("consentuser", "user").await;
+        let (user, access_token, _) = s.create_user_with_session("consentuser", "user").await;
 
         let secret_hash = jwt::hash_token("secret");
-        db::create_client(
+        let oauth_client = db::create_client(
             &s.db,
             "Consent Test Client",
             "consent-test-client",
             &secret_hash,
             &["https://app.example.com/callback".to_string()],
             &["read:profile".to_string(), "write:profile".to_string()],
-            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Store a consent request directly
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(600);
+        let consent_id = db::store_consent_request(
+            &s.db,
+            oauth_client.id,
+            user.id,
+            &["read:profile".to_string(), "write:profile".to_string()],
+            "https://app.example.com/callback",
+            Some("test-state"),
+            Some("challenge123"),
+            Some("S256"),
+            None,
+            expires_at,
         )
         .await
         .unwrap();
 
         let resp = client
             .get(s.url("/oauth/consent"))
-            .query(&[
-                ("client_id", "consent-test-client"),
-                ("scope", "read:profile write:profile"),
-            ])
+            .query(&[("consent_id", consent_id.to_string())])
             .header("cookie", format!("riley_auth_access={access_token}"))
             .send()
             .await
@@ -1960,7 +1990,10 @@ fn consent_endpoint_returns_scope_descriptions() {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["client_name"], "Consent Test Client");
+        assert_eq!(body["client"]["name"], "Consent Test Client");
+        assert_eq!(body["client"]["client_id"], "consent-test-client");
+        assert_eq!(body["redirect_uri"], "https://app.example.com/callback");
+        assert_eq!(body["state"], "test-state");
         let scopes = body["scopes"].as_array().unwrap();
         assert_eq!(scopes.len(), 2);
         assert_eq!(scopes[0]["name"], "read:profile");
@@ -1972,45 +2005,259 @@ fn consent_endpoint_returns_scope_descriptions() {
 
 #[test]
 #[ignore]
-fn consent_endpoint_rejects_disallowed_scope() {
+fn consent_approve_issues_auth_code() {
     let s = server();
     runtime().block_on(async {
         s.cleanup().await;
         let client = s.client();
 
-        let (_, access_token, _) = s.create_user_with_session("consentbad", "user").await;
+        let (user, access_token, _) = s.create_user_with_session("consentapprove", "user").await;
 
-        let secret_hash = jwt::hash_token("secret");
-        db::create_client(
+        let client_secret = "consent-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        let oauth_client = db::create_client(
             &s.db,
-            "Consent Limited Client",
-            "consent-limited-client",
+            "Consent Approve Client",
+            "consent-approve-client",
             &secret_hash,
             &["https://app.example.com/callback".to_string()],
-            &["read:profile".to_string()], // only read:profile allowed
-            true,
+            &["read:profile".to_string()],
+            false,
         )
         .await
         .unwrap();
 
-        // Request write:profile which is NOT in client's allowed_scopes
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Store a consent request
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(600);
+        let consent_id = db::store_consent_request(
+            &s.db,
+            oauth_client.id,
+            user.id,
+            &["openid".to_string(), "read:profile".to_string()],
+            "https://app.example.com/callback",
+            Some("test-state"),
+            Some(&pkce_challenge),
+            Some("S256"),
+            Some("test-nonce"),
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+        // Approve consent
         let resp = client
-            .get(s.url("/oauth/consent"))
-            .query(&[
-                ("client_id", "consent-limited-client"),
-                ("scope", "read:profile write:profile"),
-            ])
+            .post(s.url("/oauth/consent"))
+            .query(&[("consent_id", consent_id.to_string())])
             .header("cookie", format!("riley_auth_access={access_token}"))
+            .json(&serde_json::json!({"approved": true}))
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert!(params.contains_key("code"), "should have authorization code");
+        assert_eq!(params["state"], "test-state");
+
+        // Exchange the authorization code for tokens
+        let code = &params["code"];
+        let token_resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("client_id", "consent-approve-client"),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(token_resp.status(), StatusCode::OK);
+        let token_body: serde_json::Value = token_resp.json().await.unwrap();
+        assert!(token_body["access_token"].as_str().is_some());
+        assert!(token_body["id_token"].as_str().is_some()); // openid scope → ID token
+        assert_eq!(token_body["scope"], "openid read:profile");
+
+        // Consent request should be consumed (deleted)
+        let stale = db::find_consent_request(&s.db, consent_id).await.unwrap();
+        assert!(stale.is_none(), "consent request should be deleted after approval");
     });
 }
 
 #[test]
 #[ignore]
-fn consent_endpoint_requires_session_token() {
+fn consent_deny_redirects_with_access_denied() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (user, access_token, _) = s.create_user_with_session("consentdeny", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        let oauth_client = db::create_client(
+            &s.db,
+            "Consent Deny Client",
+            "consent-deny-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(600);
+        let consent_id = db::store_consent_request(
+            &s.db,
+            oauth_client.id,
+            user.id,
+            &["openid".to_string()],
+            "https://app.example.com/callback",
+            Some("deny-state"),
+            None,
+            None,
+            None,
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+        let resp = client
+            .post(s.url("/oauth/consent"))
+            .query(&[("consent_id", consent_id.to_string())])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .json(&serde_json::json!({"approved": false}))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "access_denied");
+        assert_eq!(params["state"], "deny-state");
+
+        // Consent request should be consumed
+        let stale = db::find_consent_request(&s.db, consent_id).await.unwrap();
+        assert!(stale.is_none());
+    });
+}
+
+#[test]
+#[ignore]
+fn consent_rejects_expired_request() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (user, access_token, _) = s.create_user_with_session("consentexpired", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        let oauth_client = db::create_client(
+            &s.db,
+            "Consent Expired Client",
+            "consent-expired-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Store an already-expired consent request
+        let expires_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+        let consent_id = db::store_consent_request(
+            &s.db,
+            oauth_client.id,
+            user.id,
+            &[],
+            "https://app.example.com/callback",
+            None,
+            None,
+            None,
+            None,
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+        let resp = client
+            .get(s.url("/oauth/consent"))
+            .query(&[("consent_id", consent_id.to_string())])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    });
+}
+
+#[test]
+#[ignore]
+fn consent_rejects_wrong_user() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (user_a, _, _) = s.create_user_with_session("consentusera", "user").await;
+        let (_, access_token_b, _) = s.create_user_with_session("consentuserb", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        let oauth_client = db::create_client(
+            &s.db,
+            "Consent Wrong User Client",
+            "consent-wrong-user-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Store consent for user A
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(600);
+        let consent_id = db::store_consent_request(
+            &s.db,
+            oauth_client.id,
+            user_a.id,
+            &[],
+            "https://app.example.com/callback",
+            None,
+            None,
+            None,
+            None,
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+        // User B tries to access user A's consent request
+        let resp = client
+            .get(s.url("/oauth/consent"))
+            .query(&[("consent_id", consent_id.to_string())])
+            .header("cookie", format!("riley_auth_access={access_token_b}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    });
+}
+
+#[test]
+#[ignore]
+fn consent_requires_session_token() {
     let s = server();
     runtime().block_on(async {
         s.cleanup().await;
@@ -2019,11 +2266,113 @@ fn consent_endpoint_requires_session_token() {
         // No cookie — should be rejected
         let resp = client
             .get(s.url("/oauth/consent"))
-            .query(&[("client_id", "anything")])
+            .query(&[("consent_id", uuid::Uuid::now_v7().to_string())])
             .send()
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    });
+}
+
+#[test]
+#[ignore]
+fn consent_full_flow_via_authorize() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("consentflow", "user").await;
+
+        let client_secret = "flow-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Full Flow Client",
+            "flow-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &["read:profile".to_string()],
+            false, // non-auto-approve
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Step 1: Authorize → redirect to consent URL
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "flow-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid read:profile"),
+                ("state", "flow-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+                ("nonce", "flow-nonce"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let consent_url = url::Url::parse(location).unwrap();
+        assert_eq!(consent_url.host_str(), Some("auth.example.com"));
+        let consent_params: std::collections::HashMap<_, _> = consent_url.query_pairs().collect();
+        let consent_id = &consent_params["consent_id"];
+
+        // Step 2: GET consent context
+        let resp = client
+            .get(s.url("/oauth/consent"))
+            .query(&[("consent_id", consent_id.as_ref())])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["client"]["name"], "Full Flow Client");
+
+        // Step 3: Approve
+        let resp = client
+            .post(s.url("/oauth/consent"))
+            .query(&[("consent_id", consent_id.as_ref())])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .json(&serde_json::json!({"approved": true}))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert!(params.contains_key("code"));
+        assert_eq!(params["state"], "flow-state");
+
+        // Step 4: Exchange code for tokens
+        let code = &params["code"];
+        let token_resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code.as_ref()),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("client_id", "flow-client"),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(token_resp.status(), StatusCode::OK);
+        let token_body: serde_json::Value = token_resp.json().await.unwrap();
+        assert!(token_body["access_token"].as_str().is_some());
+        assert!(token_body["id_token"].as_str().is_some());
     });
 }
 

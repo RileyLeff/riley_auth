@@ -76,6 +76,10 @@ pub struct JwtConfig {
 pub struct OAuthProvidersConfig {
     pub google: Option<OAuthProviderConfig>,
     pub github: Option<OAuthProviderConfig>,
+    /// URL of the deployer's consent page. When a non-auto-approve client
+    /// triggers the authorize flow, riley_auth redirects here with
+    /// `?consent_id={id}` so the frontend can render a consent UI.
+    pub consent_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -505,6 +509,9 @@ access_token_ttl_secs = 600
 refresh_token_ttl_secs = 86400
 issuer = "my-auth"
 
+[oauth]
+consent_url = "https://auth.example.com/consent"
+
 [oauth.google]
 client_id = "google-id"
 client_secret = "env:GOOGLE_SECRET"
@@ -544,6 +551,7 @@ public = { requests = 500, window_secs = 60 }
         assert_eq!(config.server.port, 9000);
         assert_eq!(config.database.max_connections, 20);
         assert!(config.oauth.google.is_some());
+        assert_eq!(config.oauth.consent_url.as_deref(), Some("https://auth.example.com/consent"));
         assert!(config.storage.is_some());
         assert_eq!(config.usernames.reserved.len(), 2);
         assert_eq!(config.scopes.definitions.len(), 2);

@@ -233,6 +233,12 @@ pub async fn soft_delete_user(pool: &PgPool, user_id: Uuid) -> Result<DeleteUser
         .execute(&mut *tx)
         .await?;
 
+    // Delete any pending consent requests
+    sqlx::query("DELETE FROM consent_requests WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
     // Delete OAuth links so the provider identity can be re-used
     sqlx::query("DELETE FROM oauth_links WHERE user_id = $1")
         .bind(user_id)
@@ -931,6 +937,95 @@ pub async fn consume_authorization_code(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+// --- Consent request queries ---
+
+#[derive(Debug, Clone, FromRow)]
+pub struct ConsentRequestRow {
+    pub id: Uuid,
+    pub client_id: Uuid,
+    pub user_id: Uuid,
+    pub scopes: Vec<String>,
+    pub redirect_uri: String,
+    pub state: Option<String>,
+    pub code_challenge: Option<String>,
+    pub code_challenge_method: Option<String>,
+    pub nonce: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+pub async fn store_consent_request(
+    pool: &PgPool,
+    client_id: Uuid,
+    user_id: Uuid,
+    scopes: &[String],
+    redirect_uri: &str,
+    state: Option<&str>,
+    code_challenge: Option<&str>,
+    code_challenge_method: Option<&str>,
+    nonce: Option<&str>,
+    expires_at: DateTime<Utc>,
+) -> Result<Uuid> {
+    let row: (Uuid,) = sqlx::query_as(
+        "INSERT INTO consent_requests (client_id, user_id, scopes, redirect_uri, state, code_challenge, code_challenge_method, nonce, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id"
+    )
+    .bind(client_id)
+    .bind(user_id)
+    .bind(scopes)
+    .bind(redirect_uri)
+    .bind(state)
+    .bind(code_challenge)
+    .bind(code_challenge_method)
+    .bind(nonce)
+    .bind(expires_at)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+/// Find a consent request by ID, only if not expired.
+pub async fn find_consent_request(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ConsentRequestRow>> {
+    let row = sqlx::query_as::<_, ConsentRequestRow>(
+        "SELECT * FROM consent_requests WHERE id = $1 AND expires_at > now()"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Delete a consent request (after it's been used or denied).
+pub async fn delete_consent_request(pool: &PgPool, id: Uuid) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM consent_requests WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Clean up expired consent requests in batches of 1000.
+pub async fn cleanup_expired_consent_requests(pool: &PgPool) -> Result<u64> {
+    let mut total = 0u64;
+    loop {
+        let result = sqlx::query(
+            "DELETE FROM consent_requests WHERE id IN (
+                SELECT id FROM consent_requests WHERE expires_at <= now() LIMIT 1000
+            )"
+        )
+        .execute(pool)
+        .await?;
+        let affected = result.rows_affected();
+        total += affected;
+        if affected < 1000 { break; }
+    }
+    Ok(total)
 }
 
 // --- Transactional operations ---

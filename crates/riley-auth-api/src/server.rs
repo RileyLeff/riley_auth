@@ -188,6 +188,12 @@ async fn maintenance_worker(
             _ => {}
         }
 
+        match riley_auth_core::db::cleanup_expired_consent_requests(&pool).await {
+            Ok(n) if n > 0 => tracing::info!(count = n, "cleaned up expired consent requests"),
+            Err(e) => tracing::warn!("cleanup_expired_consent_requests failed: {e}"),
+            _ => {}
+        }
+
         match riley_auth_core::db::cleanup_consumed_refresh_tokens(&pool, cutoff).await {
             Ok(n) if n > 0 => tracing::info!(count = n, "cleaned up consumed refresh tokens"),
             Err(e) => tracing::warn!("cleanup_consumed_refresh_tokens failed: {e}"),
