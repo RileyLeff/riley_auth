@@ -570,6 +570,21 @@ pub(crate) async fn register_webhook(
         "https" | "http" => {}
         _ => return Err(Error::BadRequest("webhook URL must use https:// or http://".to_string())),
     }
+    // When SSRF protection is enabled, reject URLs with private IP literals at
+    // registration time for immediate feedback. Hostname-based URLs are checked
+    // at delivery time via the SSRF-safe DNS resolver.
+    if !state.config.webhooks.allow_private_ips {
+        let is_private = match parsed_url.host() {
+            Some(url::Host::Ipv4(v4)) => webhooks::is_private_ip(&std::net::IpAddr::V4(v4)),
+            Some(url::Host::Ipv6(v6)) => webhooks::is_private_ip(&std::net::IpAddr::V6(v6)),
+            _ => false, // Domain names are checked at delivery time
+        };
+        if is_private {
+            return Err(Error::BadRequest(
+                "webhook URL must not use a private/reserved IP address".to_string(),
+            ));
+        }
+    }
     if body.events.is_empty() {
         return Err(Error::BadRequest("at least one event type required".to_string()));
     }

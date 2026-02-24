@@ -814,3 +814,55 @@ fn webhook_signature_includes_timestamp() {
         assert_eq!(hex_part.len(), 64, "SHA-256 hex should be 64 chars");
     });
 }
+
+#[test]
+#[ignore]
+fn webhook_register_rejects_private_ip() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, admin_token, _) = s.create_user_with_session("ssrfadmin", "admin").await;
+
+        // Private IP literals should be rejected (SSRF protection is on by default)
+        for url in &[
+            "http://127.0.0.1/hook",
+            "http://10.0.0.1/hook",
+            "http://192.168.1.1/hook",
+            "http://172.16.0.1/hook",
+            "http://[::1]/hook",
+        ] {
+            let resp = client
+                .post(s.url("/admin/webhooks"))
+                .header("cookie", format!("auth_access={admin_token}"))
+                .header("x-requested-with", "test")
+                .json(&serde_json::json!({
+                    "url": url,
+                    "events": ["user.created"]
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "private IP URL should be rejected: {url}"
+            );
+        }
+
+        // Public IP should be accepted
+        let resp = client
+            .post(s.url("/admin/webhooks"))
+            .header("cookie", format!("auth_access={admin_token}"))
+            .header("x-requested-with", "test")
+            .json(&serde_json::json!({
+                "url": "https://93.184.216.34/hook",
+                "events": ["user.created"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    });
+}
