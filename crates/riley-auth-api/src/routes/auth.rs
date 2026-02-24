@@ -474,6 +474,8 @@ async fn auth_refresh(
 
     let (new_refresh_raw, new_refresh_hash) = jwt::generate_refresh_token();
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
+    // Propagate auth_time for DB consistency; this session-cookie path does not
+    // issue ID tokens, so auth_time is not surfaced to clients here.
     db::store_refresh_token(
         &state.db, user.id, None, &new_refresh_hash, expires_at,
         &[], ua_truncated, Some(&ip), token_row.family_id, token_row.nonce.as_deref(),
@@ -1056,8 +1058,12 @@ async fn issue_tokens(
 
     let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
     let family_id = uuid::Uuid::now_v7();
-    let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
-    let auth_time = Some(Utc::now().timestamp());
+    let now = Utc::now();
+    let expires_at = now + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
+    // auth_time = now is correct here: this runs immediately after OAuth callback,
+    // so token-issue time ≈ authentication time. The OAuth provider path uses
+    // auth_code.created_at instead (also ≈ authentication time from that flow).
+    let auth_time = Some(now.timestamp());
     db::store_refresh_token(&state.db, user.id, None, &refresh_hash, expires_at, &[], ua_truncated, ip_address, family_id, None, auth_time).await?;
 
     let jar = jar

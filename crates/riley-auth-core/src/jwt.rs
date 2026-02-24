@@ -42,6 +42,9 @@ pub struct IdTokenClaims {
     pub preferred_username: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
+    /// Unix timestamp of the original authentication event (OIDC Core 1.0 Section 2).
+    /// None only for refresh tokens created before migration 012_auth_time;
+    /// all new tokens always have auth_time set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_time: Option<i64>,
 }
