@@ -232,3 +232,9 @@ The token endpoint falls under the `standard` tier (60/min) instead of the `auth
 
 ### auth_time not in refreshed ID tokens (pre-existing OIDC gap)
 OIDC Core 1.0 Section 12.2 says refreshed ID tokens SHOULD include `auth_time`. Not currently tracked. Would require an `auth_time` column on `refresh_tokens`. Low priority.
+
+### PII scrubbing assumes {data} JSON structure (pre-existing)
+Webhook payload scrubbing in `soft_delete_user` uses `jsonb_set(payload, '{data}', ...)`. If future event types use a different structure, user data could survive deletion. Event-registry pattern for PII paths would be more robust but adds complexity for the current single-payload-format use case.
+
+### Protocol scopes can't be added to client allowed_scopes via admin API (pre-existing)
+`register_client` validates scopes against `config.scopes.definitions`, but protocol scopes (openid, profile, email) are not config-defined. The authorize handler allows them regardless of `allowed_scopes`, so the DB record appears to lack capabilities it actually has. UX improvement for a future phase.
