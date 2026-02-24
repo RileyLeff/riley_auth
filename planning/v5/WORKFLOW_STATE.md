@@ -1,8 +1,8 @@
 # v5 Workflow State
 
-**Current Phase:** 8 — Production Defaults & Deployment Polish (REVIEW)
-**Current Step:** Exhaustive review (pre-conformance)
-**Status:** Phase 8 implementation complete. 8.1 and 8.2 already implemented, 8.3 tests added. Starting exhaustive review.
+**Current Phase:** 8 — Production Defaults & Deployment Polish (COMPLETE)
+**Current Step:** Phase 8 done, moving to Phase 9
+**Status:** Phase 8 exhaustive review converged (2 rounds, 0 major). All 191 tests pass. Ready for Phase 9.
 
 ## Progress
 
@@ -30,7 +30,9 @@
 | 7 | review | Exhaustive review (2 rounds, Claude-only, converged) | Done |
 | 8 | 8.1-8.2 | JWKS Cache-Control + CORS (already implemented) | Done |
 | 8 | 8.3 | Tests for JWKS Cache-Control + config parsing | Done |
-| 8 | review | Exhaustive review (pre-conformance) | In Progress |
+| 8 | review | Exhaustive review R1: 4 major found and fixed (9b6ce46) | Done |
+| 8 | review | Exhaustive review R2: 0 major, 4 minor fixed (85c7605) | Done |
+| 8 | | **Phase 8 converged** | Done |
 | 9 | 9.1-9.4 | OIDC conformance testing | Pending |
 
 ## Blockers
@@ -39,6 +41,8 @@ None.
 
 ## Recent Activity
 
+- Phase 8 R2 minor fixes: discovery doc test assertions, email-in-ID-token test, unsupported_grant_type test (85c7605)
+- Phase 8 R1 fixes: token error codes, discovery doc fields, email claims in ID token (9b6ce46)
+- Phase 8 review artifacts filed (78a2fd6)
 - Phase 8.3: JWKS Cache-Control integration test + config parsing tests (27b634e)
-- Phase 7 review: 2 rounds, 0 major in both, converged (d3efa63, 618252d)
-- All 187 tests pass (35 core + 23 API unit + 129 integration)
+- All 191 tests pass (35 core + 23 API unit + 133 integration)
