@@ -58,3 +58,27 @@ Tracked for Phase 5 (OIDC compliance pass) or separate fix.
 ### Request body size limit deferred
 No global request body size limit is configured. Should add
 `DefaultBodyLimit::max(1MB)` in a future pass. Not Phase 4 scope.
+
+## Phase 5 Review Notes
+
+### Visibility split between auth/admin/oauth types
+Auth route types (SetupRequest, MeResponse, etc.) are `pub` while admin types
+are `pub(crate)`. This is because auth types existed before the utoipa pass and
+were already public. Admin types were made `pub(crate)` during Phase 5. Both
+work fine for utoipa since it processes within the same crate.
+
+### Cookie-based auth not representable in OpenAPI SecurityScheme
+Most endpoints authenticate via HTTP-only cookies, not Bearer headers. OpenAPI
+3.x can model `apiKey` in `cookie` but the spec declares only a "bearer" scheme.
+This is a fundamental impedance mismatch — not a bug. The bearer scheme is
+accurate for the /oauth/userinfo endpoint which does use Bearer tokens.
+
+### Untyped admin and discovery responses
+`list_users`, `get_user`, `jwks`, and `openid_configuration` return
+`serde_json::Value` (dynamic JSON). Creating typed response structs would improve
+the spec but is non-trivial for these endpoints. Deferred to future work.
+
+### OAuth callback query params undocumented
+`auth_callback` and `link_callback` accept `code` and `state` query params from
+the OAuth provider. These are not consumer-facing endpoints (they're redirect
+targets) so omitting query param docs is acceptable.
