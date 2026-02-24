@@ -342,11 +342,22 @@ The Phase 6 note "WWW-Authenticate header not included on 401 responses" is now 
 ### Token introspection is JWT-only (accepted)
 The introspect endpoint only validates JWTs. Submitting a refresh token (opaque base64) returns `{"active": false}`. Technically RFC 7662 compliant — returning inactive for unrecognized token formats is allowed. Refresh token introspection is a nice-to-have for future work.
 
-### consumed_refresh_tokens not cleaned by maintenance worker (accepted)
-The `consumed_refresh_tokens` table grows with each token rotation. Growth is bounded by active user count × rotation frequency. Rows contain no PII (only token_hash + family_id + consumed_at). Adding periodic cleanup where `consumed_at < now() - refresh_token_ttl` is a future improvement — not blocking.
+### consumed_refresh_tokens now cleaned by maintenance worker (SUPERSEDED)
+~~The `consumed_refresh_tokens` table grows with each token rotation.~~ The maintenance worker now calls `cleanup_consumed_refresh_tokens` with a cutoff of `2 × refresh_token_ttl_secs`. This was added as part of the Phase 5 (Background Cleanup Task) implementation in v4.
 
 ### Authorization code issuance duplicated (accepted, Phase 6 candidate)
 Code generation logic is duplicated between `authorize()` (auto-approve path) and `consent_decision()`. Extracting a helper is a Phase 6 codebase organization task. Not a correctness issue.
 
 ### Nonce preserved indefinitely through token rotation (design choice)
 The nonce from the original authorization request is carried through every refresh rotation and included in every ID token. OIDC Core 1.0 Section 12.2 says this is acceptable. The `exp` claim provides the primary replay protection.
+
+## v5 Phase 6 — Codebase Organization
+
+### Pre-existing dead code identified during module split (accepted)
+The db.rs → db/ module split exposed several unused functions: `update_username`, `record_username_change`, `update_user_avatar`, `delete_consent_request`, and `create_user` (test-only). These are pre-existing — not introduced by the refactoring. Kept for potential future use (e.g., avatar upload, admin consent management). Candidate for cleanup if still unused after v5.
+
+### Authorization code issuance duplication not addressed in Phase 6
+The Phase 5 review flagged duplicated auth code generation between `authorize()` and `consent_decision()` as a Phase 6 candidate. Not addressed because the v5 Phase 6 architecture scoped structural splits only (db.rs and integration.rs), not logic refactoring. Still a valid future improvement.
+
+### Webhook.secret skip_serializing is documentation-level only
+The `#[serde(skip_serializing)]` on `Webhook.secret` is belt-and-suspenders — admin response types already use separate structs. The annotation prevents accidental exposure if the model struct is ever serialized directly. Not a bug.

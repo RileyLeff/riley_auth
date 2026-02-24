@@ -3,7 +3,7 @@
 //! These tests require a running PostgreSQL 18 instance.
 //! Use `scripts/test-integration.sh` to start Docker Compose and run tests,
 //! or set DATABASE_URL manually and run:
-//!   `cargo test --test integration -- --include-ignored --test-threads=1`
+//!   `cargo test -p riley-auth-api -- --ignored --test-threads=1`
 //!
 //! Tests are #[ignore]d by default so `cargo test` doesn't require a live database.
 //!

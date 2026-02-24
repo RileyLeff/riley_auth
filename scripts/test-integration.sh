@@ -14,4 +14,4 @@ trap cleanup EXIT
 
 echo "Running integration tests..."
 DATABASE_URL="postgres://riley_test:riley_test@localhost:15432/riley_test" \
-    cargo test --test integration -- --include-ignored --test-threads=1 "$@"
+    cargo test -p riley-auth-api -- --include-ignored --test-threads=1 "$@"
