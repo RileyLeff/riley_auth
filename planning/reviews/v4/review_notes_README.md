@@ -1,4 +1,4 @@
-# Review Notes — v3
+# Review Notes — v4
 
 Architectural tradeoffs and design decisions documented during review. Future sessions should reference this to avoid re-litigating settled decisions.
 
@@ -158,3 +158,20 @@ Mitigated by reqwest's connection pooling — resolved IP is used immediately. T
 
 ### Redis rate limiter key prefix (test-only)
 `RedisRateLimiter::new()` uses hardcoded "rate_limit" prefix. Only used in unit tests, not in production (which uses `TieredRedisRateLimiter` with per-tier prefixes).
+
+## v4 Phase 5 Milestone — Exhaustive Review R1
+
+### Setup tokens are not single-use (R1, MAJOR-02)
+Setup tokens are signed JWTs stored in HttpOnly+Secure cookies with a 15-minute TTL. They are not invalidated server-side after use. The `link_confirm` endpoint requires both a valid session cookie AND a setup token, so exploiting replay requires stealing the entire cookie jar. Adding a `consumed_setup_tokens` table would add DB complexity for minimal security improvement given: HttpOnly+Secure, short TTL, CSRF protection, and dual-auth requirement on link_confirm.
+
+### Client secrets use SHA-256 hashing (R1, MAJOR-04)
+Client secrets are 256 bits of random entropy. Brute-force is infeasible regardless of hash function. SHA-256 is appropriate for machine-generated high-entropy secrets.
+
+### Setup token binding removed (R1, MAJOR-01 fix)
+The `binding` field in SetupClaims was tautological — computed from profile data inside the JWT, verified against the same data. The JWT signature already prevents tampering. Removed to avoid false sense of security. This supersedes the v3 note "Setup token binding is self-referential (accepted)."
+
+### Nonce preserved on session refresh (R1, MAJOR-03 fix)
+Changed `auth_refresh` to pass `token_row.nonce.as_deref()` instead of `None` for consistency with the OAuth provider refresh path. This supersedes the v3 note "Nonce not carried forward on refresh (SHOULD, not MUST)." Both refresh paths now preserve nonces.
+
+### Temp cookie max_age aligned with JWT TTL (R1, MINOR-09 fix)
+Setup cookie max_age was 10 minutes while the JWT TTL was 15 minutes. Aligned both to 15 minutes.

@@ -3998,17 +3998,10 @@ fn link_confirm_adds_provider_to_existing_account() {
         // Create a setup token simulating an email collision from github
         // (as if auth_callback detected that github user has same email)
         let setup_token = {
-            use sha2::{Sha256, Digest};
             let provider = "github";
             let provider_id = "gh-12345";
-            let mut hasher = Sha256::new();
-            hasher.update(provider.as_bytes());
-            hasher.update(b":");
-            hasher.update(provider_id.as_bytes());
-            let binding = hex::encode(hasher.finalize());
 
             let claims = serde_json::json!({
-                "binding": binding,
                 "profile": {
                     "provider": provider,
                     "provider_id": provider_id,
@@ -4075,15 +4068,7 @@ fn link_confirm_rejects_already_linked_provider() {
 
         // Create setup token for the same provider identity that's already linked
         let setup_token = {
-            use sha2::{Sha256, Digest};
-            let mut hasher = Sha256::new();
-            hasher.update(existing_link.provider.as_bytes());
-            hasher.update(b":");
-            hasher.update(existing_link.provider_id.as_bytes());
-            let binding = hex::encode(hasher.finalize());
-
             let claims = serde_json::json!({
-                "binding": binding,
                 "profile": {
                     "provider": &existing_link.provider,
                     "provider_id": &existing_link.provider_id,

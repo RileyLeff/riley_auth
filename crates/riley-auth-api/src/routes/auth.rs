@@ -407,7 +407,7 @@ async fn auth_refresh(
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt.refresh_token_ttl_secs as i64);
     db::store_refresh_token(
         &state.db, user.id, None, &new_refresh_hash, expires_at,
-        &[], ua_truncated, Some(&ip), token_row.family_id, None,
+        &[], ua_truncated, Some(&ip), token_row.family_id, token_row.nonce.as_deref(),
     ).await?;
 
     // Mark the new token as just used (session was actively refreshed)
@@ -1011,7 +1011,7 @@ fn build_temp_cookie(name: &str, value: &str, config: &Config) -> Cookie<'static
     if let Some(ref domain) = config.server.cookie_domain {
         cookie.set_domain(domain.clone());
     }
-    cookie.set_max_age(cookie::time::Duration::minutes(10));
+    cookie.set_max_age(cookie::time::Duration::minutes(15));
     cookie
 }
 
@@ -1037,25 +1037,13 @@ fn user_to_me(user: &db::User) -> MeResponse {
 
 /// Setup token: short-lived JWT containing OAuth profile data.
 /// Used to pass profile info between callback and setup endpoints.
-/// The `binding` field is a SHA-256 hash of provider+provider_id, ensuring the token
-/// can only be used for the specific OAuth flow that created it.
+/// The JWT signature protects integrity of all claims (profile, purpose, expiry).
 #[derive(Serialize, Deserialize)]
 struct SetupClaims {
     profile: oauth::OAuthProfile,
     exp: i64,
     iss: String,
     purpose: String,
-    binding: String,
-}
-
-/// Compute a hex-encoded SHA-256 binding from provider + provider_id.
-fn setup_token_binding(provider: &str, provider_id: &str) -> String {
-    use sha2::{Sha256, Digest};
-    let mut hasher = Sha256::new();
-    hasher.update(provider.as_bytes());
-    hasher.update(b":");
-    hasher.update(provider_id.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 fn create_setup_token(
@@ -1064,7 +1052,6 @@ fn create_setup_token(
     profile: &oauth::OAuthProfile,
 ) -> Result<String, Error> {
     let claims = SetupClaims {
-        binding: setup_token_binding(&profile.provider, &profile.provider_id),
         profile: profile.clone(),
         exp: (Utc::now() + Duration::minutes(15)).timestamp(),
         iss: config.jwt.issuer.clone(),
@@ -1090,12 +1077,6 @@ fn decode_setup_token(
         .map_err(|_| Error::InvalidToken)?;
 
     if data.claims.purpose != "setup" {
-        return Err(Error::InvalidToken);
-    }
-
-    // Verify the token is bound to the profile it contains (prevents cross-flow replay)
-    let expected = setup_token_binding(&data.claims.profile.provider, &data.claims.profile.provider_id);
-    if data.claims.binding != expected {
         return Err(Error::InvalidToken);
     }
 
