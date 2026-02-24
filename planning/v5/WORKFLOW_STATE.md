@@ -1,8 +1,8 @@
 # v5 Workflow State
 
-**Current Phase:** 8 — Production Defaults & Deployment Polish (STARTING)
-**Current Step:** 8.1 — JWKS Cache-Control headers
-**Status:** Phase 7 complete and converged. Starting Phase 8.
+**Current Phase:** 8 — Production Defaults & Deployment Polish (REVIEW)
+**Current Step:** Exhaustive review (pre-conformance)
+**Status:** Phase 8 implementation complete. 8.1 and 8.2 already implemented, 8.3 tests added. Starting exhaustive review.
 
 ## Progress
 
@@ -28,8 +28,9 @@
 | 7 | 7.4 | Application metrics (tokens, webhooks, rate limits) | Done |
 | 7 | 7.5 | Integration tests for /metrics endpoint | Done |
 | 7 | review | Exhaustive review (2 rounds, Claude-only, converged) | Done |
-| 8 | 8.1-8.3 | Production defaults & deployment polish | Pending |
-| 8 | review | Exhaustive review (pre-conformance) | Pending |
+| 8 | 8.1-8.2 | JWKS Cache-Control + CORS (already implemented) | Done |
+| 8 | 8.3 | Tests for JWKS Cache-Control + config parsing | Done |
+| 8 | review | Exhaustive review (pre-conformance) | In Progress |
 | 9 | 9.1-9.4 | OIDC conformance testing | Pending |
 
 ## Blockers
@@ -38,8 +39,6 @@ None.
 
 ## Recent Activity
 
+- Phase 8.3: JWKS Cache-Control integration test + config parsing tests (27b634e)
 - Phase 7 review: 2 rounds, 0 major in both, converged (d3efa63, 618252d)
-- Phase 7 fix: constant-time bearer token, cardinality cap, input validation (d3efa63)
-- Phase 7.5: Metrics integration tests (15cf2e6)
-- Phase 7.4: Application-level metrics — tokens, webhooks, rate limits (bec83ae)
 - All 187 tests pass (35 core + 23 API unit + 129 integration)
