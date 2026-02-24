@@ -376,23 +376,30 @@ impl KeySet {
                 validation.validate_aud = false;
 
                 return decode::<T>(token, &entry.decoding, &validation)
-                    .map_err(|_| Error::InvalidToken);
+                    .map_err(|e| match e.kind() {
+                        jsonwebtoken::errors::ErrorKind::ExpiredSignature => Error::ExpiredToken,
+                        _ => Error::InvalidToken,
+                    });
             }
         }
 
         // Fall back: try all keys (for tokens without kid or unknown kid)
+        let mut last_expired = false;
         for entry in &self.entries {
             let mut validation = Validation::new(entry.algorithm);
             validation.set_issuer(&[&config.issuer]);
             validation.leeway = 0;
             validation.validate_aud = false; // enforced at call site
 
-            if let Ok(data) = decode::<T>(token, &entry.decoding, &validation) {
-                return Ok(data);
+            match decode::<T>(token, &entry.decoding, &validation) {
+                Ok(data) => return Ok(data),
+                Err(e) => {
+                    last_expired = matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature);
+                }
             }
         }
 
-        Err(Error::InvalidToken)
+        Err(if last_expired { Error::ExpiredToken } else { Error::InvalidToken })
     }
 }
 
@@ -800,7 +807,8 @@ mod tests {
 
         let token = keys.sign_access_token(&config, "user-123", "testuser", "user", "test-auth").unwrap();
         std::thread::sleep(std::time::Duration::from_secs(1));
-        assert!(keys.verify_access_token(&config, &token).is_err());
+        let err = keys.verify_access_token(&config, &token).unwrap_err();
+        assert!(matches!(err, Error::ExpiredToken), "expected ExpiredToken, got {err:?}");
     }
 
     #[test]

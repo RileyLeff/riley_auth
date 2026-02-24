@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use riley_auth_core::db;
-use riley_auth_core::error::Error;
+use riley_auth_core::error::{Error, www_authenticate_value};
 use riley_auth_core::jwt;
 
 use crate::server::AppState;
@@ -1016,7 +1016,30 @@ fn extract_client_credentials(
 async fn userinfo(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Response {
+    match userinfo_inner(&state, &headers).await {
+        Ok(json) => Json(json).into_response(),
+        Err(err) => bearer_error_response(&state.config.jwt.issuer, err),
+    }
+}
+
+/// Attach `WWW-Authenticate: Bearer` to an error response per RFC 6750 §3.1.
+fn bearer_error_response(issuer: &str, err: Error) -> Response {
+    let header_value = www_authenticate_value(issuer, &err);
+    let mut resp = err.into_response();
+    if let Some(value) = header_value {
+        resp.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            value.parse().unwrap(),
+        );
+    }
+    resp
+}
+
+async fn userinfo_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<serde_json::Value, Error> {
     // Extract Bearer token from Authorization header (case-insensitive prefix per RFC 6750 §2.1)
     let auth_header = headers
         .get("authorization")
@@ -1100,5 +1123,5 @@ async fn userinfo(
         }
     }
 
-    Ok(Json(serde_json::Value::Object(response)))
+    Ok(serde_json::Value::Object(response))
 }

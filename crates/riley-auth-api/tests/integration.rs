@@ -4708,6 +4708,8 @@ fn userinfo_rejects_session_token() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let www_auth = resp.headers().get("www-authenticate").expect("missing WWW-Authenticate header");
+        assert!(www_auth.to_str().unwrap().contains("error=\"invalid_token\""));
     });
 }
 
@@ -4726,6 +4728,10 @@ fn userinfo_rejects_missing_token() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let www_auth = resp.headers().get("www-authenticate").expect("missing WWW-Authenticate header");
+        let www_auth_str = www_auth.to_str().unwrap();
+        assert!(www_auth_str.starts_with("Bearer realm="), "expected Bearer realm, got: {www_auth_str}");
+        assert!(!www_auth_str.contains("error="), "no-token case should not include error attribute");
     });
 }
 
@@ -4745,6 +4751,9 @@ fn userinfo_rejects_invalid_token() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let www_auth = resp.headers().get("www-authenticate").expect("missing WWW-Authenticate header");
+        let www_auth_str = www_auth.to_str().unwrap();
+        assert!(www_auth_str.contains("error=\"invalid_token\""), "expected invalid_token error, got: {www_auth_str}");
     });
 }
 
@@ -4795,6 +4804,9 @@ fn userinfo_rejects_token_without_openid_scope() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let www_auth = resp.headers().get("www-authenticate").expect("missing WWW-Authenticate on 403");
+        let www_auth_str = www_auth.to_str().unwrap();
+        assert!(www_auth_str.contains("error=\"insufficient_scope\""), "expected insufficient_scope, got: {www_auth_str}");
     });
 }
 

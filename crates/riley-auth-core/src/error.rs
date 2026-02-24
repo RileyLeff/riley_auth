@@ -30,6 +30,9 @@ pub enum Error {
     #[error("invalid or expired token")]
     InvalidToken,
 
+    #[error("token expired")]
+    ExpiredToken,
+
     #[error("missing authentication")]
     Unauthenticated,
 
@@ -125,7 +128,7 @@ impl Error {
 
             Self::Database(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
 
-            Self::InvalidToken | Self::Unauthenticated => StatusCode::UNAUTHORIZED,
+            Self::InvalidToken | Self::ExpiredToken | Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
 
             Self::OAuth(_) | Self::InvalidOAuthState => StatusCode::BAD_REQUEST,
@@ -163,6 +166,7 @@ impl Error {
             Self::Database(_) => "internal_error",
             Self::Migration(_) => "migration_error",
             Self::InvalidToken => "invalid_token",
+            Self::ExpiredToken => "invalid_token",
             Self::Unauthenticated => "unauthenticated",
             Self::Forbidden => "forbidden",
             Self::OAuth(_) => "oauth_error",
@@ -228,6 +232,37 @@ pub fn unique_violation_constraint(err: &Error) -> Option<String> {
         }
     }
     None
+}
+
+/// Build a `WWW-Authenticate: Bearer` header value per RFC 6750 §3.1.
+///
+/// Returns `Some(value)` for errors that should include the header on
+/// Bearer-token-protected endpoints; `None` for errors where it doesn't apply.
+pub fn www_authenticate_value(issuer: &str, error: &Error) -> Option<String> {
+    match error {
+        Error::Unauthenticated => {
+            Some(format!("Bearer realm=\"{}\"", issuer))
+        }
+        Error::ExpiredToken => {
+            Some(format!(
+                "Bearer realm=\"{}\", error=\"invalid_token\", error_description=\"token expired\"",
+                issuer
+            ))
+        }
+        Error::InvalidToken => {
+            Some(format!(
+                "Bearer realm=\"{}\", error=\"invalid_token\"",
+                issuer
+            ))
+        }
+        Error::Forbidden => {
+            Some(format!(
+                "Bearer realm=\"{}\", error=\"insufficient_scope\"",
+                issuer
+            ))
+        }
+        _ => None,
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
