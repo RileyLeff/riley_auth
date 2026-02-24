@@ -126,6 +126,8 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
 }
 
 // --- OpenAPI ---
+// Note: /metrics is an operational endpoint (Prometheus text format) and is
+// intentionally excluded from the API spec.
 
 #[derive(utoipa::OpenApi)]
 #[openapi(
@@ -138,6 +140,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         health,
         jwks,
         openid_configuration,
+        openapi_spec,
         // Auth (OAuth consumer side)
         auth::auth_redirect,
         auth::auth_callback,
@@ -186,6 +189,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         auth::LinkResponse,
         auth::UpdateDisplayNameRequest,
         auth::UpdateUsernameRequest,
+        auth::SessionResponse,
         // Admin types
         admin::UpdateRoleRequest,
         admin::RegisterClientRequest,
@@ -213,9 +217,26 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
     ),
     security(
         ("bearer" = []),
-    )
+    ),
+    modifiers(&SecurityAddon),
 )]
 struct ApiDoc;
+
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.get_or_insert_default();
+        components.add_security_scheme(
+            "bearer",
+            utoipa::openapi::security::SecurityScheme::Http(
+                utoipa::openapi::security::Http::new(
+                    utoipa::openapi::security::HttpAuthScheme::Bearer,
+                ),
+            ),
+        );
+    }
+}
 
 #[utoipa::path(
     get,

@@ -414,7 +414,7 @@ fn logout() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         let hash = jwt::hash_token(&refresh_raw);
         let token = db::find_refresh_token(&s.db, &hash).await.unwrap();
@@ -445,7 +445,7 @@ fn logout_all() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         let token = db::find_refresh_token(&s.db, &hash2).await.unwrap();
         assert!(token.is_none());
@@ -526,7 +526,7 @@ fn delete_account() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         let user = db::find_user_by_username(&s.db, "deleteuser")
             .await
@@ -751,7 +751,7 @@ fn session_revoke_other_session() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         // Verify only one session remains
         let resp = client

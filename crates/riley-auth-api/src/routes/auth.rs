@@ -565,7 +565,7 @@ pub(crate) async fn auth_logout(
         .remove(removal_cookie(&state.cookie_names.access, "/", &state.config))
         .remove(removal_cookie(&state.cookie_names.refresh, "/auth", &state.config));
 
-    Ok((jar, StatusCode::OK))
+    Ok((jar, StatusCode::NO_CONTENT))
 }
 
 /// POST /auth/logout-all — revoke all refresh tokens
@@ -596,7 +596,7 @@ pub(crate) async fn auth_logout_all(
         .remove(removal_cookie(&state.cookie_names.access, "/", &state.config))
         .remove(removal_cookie(&state.cookie_names.refresh, "/auth", &state.config));
 
-    Ok((jar, StatusCode::OK))
+    Ok((jar, StatusCode::NO_CONTENT))
 }
 
 // --- Session List/Revoke Endpoints ---
@@ -704,7 +704,7 @@ pub(crate) async fn revoke_session(
         &state.db, &state.keys, &state.config, &state.http_client, user_id,
     ).await;
 
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // --- Profile Endpoints ---
@@ -875,6 +875,7 @@ pub(crate) async fn update_username(
     tag = "auth",
     responses(
         (status = 204, description = "Account deleted"),
+        (status = 400, description = "Cannot delete last admin", body = ErrorBody),
         (status = 401, description = "Not authenticated", body = ErrorBody),
     )
 )]
@@ -911,7 +912,7 @@ pub(crate) async fn delete_account(
         .remove(removal_cookie(&state.cookie_names.access, "/", &state.config))
         .remove(removal_cookie(&state.cookie_names.refresh, "/auth", &state.config));
 
-    Ok((jar, StatusCode::OK))
+    Ok((jar, StatusCode::NO_CONTENT))
 }
 
 /// GET /auth/me/links — list linked providers
@@ -1111,7 +1112,7 @@ pub(crate) async fn unlink_provider(
                 }),
                 state.config.webhooks.max_retry_attempts,
             ).await;
-            Ok(StatusCode::OK)
+            Ok(StatusCode::NO_CONTENT)
         }
         db::UnlinkResult::LastProvider => Err(Error::LastProvider),
         db::UnlinkResult::NotFound => Err(Error::NotFound),

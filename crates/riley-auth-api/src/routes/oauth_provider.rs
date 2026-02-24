@@ -1199,15 +1199,18 @@ fn extract_client_credentials(
     }
 }
 
-/// GET/POST /oauth/userinfo — OIDC UserInfo endpoint (OpenID Connect Core 1.0 §5.3)
+/// GET /oauth/userinfo — OIDC UserInfo endpoint (OpenID Connect Core 1.0 §5.3)
 ///
 /// Accepts a Bearer access token via the Authorization header. The token must
 /// have been issued to an OAuth client (aud != issuer). Returns profile claims
 /// filtered by the scopes granted in the access token.
+///
+/// **Note:** POST is also supported on this endpoint per OIDC Core 1.0 §5.3.
 #[utoipa::path(
     get,
     path = "/oauth/userinfo",
     tag = "oauth",
+    description = "OIDC UserInfo endpoint. Both GET and POST are supported per OIDC Core 1.0 §5.3.",
     responses(
         (status = 200, description = "User identity claims (filtered by token scopes)"),
         (status = 401, description = "Invalid or missing bearer token", body = ErrorBody),
