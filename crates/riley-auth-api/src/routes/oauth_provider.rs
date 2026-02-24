@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use axum_extra::extract::CookieJar;
@@ -17,6 +17,10 @@ use riley_auth_core::error::Error;
 use riley_auth_core::jwt;
 
 use crate::server::AppState;
+
+/// OIDC protocol-level scopes that are always accepted without config definition
+/// or client allowed_scopes check. These scopes control standard OIDC claim sets.
+const PROTOCOL_SCOPES: &[&str] = &["openid", "profile", "email"];
 
 // --- Request/Response types ---
 
@@ -113,7 +117,10 @@ fn redirect_error(
             params.append_pair("state", s);
         }
     }
-    Redirect::temporary(url.as_str()).into_response()
+    // RFC 6749 §4.1.2 specifies 302 Found for authorization redirects.
+    // Redirect::temporary() produces 307, which preserves HTTP method.
+    // Use explicit 302 for maximum interoperability.
+    (StatusCode::FOUND, [("location", url.to_string())]).into_response()
 }
 
 /// GET /oauth/authorize — authorization endpoint (RFC 6749 §4.1)
@@ -176,9 +183,8 @@ async fn authorize(
     }
 
     // Validate and deduplicate requested scopes.
-    // "openid" is a protocol-level scope (triggers ID token issuance) — accepted
-    // without a scope definition or allowed_scopes check, but stored so the token
-    // endpoint knows whether to include an id_token.
+    // OIDC protocol-level scopes (openid, profile, email) are always accepted.
+    // Custom/resource scopes must be defined in config and allowed for the client.
     let granted_scopes: Vec<String> = if let Some(ref scope_str) = query.scope {
         let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
         if requested.is_empty() {
@@ -193,8 +199,8 @@ async fn authorize(
             .map(|d| d.name.as_str())
             .collect();
         for s in &requested {
-            if *s == "openid" {
-                continue; // protocol-level, always accepted
+            if PROTOCOL_SCOPES.contains(s) {
+                continue; // OIDC protocol-level, always accepted
             }
             if !defined_names.contains(s) {
                 return Ok(redirect_error(
@@ -218,17 +224,8 @@ async fn authorize(
         vec![]
     };
 
-    // Consent check
-    if !client.auto_approve {
-        return Ok(redirect_error(
-            redirect_uri,
-            "consent_required",
-            "user consent is required for this client",
-            state_param,
-        ));
-    }
-
-    // User must be authenticated (cookie-based)
+    // User must be authenticated (cookie-based) — check BEFORE consent,
+    // because consent evaluation requires knowing who the user is.
     let access_token = match jar.get(&state.cookie_names.access) {
         Some(c) => c.value().to_string(),
         None => {
@@ -259,6 +256,16 @@ async fn authorize(
             redirect_uri,
             "login_required",
             "invalid session token",
+            state_param,
+        ));
+    }
+
+    // Consent check — must come after authentication so the user is known
+    if !client.auto_approve {
+        return Ok(redirect_error(
+            redirect_uri,
+            "consent_required",
+            "user consent is required for this client",
             state_param,
         ));
     }
@@ -329,7 +336,7 @@ async fn authorize(
         }
     }
 
-    Ok(Redirect::temporary(redirect_url.as_str()).into_response())
+    Ok((StatusCode::FOUND, [("location", redirect_url.to_string())]).into_response())
 }
 
 /// GET /oauth/consent — returns client name and scope descriptions for consent UI
@@ -357,13 +364,28 @@ async fn consent(
         .ok_or(Error::InvalidClient)?;
 
     // Resolve requested scopes to descriptions (validate like authorize endpoint).
-    // "openid" is protocol-level — accepted but not shown in consent (no description needed).
+    // OIDC protocol-level scopes (openid, profile, email) have hardcoded descriptions.
     let scopes = if let Some(ref scope_str) = query.scope {
         let requested: BTreeSet<&str> = scope_str.split_whitespace().collect();
         let mut result = Vec::new();
         for s in &requested {
             if *s == "openid" {
                 continue; // protocol-level, no consent description needed
+            }
+            // Check for OIDC standard scopes with hardcoded descriptions
+            if *s == "profile" {
+                result.push(ConsentScope {
+                    name: "profile".to_string(),
+                    description: "Read your username, display name, and avatar".to_string(),
+                });
+                continue;
+            }
+            if *s == "email" {
+                result.push(ConsentScope {
+                    name: "email".to_string(),
+                    description: "Read your email address".to_string(),
+                });
+                continue;
             }
             let def = state.config.scopes.definitions.iter()
                 .find(|d| d.name == *s)
@@ -528,11 +550,11 @@ async fn token(
                 .ok_or(Error::UserNotFound)?;
 
             // Intersect original scopes with client's current allowed_scopes.
-            // "openid" is protocol-level and passes through unconditionally.
+            // OIDC protocol-level scopes pass through unconditionally.
             // If an admin revoked a resource scope from the client since the token
             // was issued, the refreshed token will no longer carry that scope.
             let mut effective_scopes: Vec<String> = token_row.scopes.iter()
-                .filter(|s| s.as_str() == "openid" || client.allowed_scopes.contains(s))
+                .filter(|s| PROTOCOL_SCOPES.contains(&s.as_str()) || client.allowed_scopes.contains(s))
                 .cloned()
                 .collect();
 

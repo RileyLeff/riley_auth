@@ -572,7 +572,7 @@ fn oauth_refresh_reuse_revokes_family() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -1092,7 +1092,7 @@ fn oauth_provider_full_flow() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -1309,7 +1309,7 @@ fn authorize_error_redirect_unsupported_response_type() {
             .unwrap();
 
         // Should redirect with error, not return HTTP error
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
         let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
@@ -1357,7 +1357,7 @@ fn authorize_error_redirect_login_required() {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
         let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
@@ -1407,7 +1407,7 @@ fn authorize_error_redirect_consent_required() {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
         let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
@@ -1453,13 +1453,62 @@ fn authorize_error_redirect_missing_pkce() {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
         let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
         assert_eq!(params["error"], "invalid_request");
         assert!(params["error_description"].contains("code_challenge"));
         assert_eq!(params["state"], "pkce-state");
+    });
+}
+
+#[test]
+#[ignore]
+fn authorize_error_redirect_unsupported_pkce_method() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("plainchallengeuser", "user").await;
+
+        let secret_hash = jwt::hash_token("secret");
+        db::create_client(
+            &s.db,
+            "Plain PKCE Client",
+            "plain-pkce-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // code_challenge_method=plain is not supported (only S256)
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", "plain-pkce-client"),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("state", "plain-state"),
+                ("code_challenge", "somechallenge"),
+                ("code_challenge_method", "plain"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = redirect_url.query_pairs().collect();
+        assert_eq!(params["error"], "invalid_request");
+        assert!(params["error_description"].contains("S256"));
+        assert_eq!(params["state"], "plain-state");
     });
 }
 
@@ -1617,7 +1666,7 @@ fn oauth_scopes_full_flow() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -1721,6 +1770,7 @@ fn oauth_rejects_unauthorized_scope() {
                 ("redirect_uri", "https://app.example.com/callback"),
                 ("response_type", "code"),
                 ("scope", "read:profile write:profile"),
+                ("state", "scope-state-123"),
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
@@ -1728,12 +1778,14 @@ fn oauth_rejects_unauthorized_scope() {
             .send()
             .await
             .unwrap();
-        // Now redirects with ?error=invalid_scope per RFC 6749 §4.1.2.1
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        // Redirects with ?error=invalid_scope per RFC 6749 §4.1.2.1
+        assert_eq!(resp.status(), StatusCode::FOUND);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
         let error = redirect_url.query_pairs().find(|(k, _)| k == "error").unwrap().1.to_string();
         assert_eq!(error, "invalid_scope");
+        let state_val = redirect_url.query_pairs().find(|(k, _)| k == "state").unwrap().1.to_string();
+        assert_eq!(state_val, "scope-state-123");
     });
 }
 
@@ -1770,6 +1822,7 @@ fn oauth_rejects_unknown_scope() {
                 ("redirect_uri", "https://app.example.com/callback"),
                 ("response_type", "code"),
                 ("scope", "admin:everything"),
+                ("state", "unknown-scope-state"),
                 ("code_challenge", &pkce_challenge),
                 ("code_challenge_method", "S256"),
             ])
@@ -1777,12 +1830,14 @@ fn oauth_rejects_unknown_scope() {
             .send()
             .await
             .unwrap();
-        // Now redirects with ?error=invalid_scope per RFC 6749 §4.1.2.1
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        // Redirects with ?error=invalid_scope per RFC 6749 §4.1.2.1
+        assert_eq!(resp.status(), StatusCode::FOUND);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
         let error = redirect_url.query_pairs().find(|(k, _)| k == "error").unwrap().1.to_string();
         assert_eq!(error, "invalid_scope");
+        let state_val = redirect_url.query_pairs().find(|(k, _)| k == "state").unwrap().1.to_string();
+        assert_eq!(state_val, "unknown-scope-state");
     });
 }
 
@@ -1827,7 +1882,7 @@ fn oauth_no_scopes_omits_scope_field() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -2014,7 +2069,7 @@ fn oauth_deduplicates_scopes() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -2266,10 +2321,12 @@ fn oidc_discovery_document() {
             serde_json::json!(["client_secret_post"])
         );
 
-        // Scopes: "openid" always present + config-defined scopes
+        // Scopes: OIDC protocol-level (openid, profile, email) + config-defined scopes
         let scopes = doc["scopes_supported"].as_array().unwrap();
-        assert_eq!(scopes.len(), 3);
+        assert_eq!(scopes.len(), 5);
         assert!(scopes.contains(&serde_json::json!("openid")));
+        assert!(scopes.contains(&serde_json::json!("profile")));
+        assert!(scopes.contains(&serde_json::json!("email")));
         assert!(scopes.contains(&serde_json::json!("read:profile")));
         assert!(scopes.contains(&serde_json::json!("write:profile")));
 
@@ -2329,7 +2386,7 @@ fn oidc_token_response_includes_id_token() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -3156,7 +3213,7 @@ fn oidc_nonce_round_trip() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -3242,7 +3299,7 @@ fn oidc_no_id_token_without_openid_scope() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -3351,7 +3408,7 @@ fn userinfo_full_flow_with_scopes() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -3427,10 +3484,9 @@ fn userinfo_with_profile_and_email_scopes() {
         // Create user
         let (user, access_token, _) = s.create_user_with_session("profileuser", "user").await;
 
-        // Register a client that allows "profile" and "email" scopes.
-        // We need to add "profile" and "email" to the scope definitions first.
-        // The test config only has read:profile and write:profile.
-        // Instead, we'll sign a token directly with the scopes we want.
+        // Sign a token directly with the scopes we want (profile and email are
+        // now OIDC protocol-level scopes, but direct signing is still a valid way
+        // to test the UserInfo endpoint in isolation).
         let client_id_str = "profile-email-client";
         let client_secret = "profile-email-secret";
         let secret_hash = jwt::hash_token(client_secret);
@@ -3635,7 +3691,7 @@ fn oauth_authorization_code_replay_rejected() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -3722,7 +3778,7 @@ fn oauth_pkce_wrong_verifier_rejected() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -4217,7 +4273,7 @@ fn nonce_preserved_across_refresh() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();
@@ -4345,7 +4401,7 @@ fn refresh_scope_downscoping() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.status(), StatusCode::FOUND);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         let redirect_url = url::Url::parse(location).unwrap();

@@ -61,7 +61,7 @@ async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> Js
 /// OpenID Connect Discovery document (per OpenID Connect Discovery 1.0).
 async fn openid_configuration(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
     let base = state.config.server.public_url.trim_end_matches('/');
-    let mut scope_names: Vec<&str> = vec!["openid"];
+    let mut scope_names: Vec<&str> = vec!["openid", "profile", "email"];
     scope_names.extend(state.config.scopes.definitions.iter().map(|d| d.name.as_str()));
 
     Json(serde_json::json!({
