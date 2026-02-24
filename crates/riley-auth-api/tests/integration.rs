@@ -2805,6 +2805,344 @@ fn introspect_returns_cache_control_headers() {
 
 #[test]
 #[ignore]
+fn token_endpoint_basic_auth_authorization_code() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("basictoken", "user").await;
+
+        let client_id_str = "basic-token-client";
+        let client_secret = "basic-token-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Basic Token Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Authorize
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("state", "basic-state"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code using Basic auth instead of POST body credentials
+        let credentials = base64::engine::general_purpose::STANDARD
+            .encode(format!("{client_id_str}:{client_secret}"));
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .header("authorization", format!("Basic {credentials}"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code.as_str()),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("code_verifier", pkce_verifier.as_str()),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(token_resp["token_type"], "Bearer");
+        assert!(token_resp["access_token"].as_str().unwrap().len() > 100);
+        assert!(token_resp["refresh_token"].as_str().is_some());
+    });
+}
+
+#[test]
+#[ignore]
+fn token_endpoint_basic_auth_refresh() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("basicrefresh", "user").await;
+
+        let client_id_str = "basic-refresh-client";
+        let client_secret = "basic-refresh-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Basic Refresh Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Authorize
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let code = url::Url::parse(location)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code via POST body auth to get a refresh token
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code.as_str()),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", pkce_verifier.as_str()),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let refresh_token = token_resp["refresh_token"].as_str().unwrap().to_string();
+
+        // Refresh using Basic auth
+        let credentials = base64::engine::general_purpose::STANDARD
+            .encode(format!("{client_id_str}:{client_secret}"));
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .header("authorization", format!("Basic {credentials}"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token.as_str()),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(refresh_resp["token_type"], "Bearer");
+        assert!(refresh_resp["access_token"].as_str().unwrap().len() > 100);
+        let new_refresh = refresh_resp["refresh_token"].as_str().unwrap();
+        assert_ne!(new_refresh, refresh_token, "refresh token should be rotated");
+    });
+}
+
+#[test]
+#[ignore]
+fn revoke_endpoint_basic_auth() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("basicrevoke", "user").await;
+
+        let client_id_str = "basic-revoke-client";
+        let client_secret = "basic-revoke-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Basic Revoke Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+
+        // Authorize + exchange to get a refresh token
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("response_type", "code"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let code = url::Url::parse(location)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code.as_str()),
+                ("redirect_uri", "https://app.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", pkce_verifier.as_str()),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let refresh_token = token_resp["refresh_token"].as_str().unwrap().to_string();
+
+        // Revoke using Basic auth
+        let credentials = base64::engine::general_purpose::STANDARD
+            .encode(format!("{client_id_str}:{client_secret}"));
+        let resp = client
+            .post(s.url("/oauth/revoke"))
+            .header("authorization", format!("Basic {credentials}"))
+            .form(&[("token", refresh_token.as_str())])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify the token is revoked by trying to use it
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token.as_str()),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::OK, "revoked token should not work");
+    });
+}
+
+#[test]
+#[ignore]
+fn basic_auth_takes_precedence_over_post_body() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let client_id_str = "precedence-client";
+        let client_secret = "precedence-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Precedence Client",
+            client_id_str,
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (user, _, _) = s.create_user_with_session("precedenceuser", "user").await;
+
+        let token = s.keys.sign_access_token_with_scopes(
+            &s.config.jwt,
+            &user.id.to_string(),
+            &user.username,
+            &user.role,
+            client_id_str,
+            Some("openid"),
+        ).unwrap();
+
+        // Send correct Basic auth but wrong POST body credentials.
+        // Basic auth should take precedence, so this should succeed.
+        let credentials = base64::engine::general_purpose::STANDARD
+            .encode(format!("{client_id_str}:{client_secret}"));
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .header("authorization", format!("Basic {credentials}"))
+            .form(&[
+                ("token", token.as_str()),
+                ("client_id", "wrong-client"),
+                ("client_secret", "wrong-secret"),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["active"], true);
+
+        // Now send wrong Basic auth but correct POST body.
+        // Basic auth should take precedence, so this should fail.
+        let bad_credentials = base64::engine::general_purpose::STANDARD
+            .encode("wrong-client:wrong-secret");
+        let resp = client
+            .post(s.url("/oauth/introspect"))
+            .header("authorization", format!("Basic {bad_credentials}"))
+            .form(&[
+                ("token", token.as_str()),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+
+        // Should fail because Basic auth (wrong) takes precedence
+        assert_ne!(resp.status(), StatusCode::OK);
+    });
+}
+
+#[test]
+#[ignore]
 fn oauth_deduplicates_scopes() {
     let s = server();
     runtime().block_on(async {
@@ -3094,7 +3432,11 @@ fn oidc_discovery_document() {
         );
         assert_eq!(
             doc["token_endpoint_auth_methods_supported"],
-            serde_json::json!(["client_secret_post"])
+            serde_json::json!(["client_secret_basic", "client_secret_post"])
+        );
+        assert_eq!(
+            doc["revocation_endpoint_auth_methods_supported"],
+            serde_json::json!(["client_secret_basic", "client_secret_post"])
         );
 
         // Scopes: OIDC protocol-level (openid, profile, email) + config-defined scopes

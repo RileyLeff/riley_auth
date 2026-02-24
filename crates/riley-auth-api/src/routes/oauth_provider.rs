@@ -41,8 +41,8 @@ pub struct TokenRequest {
     grant_type: String,
     code: Option<String>,
     redirect_uri: Option<String>,
-    client_id: String,
-    client_secret: String,
+    client_id: Option<String>,
+    client_secret: Option<String>,
     code_verifier: Option<String>,
     refresh_token: Option<String>,
     scope: Option<String>,
@@ -95,8 +95,8 @@ pub struct ConsentDecision {
 #[derive(Deserialize)]
 pub struct RevokeRequest {
     token: String,
-    client_id: String,
-    client_secret: String,
+    client_id: Option<String>,
+    client_secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -629,14 +629,21 @@ async fn consent_decision(
 /// POST /oauth/token — token endpoint
 async fn token(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(body): Form<TokenRequest>,
 ) -> Result<Json<TokenResponse>, Error> {
-    // Validate client credentials
-    let client = db::find_client_by_client_id(&state.db, &body.client_id)
+    // Validate client credentials (Basic auth or POST body)
+    let (client_id_str, client_secret) = extract_client_credentials(
+        &headers,
+        body.client_id.as_deref(),
+        body.client_secret.as_deref(),
+    )?;
+
+    let client = db::find_client_by_client_id(&state.db, &client_id_str)
         .await?
         .ok_or(Error::InvalidClient)?;
 
-    let secret_hash = jwt::hash_token(&body.client_secret);
+    let secret_hash = jwt::hash_token(&client_secret);
     if secret_hash.as_bytes().ct_eq(client.client_secret_hash.as_bytes()).unwrap_u8() == 0 {
         return Err(Error::InvalidClient);
     }
@@ -854,14 +861,21 @@ async fn token(
 /// POST /oauth/revoke — revoke a refresh token (RFC 7009)
 async fn revoke(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(body): Form<RevokeRequest>,
 ) -> Result<StatusCode, Error> {
-    // Validate client
-    let client = db::find_client_by_client_id(&state.db, &body.client_id)
+    // Validate client (Basic auth or POST body)
+    let (client_id_str, client_secret) = extract_client_credentials(
+        &headers,
+        body.client_id.as_deref(),
+        body.client_secret.as_deref(),
+    )?;
+
+    let client = db::find_client_by_client_id(&state.db, &client_id_str)
         .await?
         .ok_or(Error::InvalidClient)?;
 
-    let secret_hash = jwt::hash_token(&body.client_secret);
+    let secret_hash = jwt::hash_token(&client_secret);
     if secret_hash.as_bytes().ct_eq(client.client_secret_hash.as_bytes()).unwrap_u8() == 0 {
         return Err(Error::InvalidClient);
     }
@@ -869,7 +883,7 @@ async fn revoke(
     // Revoke the token, scoped to this client (RFC 7009 says always return 200)
     let token_hash = jwt::hash_token(&body.token);
     if let Err(e) = db::delete_refresh_token_for_client(&state.db, &token_hash, client.id).await {
-        tracing::warn!(error = %e, client_id = %body.client_id, "token revocation failed");
+        tracing::warn!(error = %e, client_id = %client_id_str, "token revocation failed");
     }
 
     Ok(StatusCode::OK)
@@ -892,7 +906,11 @@ async fn introspect(
     let inactive = || Ok((no_cache_headers(), Json(serde_json::json!({"active": false}))));
 
     // Authenticate the client via Basic auth or POST body credentials
-    let (client_id_str, client_secret) = extract_client_credentials(&headers, &body)?;
+    let (client_id_str, client_secret) = extract_client_credentials(
+        &headers,
+        body.client_id.as_deref(),
+        body.client_secret.as_deref(),
+    )?;
 
     let client = db::find_client_by_client_id(&state.db, &client_id_str)
         .await?
@@ -947,9 +965,13 @@ async fn introspect(
 }
 
 /// Extract client credentials from Basic auth header or POST body.
+///
+/// Tries HTTP Basic auth first (RFC 6749 §2.3.1), then falls back to
+/// POST body client_id/client_secret (RFC 6749 §2.3.1 alternative).
 fn extract_client_credentials(
     headers: &HeaderMap,
-    body: &IntrospectRequest,
+    body_client_id: Option<&str>,
+    body_client_secret: Option<&str>,
 ) -> Result<(String, String), Error> {
     // Try Basic auth first
     if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
@@ -968,8 +990,8 @@ fn extract_client_credentials(
     }
 
     // Fall back to POST body credentials
-    match (&body.client_id, &body.client_secret) {
-        (Some(id), Some(secret)) => Ok((id.clone(), secret.clone())),
+    match (body_client_id, body_client_secret) {
+        (Some(id), Some(secret)) => Ok((id.to_string(), secret.to_string())),
         _ => Err(Error::InvalidClient),
     }
 }
