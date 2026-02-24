@@ -126,6 +126,12 @@ fn oidc_discovery_document() {
             doc["prompt_values_supported"],
             serde_json::json!(["none", "login", "consent"])
         );
+
+        // OIDC Discovery fields added in Phase 8 review
+        assert_eq!(doc["response_modes_supported"], serde_json::json!(["query"]));
+        assert_eq!(doc["claims_parameter_supported"], false);
+        assert_eq!(doc["request_parameter_supported"], false);
+        assert_eq!(doc["request_uri_parameter_supported"], false);
     });
 }
 
@@ -1473,5 +1479,130 @@ fn auth_time_present_and_preserved_across_refresh() {
 
         let auth_time3 = claims["auth_time"].as_i64().expect("auth_time must survive multiple refreshes");
         assert_eq!(auth_time, auth_time3, "auth_time must survive multiple refresh rotations");
+    });
+}
+
+#[test]
+#[ignore]
+fn id_token_includes_email_claims_when_email_scope_granted() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let (_, access_token, _) = s.create_user_with_session("emailiduser", "user").await;
+
+        // Register client with email scope
+        let client_id_str = "email-idtoken-client";
+        let client_secret = "email-idtoken-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Email ID Token Client",
+            client_id_str,
+            &secret_hash,
+            &["https://email.example.com/callback".to_string()],
+            &["email".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Authorize with openid + email scope
+        let (pkce_verifier, pkce_challenge) = riley_auth_core::oauth::generate_pkce();
+        let resp = client
+            .get(s.url("/oauth/authorize"))
+            .query(&[
+                ("client_id", client_id_str),
+                ("redirect_uri", "https://email.example.com/callback"),
+                ("response_type", "code"),
+                ("scope", "openid email"),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ])
+            .header("cookie", format!("riley_auth_access={access_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let redirect_url = url::Url::parse(location).unwrap();
+        let code = redirect_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+
+        // Exchange code for tokens
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", "https://email.example.com/callback"),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+                ("code_verifier", &pkce_verifier),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let token_resp: serde_json::Value = resp.json().await.unwrap();
+        let id_token_str = token_resp["id_token"]
+            .as_str()
+            .expect("id_token missing from token response");
+
+        // Decode id_token and verify email claims
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let parts: Vec<&str> = id_token_str.split('.').collect();
+        assert_eq!(parts.len(), 3, "id_token must be a 3-part JWT");
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(
+            claims["email"], "emailiduser@example.com",
+            "email claim must be present in id_token when email scope granted"
+        );
+        assert_eq!(
+            claims["email_verified"], true,
+            "email_verified claim must be present in id_token when email scope granted"
+        );
+
+        // Refresh and verify email claims persist
+        let refresh_token = token_resp["refresh_token"].as_str().unwrap();
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+                ("client_id", client_id_str),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let refresh_resp: serde_json::Value = resp.json().await.unwrap();
+        let refresh_id_token = refresh_resp["id_token"]
+            .as_str()
+            .expect("id_token missing from refresh response");
+
+        let parts: Vec<&str> = refresh_id_token.split('.').collect();
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(
+            claims["email"], "emailiduser@example.com",
+            "email claim must persist through refresh"
+        );
+        assert_eq!(
+            claims["email_verified"], true,
+            "email_verified claim must persist through refresh"
+        );
     });
 }

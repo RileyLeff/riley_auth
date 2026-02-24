@@ -2851,3 +2851,43 @@ fn backchannel_logout_dispatched_on_logout_all() {
         assert!(claims["events"]["http://schemas.openid.net/event/backchannel-logout"].is_object());
     });
 }
+
+#[test]
+#[ignore]
+fn token_endpoint_unsupported_grant_type() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        let client_secret = "grant-type-secret";
+        let secret_hash = jwt::hash_token(client_secret);
+        db::create_client(
+            &s.db,
+            "Grant Type Client",
+            "grant-type-client",
+            &secret_hash,
+            &["https://app.example.com/callback".to_string()],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Unsupported grant_type should return "unsupported_grant_type" per RFC 6749 §5.2
+        let resp = client
+            .post(s.url("/oauth/token"))
+            .header("x-requested-with", "test")
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", "grant-type-client"),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "unsupported_grant_type");
+    });
+}
