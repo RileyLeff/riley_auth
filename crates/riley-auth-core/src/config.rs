@@ -80,6 +80,23 @@ pub struct OAuthProvidersConfig {
     /// triggers the authorize flow, riley_auth redirects here with
     /// `?consent_id={id}` so the frontend can render a consent UI.
     pub consent_url: Option<String>,
+    /// Policy for auto-merging accounts when a new provider reports the same
+    /// email as an existing account.
+    /// - "none" (default): no auto-merge, redirect to link-accounts page
+    /// - "verified_email": auto-merge if the provider reports the email as verified
+    #[serde(default)]
+    pub account_merge_policy: AccountMergePolicy,
+}
+
+/// Policy for automatic account merging based on email matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountMergePolicy {
+    /// No automatic merging — redirect to link-accounts page.
+    #[default]
+    None,
+    /// Auto-merge when the OAuth provider reports the email as verified.
+    VerifiedEmail,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -615,5 +632,28 @@ public = { requests = 500, window_secs = 60 }
         assert!(validate_scope_name("scope with space").is_err()); // whitespace
         assert!(validate_scope_name("scope\nnewline").is_err()); // newline
         assert!(validate_scope_name(":leading-colon").is_err()); // starts with colon
+    }
+
+    #[test]
+    fn account_merge_policy_parsing() {
+        // Default is None
+        let config: OAuthProvidersConfig = toml::from_str("").unwrap();
+        assert_eq!(config.account_merge_policy, AccountMergePolicy::None);
+
+        // Explicit none
+        let config: OAuthProvidersConfig =
+            toml::from_str(r#"account_merge_policy = "none""#).unwrap();
+        assert_eq!(config.account_merge_policy, AccountMergePolicy::None);
+
+        // Verified email
+        let config: OAuthProvidersConfig =
+            toml::from_str(r#"account_merge_policy = "verified_email""#).unwrap();
+        assert_eq!(config.account_merge_policy, AccountMergePolicy::VerifiedEmail);
+
+        // Invalid value
+        let err = toml::from_str::<OAuthProvidersConfig>(
+            r#"account_merge_policy = "magic""#,
+        );
+        assert!(err.is_err());
     }
 }

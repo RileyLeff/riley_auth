@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use subtle::ConstantTimeEq;
 
-use riley_auth_core::config::Config;
+use riley_auth_core::config::{AccountMergePolicy, Config};
 use riley_auth_core::db;
 use riley_auth_core::error::Error;
 use riley_auth_core::jwt::{self, Keys};
@@ -188,12 +188,68 @@ async fn auth_callback(
         return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
     }
 
-    // Check for email match (suggest linking)
+    // Check for email match (auto-merge or suggest linking)
     if let Some(ref email) = profile.email {
         let matching_links = db::find_oauth_links_by_email(&state.db, email).await?;
         if !matching_links.is_empty() {
-            // There's an existing account with the same email on a different provider.
-            // Redirect to link-accounts page with a setup token.
+            // Auto-merge: when policy is verified_email, the provider confirms the email,
+            // and exactly one existing user matches.
+            if state.config.oauth.account_merge_policy == AccountMergePolicy::VerifiedEmail
+                && profile.email_verified
+            {
+                // Collect distinct user IDs from matching links
+                let mut user_ids: Vec<uuid::Uuid> = matching_links.iter().map(|l| l.user_id).collect();
+                user_ids.sort();
+                user_ids.dedup();
+
+                if user_ids.len() == 1 {
+                    let existing_user_id = user_ids[0];
+                    let user = db::find_user_by_id(&state.db, existing_user_id)
+                        .await?
+                        .ok_or(Error::UserNotFound)?;
+
+                    // Create the link (catch unique violation from concurrent requests)
+                    db::create_oauth_link(
+                        &state.db,
+                        existing_user_id,
+                        &profile.provider,
+                        &profile.provider_id,
+                        profile.email.as_deref(),
+                        profile.email_verified,
+                    )
+                    .await
+                    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
+                        Error::ProviderAlreadyLinked
+                    } else {
+                        e
+                    })?;
+
+                    let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
+                    let ip = client_ip_string(&headers, addr, state.config.server.behind_proxy);
+                    let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
+
+                    webhooks::dispatch_event(
+                        &state.db,
+                        webhooks::LINK_CREATED,
+                        serde_json::json!({
+                            "user_id": user.id.to_string(),
+                            "provider": profile.provider,
+                        }),
+                        state.config.webhooks.max_retry_attempts,
+                    ).await;
+                    webhooks::dispatch_event(
+                        &state.db,
+                        webhooks::SESSION_CREATED,
+                        serde_json::json!({ "user_id": user.id.to_string() }),
+                        state.config.webhooks.max_retry_attempts,
+                    ).await;
+
+                    return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
+                }
+            }
+
+            // Fall back to link-accounts redirect (no merge policy, email not verified,
+            // or multiple matching users)
             let setup_token = create_setup_token(&state.keys, &state.config, &profile)?;
             let jar = jar.add(build_temp_cookie(&state.cookie_names.setup, &setup_token, &state.config));
             let mut redirect_url = url::Url::parse(&format!(
@@ -257,6 +313,7 @@ async fn auth_setup(
         &profile.provider,
         &profile.provider_id,
         profile.email.as_deref(),
+        profile.email_verified,
     )
     .await
     .map_err(|e| {
@@ -330,6 +387,7 @@ async fn link_confirm(
         &profile.provider,
         &profile.provider_id,
         profile.email.as_deref(),
+        profile.email_verified,
     )
     .await
     .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
@@ -842,6 +900,7 @@ async fn link_callback(
         &profile.provider,
         &profile.provider_id,
         profile.email.as_deref(),
+        profile.email_verified,
     )
     .await
     .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {

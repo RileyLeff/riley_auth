@@ -189,6 +189,7 @@ impl TestServer {
             "google",
             &format!("google-id-{username}"),
             Some(&format!("{username}@example.com")),
+            true,
         )
         .await
         .expect("failed to create user");
@@ -5764,5 +5765,113 @@ fn backchannel_logout_dispatched_on_logout_all() {
         assert!(claims["jti"].is_string());
         // OIDC backchannel-logout events claim
         assert!(claims["events"]["http://schemas.openid.net/event/backchannel-logout"].is_object());
+    });
+}
+
+// ========== Phase 11: Multi-Provider Account Merging ==========
+
+#[test]
+#[ignore]
+fn account_merge_email_verified_column_stored() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Create user with email_verified = true (default in test helper)
+        let (user, _, _) = s.create_user_with_session("mergetest", "user").await;
+
+        let links = db::find_oauth_links_by_user(&s.db, user.id).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert!(links[0].email_verified, "email_verified should be true");
+        assert_eq!(links[0].provider_email.as_deref(), Some("mergetest@example.com"));
+    });
+}
+
+#[test]
+#[ignore]
+fn account_merge_email_verified_false_stored() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Create user with email_verified = false
+        let user = db::create_user_with_link(
+            &s.db,
+            "noverify",
+            Some("No Verify"),
+            None,
+            "github",
+            "gh-noverify",
+            Some("noverify@example.com"),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let links = db::find_oauth_links_by_user(&s.db, user.id).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert!(!links[0].email_verified, "email_verified should be false");
+    });
+}
+
+#[test]
+#[ignore]
+fn account_merge_auto_links_on_verified_email() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Create user with google provider + verified email
+        let (user, _, _) = s.create_user_with_session("mergeuser", "user").await;
+        assert_eq!(
+            db::find_oauth_links_by_user(&s.db, user.id).await.unwrap().len(),
+            1,
+            "should have exactly one link initially"
+        );
+
+        // Simulate: a new provider (github) reports the same verified email
+        // This mimics what auth_callback does when account_merge_policy = verified_email
+        let matching_links = db::find_oauth_links_by_email(&s.db, "mergeuser@example.com").await.unwrap();
+        assert_eq!(matching_links.len(), 1, "should find one matching link by email");
+        assert_eq!(matching_links[0].user_id, user.id);
+
+        // Auto-merge: create a new link for the same user from a different provider
+        let new_link = db::create_oauth_link(
+            &s.db,
+            user.id,
+            "github",
+            "gh-merge-123",
+            Some("mergeuser@example.com"),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(new_link.user_id, user.id);
+        assert_eq!(new_link.provider, "github");
+        assert!(new_link.email_verified);
+
+        // Verify user now has two provider links
+        let all_links = db::find_oauth_links_by_user(&s.db, user.id).await.unwrap();
+        assert_eq!(all_links.len(), 2, "should have two links after merge");
+
+        let providers: Vec<&str> = all_links.iter().map(|l| l.provider.as_str()).collect();
+        assert!(providers.contains(&"google"));
+        assert!(providers.contains(&"github"));
+    });
+}
+
+#[test]
+#[ignore]
+fn account_merge_config_defaults_to_none() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+
+        // Default config has account_merge_policy = None
+        assert_eq!(
+            s.config.oauth.account_merge_policy,
+            riley_auth_core::config::AccountMergePolicy::None,
+            "default merge policy should be None"
+        );
     });
 }

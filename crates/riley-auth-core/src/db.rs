@@ -67,6 +67,7 @@ pub struct OAuthLink {
     pub provider: String,
     pub provider_id: String,
     pub provider_email: Option<String>,
+    pub email_verified: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -437,6 +438,7 @@ pub async fn create_oauth_link(
     provider: &str,
     provider_id: &str,
     email: Option<&str>,
+    email_verified: bool,
 ) -> Result<OAuthLink> {
     let mut tx = pool.begin().await?;
 
@@ -454,14 +456,15 @@ pub async fn create_oauth_link(
     }
 
     let link = sqlx::query_as::<_, OAuthLink>(
-        "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email, email_verified)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING *"
     )
     .bind(user_id)
     .bind(provider)
     .bind(provider_id)
     .bind(email)
+    .bind(email_verified)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -1118,6 +1121,7 @@ pub async fn create_user_with_link(
     provider: &str,
     provider_id: &str,
     email: Option<&str>,
+    email_verified: bool,
 ) -> Result<User> {
     let mut tx = pool.begin().await?;
 
@@ -1133,13 +1137,14 @@ pub async fn create_user_with_link(
     .await?;
 
     sqlx::query(
-        "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email)
-         VALUES ($1, $2, $3, $4)"
+        "INSERT INTO oauth_links (user_id, provider, provider_id, provider_email, email_verified)
+         VALUES ($1, $2, $3, $4, $5)"
     )
     .bind(user.id)
     .bind(provider)
     .bind(provider_id)
     .bind(email)
+    .bind(email_verified)
     .execute(&mut *tx)
     .await?;
 

@@ -74,6 +74,9 @@ pub struct OAuthProfile {
     pub provider: String,
     pub provider_id: String,
     pub email: Option<String>,
+    /// Whether the provider verified the email address.
+    #[serde(default)]
+    pub email_verified: bool,
     pub name: Option<String>,
     pub avatar_url: Option<String>,
 }
@@ -214,6 +217,7 @@ fn parse_google_profile(body: &serde_json::Value) -> Result<OAuthProfile> {
         provider: "google".to_string(),
         provider_id: provider_id.to_string(),
         email: body["email"].as_str().map(|s| s.to_string()),
+        email_verified: body["verified_email"].as_bool().unwrap_or(false),
         name: body["name"].as_str().map(|s| s.to_string()),
         avatar_url: body["picture"].as_str().map(|s| s.to_string()),
     })
@@ -227,22 +231,58 @@ async fn parse_github_profile(
         .as_u64()
         .ok_or_else(|| Error::OAuth("missing id in GitHub profile".to_string()))?;
 
-    let email = if let Some(email) = body["email"].as_str() {
-        Some(email.to_string())
+    let (email, email_verified) = if let Some(email) = body["email"].as_str() {
+        // GitHub user API includes email but not verification status.
+        // Fall through to emails API to get verified status.
+        let verified = fetch_github_email_verified(access_token, email).await.unwrap_or(false);
+        (Some(email.to_string()), verified)
     } else {
-        fetch_github_primary_email(access_token).await.ok()
+        match fetch_github_primary_email(access_token).await {
+            Ok((email, verified)) => (Some(email), verified),
+            Err(_) => (None, false),
+        }
     };
 
     Ok(OAuthProfile {
         provider: "github".to_string(),
         provider_id: provider_id.to_string(),
         email,
+        email_verified,
         name: body["name"].as_str().or(body["login"].as_str()).map(|s| s.to_string()),
         avatar_url: body["avatar_url"].as_str().map(|s| s.to_string()),
     })
 }
 
-async fn fetch_github_primary_email(access_token: &str) -> Result<String> {
+/// Fetch the primary email and its verification status from GitHub's emails API.
+async fn fetch_github_primary_email(access_token: &str) -> Result<(String, bool)> {
+    let emails = fetch_github_emails(access_token).await?;
+
+    for email_entry in &emails {
+        if email_entry["primary"].as_bool() == Some(true) {
+            if let Some(email) = email_entry["email"].as_str() {
+                let verified = email_entry["verified"].as_bool().unwrap_or(false);
+                return Ok((email.to_string(), verified));
+            }
+        }
+    }
+
+    Err(Error::OAuth("no primary email found".to_string()))
+}
+
+/// Check whether a specific email is verified according to GitHub's emails API.
+async fn fetch_github_email_verified(access_token: &str, target_email: &str) -> Result<bool> {
+    let emails = fetch_github_emails(access_token).await?;
+
+    for email_entry in &emails {
+        if email_entry["email"].as_str() == Some(target_email) {
+            return Ok(email_entry["verified"].as_bool().unwrap_or(false));
+        }
+    }
+
+    Ok(false)
+}
+
+async fn fetch_github_emails(access_token: &str) -> Result<Vec<serde_json::Value>> {
     let response = OAUTH_CLIENT
         .get("https://api.github.com/user/emails")
         .header("Authorization", format!("Bearer {access_token}"))
@@ -250,18 +290,7 @@ async fn fetch_github_primary_email(access_token: &str) -> Result<String> {
         .await
         .map_err(|e| Error::OAuth(e.to_string()))?;
 
-    let emails: Vec<serde_json::Value> = response.json().await
-        .map_err(|e| Error::OAuth(e.to_string()))?;
-
-    for email_entry in &emails {
-        if email_entry["primary"].as_bool() == Some(true) {
-            if let Some(email) = email_entry["email"].as_str() {
-                return Ok(email.to_string());
-            }
-        }
-    }
-
-    Err(Error::OAuth("no primary email found".to_string()))
+    response.json().await.map_err(|e| Error::OAuth(e.to_string()))
 }
 
 #[cfg(test)]

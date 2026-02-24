@@ -43,6 +43,13 @@ authorization_code_ttl_secs = 300            # OAuth authorization code lifetime
 #   Google: https://console.cloud.google.com/apis/credentials
 #   GitHub: https://github.com/settings/developers
 
+# Account merge policy: controls automatic linking when a new OAuth login
+# matches an existing account's email address.
+#   "none"           — never auto-merge; prompt user to link accounts manually (default)
+#   "verified_email" — auto-merge when the provider confirms the email is verified
+#                      and exactly one existing user matches
+# account_merge_policy = "none"
+
 [oauth.google]
 client_id = "env:GOOGLE_CLIENT_ID"
 client_secret = "env:GOOGLE_CLIENT_SECRET"
