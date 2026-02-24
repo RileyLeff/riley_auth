@@ -336,3 +336,17 @@ The userinfo endpoint is the only Bearer-token-protected endpoint. Token/revoke/
 
 ### WWW-Authenticate supersedes Phase 6 note
 The Phase 6 note "WWW-Authenticate header not included on 401 responses" is now resolved. Phase 4 implemented RFC 6750 §3.1 compliant headers on the userinfo endpoint with proper error codes: `invalid_token` (for expired and invalid), `insufficient_scope` (for missing required scopes), and realm-only (for missing authentication).
+
+## v5 Phase 5 — Authorize prompt Parameter (Exhaustive Review)
+
+### Token introspection is JWT-only (accepted)
+The introspect endpoint only validates JWTs. Submitting a refresh token (opaque base64) returns `{"active": false}`. Technically RFC 7662 compliant — returning inactive for unrecognized token formats is allowed. Refresh token introspection is a nice-to-have for future work.
+
+### consumed_refresh_tokens not cleaned by maintenance worker (accepted)
+The `consumed_refresh_tokens` table grows with each token rotation. Growth is bounded by active user count × rotation frequency. Rows contain no PII (only token_hash + family_id + consumed_at). Adding periodic cleanup where `consumed_at < now() - refresh_token_ttl` is a future improvement — not blocking.
+
+### Authorization code issuance duplicated (accepted, Phase 6 candidate)
+Code generation logic is duplicated between `authorize()` (auto-approve path) and `consent_decision()`. Extracting a helper is a Phase 6 codebase organization task. Not a correctness issue.
+
+### Nonce preserved indefinitely through token rotation (design choice)
+The nonce from the original authorization request is carried through every refresh rotation and included in every ID token. OIDC Core 1.0 Section 12.2 says this is acceptable. The `exp` claim provides the primary replay protection.
