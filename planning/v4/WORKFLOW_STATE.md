@@ -1,8 +1,8 @@
 # v4 Workflow State
 
-**Current Phase:** 9 — Token Introspection (REVIEW R1 FIXES DONE)
-**Current Step:** Review R2 pending
-**Status:** Phase 9 implemented + R1 fixes applied. 138 tests passing (22 unit + 16 core + 100 integration). Running R2.
+**Current Phase:** 9 — Token Introspection (COMPLETE)
+**Current Step:** Standard review converged
+**Status:** Phase 9 done. 2-round review converged (0 MAJORs in R2). 138 tests passing (22 unit + 16 core + 100 integration). Ready for Phase 10.
 
 ## Progress
 
@@ -21,8 +21,7 @@
 | 8 | 8.1-8.7 | Consent UI Support | Done (ba1e46d) |
 | 8 | review | Exhaustive review (3 rounds, Gemini+Claude, converged) | Done (ce49935, f1e9b7a, 3be13a3) |
 | 9 | 9.1-9.10 | Token Introspection | Done (271719a) |
-| 9 | review R1 | Claude-only, 2 MAJORs + 4 MINORs, fixes applied | Done (bf7dcae) |
-| 9 | review R2 | Verify fixes | In Progress |
+| 9 | review | Standard review (2 rounds, Claude-only, converged) | Done (bf7dcae, e336f74) |
 | 10 | 10.1-10.9 | OIDC Back-Channel Logout | Pending |
 | 11 | 11.1-11.7 | Multi-Provider Account Merging | Pending |
 | 11 | review | Exhaustive review (milestone: v4 complete) | Pending |
@@ -35,3 +34,4 @@ None.
 
 - Phase 9: Token Introspection — POST /oauth/introspect, client auth, RFC 7662 response, 6 integration tests (271719a)
 - Phase 9 R1 fixes: session token rejection, auth rate limit tier, cache-control headers, 2 new tests (bf7dcae)
+- Phase 9 R2: 0 MAJORs, 1 minor (rate limit unit test), fixed (e336f74). Converged.
