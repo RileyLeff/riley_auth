@@ -372,7 +372,7 @@ pub(crate) async fn authorize(
         }
     };
 
-    let token_data = match state.keys.verify_access_token(&state.config.jwt, &access_token) {
+    let token_data = match state.keys.verify_session_token(&state.config.jwt, &access_token) {
         Ok(data) => data,
         Err(_) => {
             return Ok(redirect_error(
@@ -383,16 +383,6 @@ pub(crate) async fn authorize(
             ));
         }
     };
-
-    // Enforce audience: only session tokens (aud == issuer) can authorize
-    if token_data.claims.aud != state.config.jwt.issuer {
-        return Ok(redirect_error(
-            redirect_uri,
-            "login_required",
-            "invalid session token",
-            state_param,
-        ));
-    }
 
     let user_id: uuid::Uuid = match token_data.claims.sub.parse() {
         Ok(id) => id,
@@ -563,12 +553,7 @@ pub(crate) async fn consent(
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 
-    let token_data = state.keys.verify_access_token(&state.config.jwt, &access_token)?;
-
-    // Only session tokens can access consent data
-    if token_data.claims.aud != state.config.jwt.issuer {
-        return Err(Error::InvalidToken);
-    }
+    let token_data = state.keys.verify_session_token(&state.config.jwt, &access_token)?;
 
     let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
 
@@ -661,11 +646,7 @@ pub(crate) async fn consent_decision(
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 
-    let token_data = state.keys.verify_access_token(&state.config.jwt, &access_token)?;
-
-    if token_data.claims.aud != state.config.jwt.issuer {
-        return Err(Error::InvalidToken);
-    }
+    let token_data = state.keys.verify_session_token(&state.config.jwt, &access_token)?;
 
     let user_id: uuid::Uuid = token_data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;
 
@@ -1119,18 +1100,14 @@ pub(crate) async fn introspect(
         return Err(Error::InvalidClient);
     }
 
-    // Decode and verify the token — any failure means inactive
-    let token_data = match state.keys.verify_access_token(&state.config.jwt, &body.token) {
+    // Decode and verify the token — any failure means inactive.
+    // verify_client_token rejects session tokens (aud == issuer).
+    let token_data = match state.keys.verify_client_token(&state.config.jwt, &body.token) {
         Ok(data) => data,
         Err(_) => return inactive(),
     };
 
     let claims = &token_data.claims;
-
-    // Reject session tokens (aud == issuer) — introspection is for OAuth client tokens only
-    if claims.aud == state.config.jwt.issuer {
-        return inactive();
-    }
 
     // Check the user still exists and is not soft-deleted
     let user_id: uuid::Uuid = match claims.sub.parse() {
@@ -1258,18 +1235,13 @@ async fn userinfo_inner(
         return Err(Error::Unauthenticated);
     };
 
-    // Validate the JWT
+    // Validate the JWT — verify_client_token rejects session tokens (aud == issuer).
+    // Session tokens are not valid for UserInfo — use /auth/me instead.
     let token_data = state
         .keys
-        .verify_access_token(&state.config.jwt, bearer_token)?;
+        .verify_client_token(&state.config.jwt, bearer_token)?;
 
     let claims = &token_data.claims;
-
-    // Enforce audience: must be a client token (aud != issuer).
-    // Session tokens (aud == issuer) are not valid for UserInfo — use /auth/me instead.
-    if claims.aud == state.config.jwt.issuer {
-        return Err(Error::InvalidToken);
-    }
 
     // Verify the audience matches a registered client
     db::find_client_by_client_id(&state.db, &claims.aud)

@@ -1137,14 +1137,7 @@ fn extract_user(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error>
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 
-    let data = state.keys.verify_access_token(&state.config.jwt, &token)?;
-
-    // Enforce audience: session cookies must have aud == issuer.
-    // Tokens minted for OAuth clients (aud == client_id) must not be accepted here.
-    if data.claims.aud != state.config.jwt.issuer {
-        return Err(Error::InvalidToken);
-    }
-
+    let data = state.keys.verify_session_token(&state.config.jwt, &token)?;
     Ok(data.claims)
 }
 

@@ -120,12 +120,7 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims,
         .map(|c| c.value().to_string())
         .ok_or(Error::Unauthenticated)?;
 
-    let data = state.keys.verify_access_token(&state.config.jwt, &token)?;
-
-    // Enforce audience: session cookies only
-    if data.claims.aud != state.config.jwt.issuer {
-        return Err(Error::InvalidToken);
-    }
+    let data = state.keys.verify_session_token(&state.config.jwt, &token)?;
 
     // Check current role from DB (not just JWT claims) to handle demotion
     let user_id: uuid::Uuid = data.claims.sub.parse().map_err(|_| Error::InvalidToken)?;

@@ -249,6 +249,41 @@ impl KeySet {
         self.verify_token(config, token)
     }
 
+    /// Verify a session token (audience must equal issuer).
+    ///
+    /// Session tokens are issued directly to the user (not to an OAuth client).
+    /// This method enforces that `aud == issuer`, preventing client-scoped tokens
+    /// from being accepted on endpoints that require a first-party session.
+    pub fn verify_session_token(
+        &self,
+        config: &JwtConfig,
+        token: &str,
+    ) -> Result<TokenData<Claims>> {
+        let data = self.verify_access_token(config, token)?;
+        if data.claims.aud != config.issuer {
+            return Err(Error::InvalidToken);
+        }
+        Ok(data)
+    }
+
+    /// Verify a client-scoped token (audience must NOT equal issuer).
+    ///
+    /// Client tokens are issued to OAuth clients on behalf of a user.
+    /// This method enforces that `aud != issuer`, preventing session tokens
+    /// from being accepted on endpoints that require a client-scoped token
+    /// (e.g., UserInfo, Token Introspection).
+    pub fn verify_client_token(
+        &self,
+        config: &JwtConfig,
+        token: &str,
+    ) -> Result<TokenData<Claims>> {
+        let data = self.verify_access_token(config, token)?;
+        if data.claims.aud == config.issuer {
+            return Err(Error::InvalidToken);
+        }
+        Ok(data)
+    }
+
     /// Encoding key for the active (first) signing key.
     pub fn encoding_key(&self) -> &EncodingKey {
         &self.entries[0].encoding
@@ -1107,5 +1142,51 @@ mod tests {
     fn empty_configs_rejected() {
         let result = KeySet::from_configs(&[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_session_token_accepts_session_rejects_client() {
+        let (priv_file, pub_file) = generate_ec_test_keys();
+        let keys = KeySet::from_configs(&[KeyConfig {
+            algorithm: SigningAlgorithm::ES256,
+            private_key_path: priv_file.path().to_path_buf(),
+            public_key_path: pub_file.path().to_path_buf(),
+            kid: None,
+        }]).unwrap();
+        let config = test_jwt_config("test-issuer");
+
+        // Session token (aud == issuer) should be accepted
+        let session_token = keys.sign_access_token(&config, "u1", "alice", "user", "test-issuer").unwrap();
+        let data = keys.verify_session_token(&config, &session_token).unwrap();
+        assert_eq!(data.claims.sub, "u1");
+        assert_eq!(data.claims.aud, "test-issuer");
+
+        // Client token (aud == client_id) should be rejected
+        let client_token = keys.sign_access_token(&config, "u1", "alice", "user", "some-client-id").unwrap();
+        let err = keys.verify_session_token(&config, &client_token).unwrap_err();
+        assert!(matches!(err, Error::InvalidToken), "expected InvalidToken, got {err:?}");
+    }
+
+    #[test]
+    fn verify_client_token_accepts_client_rejects_session() {
+        let (priv_file, pub_file) = generate_ec_test_keys();
+        let keys = KeySet::from_configs(&[KeyConfig {
+            algorithm: SigningAlgorithm::ES256,
+            private_key_path: priv_file.path().to_path_buf(),
+            public_key_path: pub_file.path().to_path_buf(),
+            kid: None,
+        }]).unwrap();
+        let config = test_jwt_config("test-issuer");
+
+        // Client token (aud == client_id) should be accepted
+        let client_token = keys.sign_access_token(&config, "u1", "alice", "user", "my-client-id").unwrap();
+        let data = keys.verify_client_token(&config, &client_token).unwrap();
+        assert_eq!(data.claims.sub, "u1");
+        assert_eq!(data.claims.aud, "my-client-id");
+
+        // Session token (aud == issuer) should be rejected
+        let session_token = keys.sign_access_token(&config, "u1", "alice", "user", "test-issuer").unwrap();
+        let err = keys.verify_client_token(&config, &session_token).unwrap_err();
+        assert!(matches!(err, Error::InvalidToken), "expected InvalidToken, got {err:?}");
     }
 }
