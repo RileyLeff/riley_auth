@@ -11,6 +11,8 @@ repository = "https://github.com/rileyleff/riley_auth"
 authors = ["Riley Leff <rileyleff@gmail.com>"]
 keywords = ["auth", "oauth", "jwt", "identity"]
 categories = ["web-programming", "authentication"]
+readme = "README.md"
+description = "Self-hosted OAuth 2.0 + OpenID Connect identity provider — delegates authentication upstream, issues your own tokens"
 
 [workspace.dependencies]
 # Async runtime

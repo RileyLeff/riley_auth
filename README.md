@@ -1,6 +1,24 @@
 # riley_auth
 
+[![Crates.io](https://img.shields.io/crates/v/riley-auth-cli.svg)](https://crates.io/crates/riley-auth-cli)
+[![docs.rs](https://docs.rs/riley-auth-core/badge.svg)](https://docs.rs/riley-auth-core)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 OAuth 2.0 + OpenID Connect identity provider. Delegates authentication to upstream OAuth providers (Google, GitHub, or any OIDC/OAuth2 provider), then issues its own tokens so your apps authenticate against *you*, not against Google. One instance, one user database, single sign-on across all your apps.
+
+## Why riley_auth?
+
+Most auth solutions ask you to choose: a managed service you pay per-seat for, a sprawling Java server you need a team to operate, or a library that only handles half the problem.
+
+riley_auth is different:
+
+- **Zero password footprint** — all authentication is delegated upstream. There are no passwords to store, hash, rotate, or breach. Your attack surface is smaller by design.
+- **Easy to self-host** — single Rust binary, one config file, one PostgreSQL database. Deploy on a $5/month VPS, in a Docker container, or anywhere you can run a binary. No JVM, no Node runtime, no microservice fleet.
+- **Free and open source** — MIT licensed, no per-seat pricing, no usage tiers, no vendor lock-in. You own your identity infrastructure.
+- **Full OIDC provider** — not just a login library. riley_auth implements the complete OAuth 2.0 / OpenID Connect provider spec: authorization code flow with PKCE, token introspection, revocation, discovery, JWKS, and UserInfo. Your downstream apps authenticate against your issuer using standard protocols.
+- **Token reuse detection** — refresh tokens rotate on every use. If a consumed token is replayed (credential theft, session hijack), the entire token family is revoked automatically.
+- **Reliable webhook delivery** — user lifecycle events are written to a transactional outbox, not fired inline. HMAC-signed, retried with backoff, and queryable for debugging.
+- **Multi-key JWKS rotation** — add and remove signing keys with zero downtime. Supports ES256 and RS256 concurrently.
 
 ## Features
 
