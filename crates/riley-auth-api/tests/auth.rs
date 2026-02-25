@@ -1056,7 +1056,7 @@ fn link_confirm_adds_provider_to_existing_account() {
 
 #[test]
 #[ignore]
-fn link_confirm_rejects_already_linked_provider() {
+fn link_confirm_idempotent_for_same_user() {
     let s = server();
     runtime().block_on(async {
         s.cleanup().await;
@@ -1090,6 +1090,60 @@ fn link_confirm_rejects_already_linked_provider() {
 
         let cookie_str = format!(
             "auth_access={access_token}; auth_setup={setup_token}"
+        );
+        let resp = client
+            .post(s.url("/auth/link/confirm"))
+            .header("cookie", &cookie_str)
+            .header("x-requested-with", "test")
+            .send()
+            .await
+            .unwrap();
+        // Idempotent: re-linking the same provider to the same user succeeds
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["username"], "linkdup");
+    });
+}
+
+#[test]
+#[ignore]
+fn link_confirm_rejects_provider_linked_to_other_user() {
+    let s = server();
+    runtime().block_on(async {
+        s.cleanup().await;
+        let client = s.client();
+
+        // Create two users
+        let (_user1, _at1, _) = s.create_user_with_session("linkowner", "user").await;
+        let (_user2, access_token2, _) = s.create_user_with_session("linkattempt", "user").await;
+
+        // Get user1's provider link
+        let links = db::find_oauth_links_by_user(&s.db, _user1.id).await.unwrap();
+        let existing_link = &links[0];
+
+        // Create setup token for user1's provider identity, but authenticate as user2
+        let setup_token = {
+            let claims = serde_json::json!({
+                "profile": {
+                    "provider": &existing_link.provider,
+                    "provider_id": &existing_link.provider_id,
+                    "email": "linkowner@example.com",
+                    "name": null,
+                    "avatar_url": null
+                },
+                "exp": (chrono::Utc::now() + chrono::Duration::minutes(15)).timestamp(),
+                "iss": s.config.jwt.issuer,
+                "purpose": "setup"
+            });
+
+            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+            header.kid = Some(s.keys.active_kid().to_string());
+            jsonwebtoken::encode(&header, &claims, &s.keys.encoding_key()).unwrap()
+        };
+
+        let cookie_str = format!(
+            "auth_access={access_token2}; auth_setup={setup_token}"
         );
         let resp = client
             .post(s.url("/auth/link/confirm"))

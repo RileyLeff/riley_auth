@@ -227,35 +227,36 @@ pub(crate) async fn auth_callback(
                         .await?
                         .ok_or(Error::UserNotFound)?;
 
-                    // Create the link (catch unique violation from concurrent requests)
-                    db::create_oauth_link(
+                    // Create the link — if a concurrent request already created it
+                    // (double-click, redirect replay), treat as idempotent success.
+                    let link_created = match db::create_oauth_link(
                         &state.db,
                         existing_user_id,
                         &profile.provider,
                         &profile.provider_id,
                         profile.email.as_deref(),
                         profile.email_verified,
-                    )
-                    .await
-                    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
-                        Error::ProviderAlreadyLinked
-                    } else {
-                        e
-                    })?;
+                    ).await {
+                        Ok(_) => true,
+                        Err(e) if riley_auth_core::error::is_unique_violation(&e) => false,
+                        Err(e) => return Err(e),
+                    };
 
                     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
                     let ip = client_ip_string(&headers, addr, state.config.server.behind_proxy);
                     let (jar, _) = issue_tokens(&state, jar, &user, ua, Some(&ip)).await?;
 
-                    webhooks::dispatch_event(
-                        &state.db,
-                        webhooks::LINK_CREATED,
-                        serde_json::json!({
-                            "user_id": user.id.to_string(),
-                            "provider": profile.provider,
-                        }),
-                        state.config.webhooks.max_retry_attempts,
-                    ).await;
+                    if link_created {
+                        webhooks::dispatch_event(
+                            &state.db,
+                            webhooks::LINK_CREATED,
+                            serde_json::json!({
+                                "user_id": user.id.to_string(),
+                                "provider": profile.provider,
+                            }),
+                            state.config.webhooks.max_retry_attempts,
+                        ).await;
+                    }
                     webhooks::dispatch_event(
                         &state.db,
                         webhooks::SESSION_CREATED,
@@ -413,42 +414,52 @@ pub(crate) async fn link_confirm(
     let profile = decode_setup_token(&state.keys, &state.config, &setup_token)?;
 
     // Check if this provider account is already linked
-    if db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id)
-        .await?
-        .is_some()
-    {
+    if let Some(existing) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
+        if existing.user_id == user_id {
+            // Idempotent: already linked to this user (double-click / replay)
+            let jar = jar.remove(removal_cookie(&state.cookie_names.setup, "/", &state.config));
+            let user = db::find_user_by_id(&state.db, user_id).await?.ok_or(Error::UserNotFound)?;
+            return Ok((jar, Json(user_to_me(&user))));
+        }
         return Err(Error::ProviderAlreadyLinked);
     }
 
-    // Create the link (catch unique violation from concurrent requests)
-    db::create_oauth_link(
+    // Create the link — if a concurrent request already created it,
+    // treat as idempotent success for the same user.
+    let link_created = match db::create_oauth_link(
         &state.db,
         user_id,
         &profile.provider,
         &profile.provider_id,
         profile.email.as_deref(),
         profile.email_verified,
-    )
-    .await
-    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
-        Error::ProviderAlreadyLinked
-    } else {
-        e
-    })?;
+    ).await {
+        Ok(_) => true,
+        Err(e) if riley_auth_core::error::is_unique_violation(&e) => {
+            // Concurrent insert won — verify it was by the same user
+            match db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
+                Some(link) if link.user_id == user_id => false,
+                _ => return Err(Error::ProviderAlreadyLinked),
+            }
+        }
+        Err(e) => return Err(e),
+    };
 
     // Clear setup cookie
     let jar = jar.remove(removal_cookie(&state.cookie_names.setup, "/", &state.config));
 
-    // Dispatch webhook
-    webhooks::dispatch_event(
-        &state.db,
-        webhooks::LINK_CREATED,
-        serde_json::json!({
-            "user_id": user_id.to_string(),
-            "provider": profile.provider,
-        }),
-        state.config.webhooks.max_retry_attempts,
-    ).await;
+    // Dispatch webhook only if we actually created the link
+    if link_created {
+        webhooks::dispatch_event(
+            &state.db,
+            webhooks::LINK_CREATED,
+            serde_json::json!({
+                "user_id": user_id.to_string(),
+                "provider": profile.provider,
+            }),
+            state.config.webhooks.max_retry_attempts,
+        ).await;
+    }
 
     // Return updated user profile
     let user = db::find_user_by_id(&state.db, user_id)
@@ -1043,35 +1054,49 @@ pub(crate) async fn link_callback(
     let profile = oauth::fetch_profile(provider, &provider_token, &state.oauth_client).await?;
 
     // Check if this provider account is already linked to someone
-    if db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await?.is_some() {
+    if let Some(existing) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
+        if existing.user_id == user_id {
+            // Idempotent: already linked to this user (double-click / replay)
+            let jar = jar
+                .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
+                .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config));
+            let redirect_url = format!("{}/profile", state.config.server.public_url);
+            return Ok((jar, Redirect::temporary(&redirect_url)));
+        }
         return Err(Error::ProviderAlreadyLinked);
     }
 
-    // Create the link (catch unique violation from concurrent requests)
-    db::create_oauth_link(
+    // Create the link — if a concurrent request already created it,
+    // treat as idempotent success for the same user.
+    let link_created = match db::create_oauth_link(
         &state.db,
         user_id,
         &profile.provider,
         &profile.provider_id,
         profile.email.as_deref(),
         profile.email_verified,
-    )
-    .await
-    .map_err(|e| if riley_auth_core::error::is_unique_violation(&e) {
-        Error::ProviderAlreadyLinked
-    } else {
-        e
-    })?;
+    ).await {
+        Ok(_) => true,
+        Err(e) if riley_auth_core::error::is_unique_violation(&e) => {
+            match db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
+                Some(link) if link.user_id == user_id => false,
+                _ => return Err(Error::ProviderAlreadyLinked),
+            }
+        }
+        Err(e) => return Err(e),
+    };
 
-    webhooks::dispatch_event(
-        &state.db,
-        webhooks::LINK_CREATED,
-        serde_json::json!({
-            "user_id": user_id.to_string(),
-            "provider": profile.provider,
-        }),
-        state.config.webhooks.max_retry_attempts,
-    ).await;
+    if link_created {
+        webhooks::dispatch_event(
+            &state.db,
+            webhooks::LINK_CREATED,
+            serde_json::json!({
+                "user_id": user_id.to_string(),
+                "provider": profile.provider,
+            }),
+            state.config.webhooks.max_retry_attempts,
+        ).await;
+    }
 
     let jar = jar
         .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
