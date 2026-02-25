@@ -2,7 +2,7 @@ FROM rust:1.88 AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-COPY migrations/ migrations/
+COPY crates/riley-auth-core/migrations/ crates/riley-auth-core/migrations/
 RUN cargo build --release
 
 FROM debian:bookworm-slim
