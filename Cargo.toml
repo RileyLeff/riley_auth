@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/riley-auth-core", "crates/riley-auth-api", "crates/riley-auth-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -70,6 +70,6 @@ utoipa = { version = "5", features = ["axum_extras", "uuid"] }
 dirs = "6.0"
 
 # Workspace crates
-riley-auth-core = { path = "crates/riley-auth-core", version = "0.1.0" }
-riley-auth-api = { path = "crates/riley-auth-api", version = "0.1.0" }
-riley-auth-cli = { path = "crates/riley-auth-cli", version = "0.1.0" }
+riley-auth-core = { path = "crates/riley-auth-core", version = "0.1.1" }
+riley-auth-api = { path = "crates/riley-auth-api", version = "0.1.1" }
+riley-auth-cli = { path = "crates/riley-auth-cli", version = "0.1.1" }
