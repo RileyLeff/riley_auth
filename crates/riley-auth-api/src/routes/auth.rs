@@ -29,6 +29,11 @@ pub struct CallbackQuery {
     state: String,
 }
 
+#[derive(Deserialize)]
+pub struct AuthRedirectQuery {
+    return_to: Option<String>,
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct SetupRequest {
     username: String,
@@ -98,6 +103,7 @@ pub fn router() -> Router<AppState> {
 pub(crate) async fn auth_redirect(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
+    Query(query): Query<AuthRedirectQuery>,
     jar: CookieJar,
 ) -> Result<(CookieJar, Redirect), Error> {
     let provider = find_provider(&state.providers, &provider_name)?;
@@ -116,9 +122,14 @@ pub(crate) async fn auth_redirect(
         &pkce_challenge,
     )?;
 
-    let jar = jar
+    let mut jar = jar
         .add(build_temp_cookie(&state.cookie_names.oauth_state, &oauth_state, &state.config))
         .add(build_temp_cookie(&state.cookie_names.pkce, &pkce_verifier, &state.config));
+
+    // Store validated return_to URL in a temp cookie for use after callback
+    if let Some(return_to) = query.return_to.as_deref().and_then(|r| validate_return_to(r, &state.config)) {
+        jar = jar.add(build_temp_cookie(&state.cookie_names.return_to, &return_to, &state.config));
+    }
 
     Ok((jar, Redirect::temporary(&auth_url)))
 }
@@ -178,10 +189,14 @@ pub(crate) async fn auth_callback(
     // Fetch profile from provider
     let profile = oauth::fetch_profile(provider, &provider_token, &state.oauth_client).await?;
 
+    // Resolve return_to before clearing cookies (need to read it first)
+    let redirect_base = resolve_redirect_base(&jar, &state);
+
     // Clear temp cookies
     let jar = jar
         .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
-        .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config));
+        .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config))
+        .remove(removal_cookie(&state.cookie_names.return_to, "/", &state.config));
 
     // Look up existing oauth link
     if let Some(link) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
@@ -199,7 +214,7 @@ pub(crate) async fn auth_callback(
             serde_json::json!({ "user_id": user.id.to_string() }),
             state.config.webhooks.max_retry_attempts,
         ).await;
-        return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
+        return Ok((jar, Redirect::temporary(&redirect_base)));
     }
 
     // Check for email match (auto-merge or suggest linking)
@@ -264,7 +279,7 @@ pub(crate) async fn auth_callback(
                         state.config.webhooks.max_retry_attempts,
                     ).await;
 
-                    return Ok((jar, Redirect::temporary(&state.config.server.public_url)));
+                    return Ok((jar, Redirect::temporary(&redirect_base)));
                 }
             }
 
@@ -273,8 +288,8 @@ pub(crate) async fn auth_callback(
             let setup_token = create_setup_token(&state.keys, &state.config, &profile)?;
             let jar = jar.add(build_temp_cookie(&state.cookie_names.setup, &setup_token, &state.config));
             let mut redirect_url = url::Url::parse(&format!(
-                "{}/link-accounts", state.config.server.public_url
-            )).map_err(|_| Error::Config("invalid public_url".to_string()))?;
+                "{}/link-accounts", redirect_base
+            )).map_err(|_| Error::Config("invalid redirect URL".to_string()))?;
             redirect_url.query_pairs_mut()
                 .append_pair("provider", &profile.provider)
                 .append_pair("email", email);
@@ -285,7 +300,7 @@ pub(crate) async fn auth_callback(
     // New user — redirect to onboarding with setup token
     let setup_token = create_setup_token(&state.keys, &state.config, &profile)?;
     let jar = jar.add(build_temp_cookie(&state.cookie_names.setup, &setup_token, &state.config));
-    let redirect_url = format!("{}/onboarding", state.config.server.public_url);
+    let redirect_url = format!("{}/onboarding", redirect_base);
     Ok((jar, Redirect::temporary(&redirect_url)))
 }
 
@@ -972,6 +987,7 @@ pub(crate) async fn list_links(
 pub(crate) async fn link_redirect(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
+    Query(query): Query<AuthRedirectQuery>,
     jar: CookieJar,
 ) -> Result<(CookieJar, Redirect), Error> {
     // Must be authenticated
@@ -993,9 +1009,13 @@ pub(crate) async fn link_redirect(
         &pkce_challenge,
     )?;
 
-    let jar = jar
+    let mut jar = jar
         .add(build_temp_cookie(&state.cookie_names.oauth_state, &oauth_state, &state.config))
         .add(build_temp_cookie(&state.cookie_names.pkce, &pkce_verifier, &state.config));
+
+    if let Some(return_to) = query.return_to.as_deref().and_then(|r| validate_return_to(r, &state.config)) {
+        jar = jar.add(build_temp_cookie(&state.cookie_names.return_to, &return_to, &state.config));
+    }
 
     Ok((jar, Redirect::temporary(&auth_url)))
 }
@@ -1053,14 +1073,17 @@ pub(crate) async fn link_callback(
 
     let profile = oauth::fetch_profile(provider, &provider_token, &state.oauth_client).await?;
 
+    let redirect_base = resolve_redirect_base(&jar, &state);
+
     // Check if this provider account is already linked to someone
     if let Some(existing) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
         if existing.user_id == user_id {
             // Idempotent: already linked to this user (double-click / replay)
             let jar = jar
                 .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
-                .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config));
-            let redirect_url = format!("{}/profile", state.config.server.public_url);
+                .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config))
+                .remove(removal_cookie(&state.cookie_names.return_to, "/", &state.config));
+            let redirect_url = format!("{}/settings", redirect_base);
             return Ok((jar, Redirect::temporary(&redirect_url)));
         }
         return Err(Error::ProviderAlreadyLinked);
@@ -1100,9 +1123,10 @@ pub(crate) async fn link_callback(
 
     let jar = jar
         .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
-        .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config));
+        .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config))
+        .remove(removal_cookie(&state.cookie_names.return_to, "/", &state.config));
 
-    let redirect_url = format!("{}/profile", state.config.server.public_url);
+    let redirect_url = format!("{}/settings", redirect_base);
     Ok((jar, Redirect::temporary(&redirect_url)))
 }
 
@@ -1298,6 +1322,36 @@ fn removal_cookie(name: &str, path: &str, config: &Config) -> Cookie<'static> {
         cookie.set_domain(domain.clone());
     }
     cookie
+}
+
+/// Validate a `return_to` URL against the configured CORS origins.
+/// Returns the URL if it matches an allowed origin, or `None` if invalid.
+fn validate_return_to(return_to: &str, config: &Config) -> Option<String> {
+    let parsed = url::Url::parse(return_to).ok()?;
+    let origin = format!("{}://{}", parsed.scheme(), parsed.host_str()?);
+    let origin_with_port = parsed
+        .port()
+        .map(|p| format!("{origin}:{p}"))
+        .unwrap_or_else(|| origin.clone());
+
+    let allowed = config.server.cors_origins.iter().any(|allowed| {
+        *allowed == origin || *allowed == origin_with_port
+    });
+
+    if allowed {
+        Some(return_to.to_string())
+    } else {
+        tracing::warn!(return_to, "return_to URL not in cors_origins, ignoring");
+        None
+    }
+}
+
+/// Read the `return_to` cookie and resolve a redirect base URL.
+/// Falls back to `public_url` if no `return_to` cookie is set or it fails validation.
+fn resolve_redirect_base(jar: &CookieJar, state: &AppState) -> String {
+    jar.get(&state.cookie_names.return_to)
+        .and_then(|c| validate_return_to(c.value(), &state.config))
+        .unwrap_or_else(|| state.config.server.public_url.clone())
 }
 
 fn user_to_me(user: &db::User) -> MeResponse {

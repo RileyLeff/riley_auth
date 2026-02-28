@@ -24,6 +24,7 @@ pub struct CookieNames {
     pub oauth_state: String,
     pub pkce: String,
     pub setup: String,
+    pub return_to: String,
 }
 
 impl CookieNames {
@@ -34,6 +35,7 @@ impl CookieNames {
             oauth_state: format!("{prefix}_oauth_state"),
             pkce: format!("{prefix}_pkce"),
             setup: format!("{prefix}_setup"),
+            return_to: format!("{prefix}_return_to"),
         }
     }
 }
@@ -333,6 +335,7 @@ mod tests {
         assert_eq!(names.oauth_state, "auth_oauth_state");
         assert_eq!(names.pkce, "auth_pkce");
         assert_eq!(names.setup, "auth_setup");
+        assert_eq!(names.return_to, "auth_return_to");
     }
 
     #[test]
@@ -343,6 +346,7 @@ mod tests {
         assert_eq!(names.oauth_state, "myapp_oauth_state");
         assert_eq!(names.pkce, "myapp_pkce");
         assert_eq!(names.setup, "myapp_setup");
+        assert_eq!(names.return_to, "myapp_return_to");
     }
 
     #[test]
