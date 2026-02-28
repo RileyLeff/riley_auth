@@ -14,7 +14,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/* \
     && useradd -m appuser
 COPY --from=builder /app/target/release/riley-auth /usr/local/bin/
