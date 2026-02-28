@@ -5,7 +5,7 @@ members = ["crates/riley-auth-core", "crates/riley-auth-api", "crates/riley-auth
 [workspace.package]
 version = "0.1.1"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.93"
 license = "MIT"
 repository = "https://github.com/rileyleff/riley_auth"
 authors = ["Riley Leff <rileyleff@gmail.com>"]
