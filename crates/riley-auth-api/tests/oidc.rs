@@ -561,7 +561,7 @@ fn introspect_active_token_via_post_body() {
             &user.username,
             &user.role,
             &oauth_client.client_id,
-            Some("openid read:profile"),
+            Some("openid read:profile"), None,
         ).unwrap();
 
         // Introspect via POST body credentials
@@ -620,7 +620,7 @@ fn introspect_active_token_via_basic_auth() {
             &user.username,
             &user.role,
             &oauth_client.client_id,
-            Some("openid"),
+            Some("openid"), None,
         ).unwrap();
 
         // Introspect via Basic auth
@@ -713,7 +713,7 @@ fn introspect_deleted_user_returns_inactive() {
             &user.username,
             &user.role,
             &oauth_client.client_id,
-            Some("openid"),
+            Some("openid"), None,
         ).unwrap();
 
         // Verify it's active
@@ -897,7 +897,7 @@ fn introspect_returns_cache_control_headers() {
             &user.username,
             &user.role,
             &oauth_client.client_id,
-            Some("openid"),
+            Some("openid"), None,
         ).unwrap();
 
         // Active token response should have Cache-Control: no-store
@@ -1082,7 +1082,7 @@ fn userinfo_with_profile_and_email_scopes() {
                 &user.username,
                 &user.role,
                 client_id_str,
-                Some("openid profile email"),
+                Some("openid profile email"), None,
             )
             .unwrap();
 
@@ -1216,7 +1216,7 @@ fn userinfo_rejects_token_without_openid_scope() {
                 &user.username,
                 &user.role,
                 client_id_str,
-                Some("read:profile"),
+                Some("read:profile"), None,
             )
             .unwrap();
 
@@ -1271,6 +1271,7 @@ fn userinfo_expired_token_www_authenticate() {
             iat: now - 1000,
             exp: now - 500, // expired 500 seconds ago
             scope: Some("openid".to_string()),
+            picture: None,
         };
         let mut header = jsonwebtoken::Header::new(s.keys.active_algorithm());
         header.kid = Some(s.keys.active_kid().to_string());

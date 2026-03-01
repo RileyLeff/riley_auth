@@ -25,6 +25,8 @@ pub struct Claims {
     pub exp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
 }
 
 /// OIDC ID Token claims (per OpenID Connect Core 1.0 Section 2).
@@ -203,10 +205,10 @@ impl KeySet {
         role: &str,
         audience: &str,
     ) -> Result<String> {
-        self.sign_access_token_with_scopes(config, user_id, username, role, audience, None)
+        self.sign_access_token_with_scopes(config, user_id, username, role, audience, None, None)
     }
 
-    /// Create a signed access token with optional scope claim.
+    /// Create a signed access token with optional scope and picture claims.
     pub fn sign_access_token_with_scopes(
         &self,
         config: &JwtConfig,
@@ -215,6 +217,7 @@ impl KeySet {
         role: &str,
         audience: &str,
         scope: Option<&str>,
+        picture: Option<&str>,
     ) -> Result<String> {
         let now = Utc::now();
         let exp = now + Duration::seconds(config.access_token_ttl_secs as i64);
@@ -229,6 +232,7 @@ impl KeySet {
             iat: now.timestamp(),
             exp: exp.timestamp(),
             scope: scope.map(String::from),
+            picture: picture.map(String::from),
         };
 
         let mut header = Header::new(active.algorithm);
@@ -970,7 +974,7 @@ mod tests {
 
         let token = keys.sign_access_token_with_scopes(
             &config, "user-123", "testuser", "user", "my-client",
-            Some("read:profile write:profile"),
+            Some("read:profile write:profile"), None,
         ).unwrap();
         let decoded = keys.verify_access_token(&config, &token).unwrap();
         assert_eq!(decoded.claims.scope.as_deref(), Some("read:profile write:profile"));
@@ -1099,6 +1103,7 @@ mod tests {
             iat: now.timestamp(),
             exp: (now + chrono::Duration::seconds(900)).timestamp(),
             scope: None,
+            picture: None,
         };
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("rsa-secondary".to_string());

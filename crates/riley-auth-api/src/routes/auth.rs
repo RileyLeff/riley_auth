@@ -924,12 +924,14 @@ pub(crate) async fn update_username(
     })?;
 
     // Re-issue access token with new username
-    let access_token = state.keys.sign_access_token(
+    let access_token = state.keys.sign_access_token_with_scopes(
         &state.config.jwt,
         &user.id.to_string(),
         &user.username,
         &user.role,
         &state.config.jwt.issuer,
+        None,
+        user.avatar_url.as_deref(),
     )?;
 
     let jar = jar.add(build_access_cookie(&state.cookie_names.access, &access_token, &state.config));
@@ -1307,12 +1309,14 @@ async fn issue_tokens(
     user_agent: Option<&str>,
     ip_address: Option<&str>,
 ) -> Result<(CookieJar, String), Error> {
-    let access_token = state.keys.sign_access_token(
+    let access_token = state.keys.sign_access_token_with_scopes(
         &state.config.jwt,
         &user.id.to_string(),
         &user.username,
         &user.role,
         &state.config.jwt.issuer,
+        None,
+        user.avatar_url.as_deref(),
     )?;
 
     // Truncate user_agent to prevent storage bloat from oversized headers.
@@ -1357,7 +1361,7 @@ fn build_refresh_cookie(name: &str, token: &str, config: &Config) -> Cookie<'sta
     cookie.set_http_only(true);
     cookie.set_secure(true);
     cookie.set_same_site(SameSite::Lax);
-    cookie.set_path("/auth");
+    cookie.set_path("/");
     if let Some(ref domain) = config.server.cookie_domain {
         cookie.set_domain(domain.clone());
     }

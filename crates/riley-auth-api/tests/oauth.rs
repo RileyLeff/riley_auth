@@ -1934,7 +1934,7 @@ fn basic_auth_takes_precedence_over_post_body() {
             &user.username,
             &user.role,
             client_id_str,
-            Some("openid"),
+            Some("openid"), None,
         ).unwrap();
 
         // Send correct Basic auth but wrong POST body credentials.

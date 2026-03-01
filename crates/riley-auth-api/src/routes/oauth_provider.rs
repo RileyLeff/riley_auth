@@ -833,6 +833,7 @@ pub(crate) async fn token(
                 &user.role,
                 &client.client_id,
                 scope_str.as_deref(),
+                user.avatar_url.as_deref(),
             )?;
 
             let (refresh_raw, refresh_hash) = jwt::generate_refresh_token();
@@ -952,6 +953,7 @@ pub(crate) async fn token(
                 &user.role,
                 &client.client_id,
                 scope_str.as_deref(),
+                user.avatar_url.as_deref(),
             )?;
 
             let (new_refresh_raw, new_refresh_hash) = jwt::generate_refresh_token();
