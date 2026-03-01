@@ -189,16 +189,70 @@ pub(crate) async fn auth_callback(
     // Fetch profile from provider
     let profile = oauth::fetch_profile(provider, &provider_token, &state.oauth_client).await?;
 
-    // Resolve return_to before clearing cookies (need to read it first)
+    // Read flow-type cookies before clearing
     let redirect_base = resolve_redirect_base(&jar, &state);
+    let is_link_mode = jar
+        .get(&state.cookie_names.link_mode)
+        .map(|c| c.value() == "true")
+        .unwrap_or(false);
 
     // Clear temp cookies
     let jar = jar
         .remove(removal_cookie(&state.cookie_names.oauth_state, "/", &state.config))
         .remove(removal_cookie(&state.cookie_names.pkce, "/", &state.config))
-        .remove(removal_cookie(&state.cookie_names.return_to, "/", &state.config));
+        .remove(removal_cookie(&state.cookie_names.return_to, "/", &state.config))
+        .remove(removal_cookie(&state.cookie_names.link_mode, "/", &state.config));
 
-    // Look up existing oauth link
+    // --- Link mode: add provider to authenticated user's account ---
+    if is_link_mode {
+        let claims = extract_user(&state, &jar)?;
+        let user_id = claims.sub_uuid()?;
+
+        // Check if this provider account is already linked to someone
+        if let Some(existing) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
+            if existing.user_id == user_id {
+                // Idempotent: already linked to this user
+                let redirect_url = format!("{}/settings", redirect_base);
+                return Ok((jar, Redirect::temporary(&redirect_url)));
+            }
+            return Err(Error::ProviderAlreadyLinked);
+        }
+
+        let link_created = match db::create_oauth_link(
+            &state.db,
+            user_id,
+            &profile.provider,
+            &profile.provider_id,
+            profile.email.as_deref(),
+            profile.email_verified,
+        ).await {
+            Ok(_) => true,
+            Err(e) if riley_auth_core::error::is_unique_violation(&e) => {
+                match db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
+                    Some(link) if link.user_id == user_id => false,
+                    _ => return Err(Error::ProviderAlreadyLinked),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+
+        if link_created {
+            webhooks::dispatch_event(
+                &state.db,
+                webhooks::LINK_CREATED,
+                serde_json::json!({
+                    "user_id": user_id.to_string(),
+                    "provider": profile.provider,
+                }),
+                state.config.webhooks.max_retry_attempts,
+            ).await;
+        }
+
+        let redirect_url = format!("{}/settings", redirect_base);
+        return Ok((jar, Redirect::temporary(&redirect_url)));
+    }
+
+    // --- Sign-in mode: look up existing oauth link ---
     if let Some(link) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
         // Returning user — issue tokens
         let user = db::find_user_by_id(&state.db, link.user_id)
@@ -994,8 +1048,10 @@ pub(crate) async fn link_redirect(
     let _claims = extract_user(&state, &jar)?;
 
     let provider = find_provider(&state.providers, &provider_name)?;
+    // Reuse the same callback URL as the sign-in flow so that OAuth providers
+    // only need a single registered redirect URI.
     let callback_url = format!(
-        "{}/auth/link/{}/callback",
+        "{}/auth/{}/callback",
         state.config.server.public_url, provider_name
     );
 
@@ -1011,7 +1067,8 @@ pub(crate) async fn link_redirect(
 
     let mut jar = jar
         .add(build_temp_cookie(&state.cookie_names.oauth_state, &oauth_state, &state.config))
-        .add(build_temp_cookie(&state.cookie_names.pkce, &pkce_verifier, &state.config));
+        .add(build_temp_cookie(&state.cookie_names.pkce, &pkce_verifier, &state.config))
+        .add(build_temp_cookie(&state.cookie_names.link_mode, "true", &state.config));
 
     if let Some(return_to) = query.return_to.as_deref().and_then(|r| validate_return_to(r, &state.config)) {
         jar = jar.add(build_temp_cookie(&state.cookie_names.return_to, &return_to, &state.config));
@@ -1057,8 +1114,11 @@ pub(crate) async fn link_callback(
         .map(|c| c.value().to_string())
         .ok_or(Error::InvalidOAuthState)?;
 
+    // Use the unified callback URL (same as sign-in flow) since link_redirect
+    // now sends users through /auth/{provider}/callback with a link_mode cookie.
+    // This fallback route is kept for backwards compatibility.
     let callback_url = format!(
-        "{}/auth/link/{}/callback",
+        "{}/auth/{}/callback",
         state.config.server.public_url, provider_name
     );
 

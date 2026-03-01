@@ -25,6 +25,7 @@ pub struct CookieNames {
     pub pkce: String,
     pub setup: String,
     pub return_to: String,
+    pub link_mode: String,
 }
 
 impl CookieNames {
@@ -36,6 +37,7 @@ impl CookieNames {
             pkce: format!("{prefix}_pkce"),
             setup: format!("{prefix}_setup"),
             return_to: format!("{prefix}_return_to"),
+            link_mode: format!("{prefix}_link_mode"),
         }
     }
 }
@@ -336,6 +338,7 @@ mod tests {
         assert_eq!(names.pkce, "auth_pkce");
         assert_eq!(names.setup, "auth_setup");
         assert_eq!(names.return_to, "auth_return_to");
+        assert_eq!(names.link_mode, "auth_link_mode");
     }
 
     #[test]
@@ -347,6 +350,7 @@ mod tests {
         assert_eq!(names.pkce, "myapp_pkce");
         assert_eq!(names.setup, "myapp_setup");
         assert_eq!(names.return_to, "myapp_return_to");
+        assert_eq!(names.link_mode, "myapp_link_mode");
     }
 
     #[test]
