@@ -212,8 +212,7 @@ pub(crate) async fn auth_callback(
         if let Some(existing) = db::find_oauth_link(&state.db, &profile.provider, &profile.provider_id).await? {
             if existing.user_id == user_id {
                 // Idempotent: already linked to this user
-                let redirect_url = format!("{}/settings", redirect_base);
-                return Ok((jar, Redirect::temporary(&redirect_url)));
+                return Ok((jar, Redirect::temporary(&redirect_base)));
             }
             return Err(Error::ProviderAlreadyLinked);
         }
@@ -248,8 +247,9 @@ pub(crate) async fn auth_callback(
             ).await;
         }
 
-        let redirect_url = format!("{}/settings", redirect_base);
-        return Ok((jar, Redirect::temporary(&redirect_url)));
+        // redirect_base is already the full return_to URL (e.g. /settings),
+        // so don't append a path — just redirect there directly.
+        return Ok((jar, Redirect::temporary(&redirect_base)));
     }
 
     // --- Sign-in mode: look up existing oauth link ---
