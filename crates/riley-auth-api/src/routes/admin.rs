@@ -25,6 +25,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/webhooks", get(list_webhooks).post(register_webhook))
         .route("/admin/webhooks/{id}", axum::routing::delete(remove_webhook))
         .route("/admin/webhooks/{id}/deliveries", get(list_deliveries))
+        .route("/admin/reserved-usernames", get(list_reserved_usernames).post(add_reserved_username))
+        .route("/admin/reserved-usernames/{name}", axum::routing::delete(remove_reserved_username))
 }
 
 // --- Types ---
@@ -717,4 +719,90 @@ pub(crate) async fn list_deliveries(
     let response: Vec<DeliveryResponse> = deliveries.into_iter().map(Into::into).collect();
 
     Ok(Json(response))
+}
+
+// --- Reserved Usernames ---
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct AddReservedUsernameRequest {
+    name: String,
+}
+
+/// GET /admin/reserved-usernames — list all dynamically reserved usernames
+#[utoipa::path(
+    get,
+    path = "/admin/reserved-usernames",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Reserved usernames", body = Vec<String>),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+    )
+)]
+pub(crate) async fn list_reserved_usernames(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<String>>, Error> {
+    require_admin(&state, &jar).await?;
+    let names = db::list_reserved_usernames(&state.db).await?;
+    Ok(Json(names))
+}
+
+/// POST /admin/reserved-usernames — reserve a username
+#[utoipa::path(
+    post,
+    path = "/admin/reserved-usernames",
+    tag = "admin",
+    request_body = AddReservedUsernameRequest,
+    responses(
+        (status = 201, description = "Username reserved"),
+        (status = 409, description = "Already reserved"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+    )
+)]
+pub(crate) async fn add_reserved_username(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(body): Json<AddReservedUsernameRequest>,
+) -> Result<StatusCode, Error> {
+    require_admin(&state, &jar).await?;
+
+    let name = body.name.trim().to_lowercase();
+    if name.is_empty() {
+        return Err(Error::BadRequest("name cannot be empty".to_string()));
+    }
+
+    if db::add_reserved_username(&state.db, &name).await? {
+        Ok(StatusCode::CREATED)
+    } else {
+        Err(Error::BadRequest("username already reserved".to_string()))
+    }
+}
+
+/// DELETE /admin/reserved-usernames/{name} — unreserve a username
+#[utoipa::path(
+    delete,
+    path = "/admin/reserved-usernames/{name}",
+    tag = "admin",
+    params(("name" = String, Path, description = "Username to unreserve")),
+    responses(
+        (status = 204, description = "Username unreserved"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+        (status = 403, description = "Not an admin", body = ErrorBody),
+    )
+)]
+pub(crate) async fn remove_reserved_username(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    jar: CookieJar,
+) -> Result<StatusCode, Error> {
+    require_admin(&state, &jar).await?;
+
+    if db::remove_reserved_username(&state.db, &name).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(Error::NotFound)
+    }
 }

@@ -422,3 +422,44 @@ pub async fn get_user_role(pool: &PgPool, user_id: Uuid) -> Result<Option<String
     .await?;
     Ok(row.map(|r| r.0))
 }
+
+// --- Reserved usernames (admin-managed via DB) ---
+
+pub async fn list_reserved_usernames(pool: &PgPool) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT name FROM reserved_usernames ORDER BY name"
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+pub async fn add_reserved_username(pool: &PgPool, name: &str) -> Result<bool> {
+    let result = sqlx::query(
+        "INSERT INTO reserved_usernames (name) VALUES (lower($1)) ON CONFLICT DO NOTHING"
+    )
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn remove_reserved_username(pool: &PgPool, name: &str) -> Result<bool> {
+    let result = sqlx::query(
+        "DELETE FROM reserved_usernames WHERE name = lower($1)"
+    )
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn is_username_reserved_in_db(pool: &PgPool, username: &str) -> Result<bool> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM reserved_usernames WHERE name = lower($1)"
+    )
+    .bind(username)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}

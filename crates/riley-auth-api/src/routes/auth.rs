@@ -387,7 +387,7 @@ pub(crate) async fn auth_setup(
     let profile = decode_setup_token(&state.keys, &state.config, &setup_token)?;
 
     // Validate username
-    validate_username(&body.username, &state.config, &state.username_regex)?;
+    validate_username(&body.username, &state.config, &state.username_regex, &state.db).await?;
 
     // Check availability
     if db::find_user_by_username(&state.db, &body.username).await?.is_some() {
@@ -882,7 +882,7 @@ pub(crate) async fn update_username(
         return Err(Error::BadRequest("username changes are disabled".to_string()));
     }
 
-    validate_username(&body.username, &state.config, &state.username_regex)?;
+    validate_username(&body.username, &state.config, &state.username_regex, &state.db).await?;
 
     // Check cooldown
     if let Some(last_change) = db::last_username_change(&state.db, user_id).await? {
@@ -1250,7 +1250,7 @@ fn extract_user(state: &AppState, jar: &CookieJar) -> Result<jwt::Claims, Error>
     Ok(data.claims)
 }
 
-fn validate_username(username: &str, config: &Config, regex: &regex::Regex) -> Result<(), Error> {
+async fn validate_username(username: &str, config: &Config, regex: &regex::Regex, pool: &sqlx::PgPool) -> Result<(), Error> {
     let rules = &config.usernames;
 
     let char_count = username.chars().count();
@@ -1273,10 +1273,16 @@ fn validate_username(username: &str, config: &Config, regex: &regex::Regex) -> R
 
     let check_name = username.to_lowercase();
 
+    // Check config-based reserved list
     for reserved in &rules.reserved {
         if check_name == reserved.to_lowercase() {
             return Err(Error::ReservedUsername);
         }
+    }
+
+    // Check DB-based reserved list (admin-managed)
+    if db::is_username_reserved_in_db(pool, username).await? {
+        return Err(Error::ReservedUsername);
     }
 
     Ok(())
