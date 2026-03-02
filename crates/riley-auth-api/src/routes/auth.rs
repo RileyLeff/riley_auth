@@ -65,6 +65,11 @@ pub struct UpdateUsernameRequest {
     username: String,
 }
 
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct EmailsResponse {
+    emails: Vec<String>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         // OAuth consumer
@@ -82,6 +87,7 @@ pub fn router() -> Router<AppState> {
         .route("/auth/me", get(auth_me).patch(update_display_name).delete(delete_account))
         .route("/auth/me/username", patch(update_username))
         .route("/auth/me/links", get(list_links))
+        .route("/auth/me/emails", get(auth_me_emails))
         // Provider linking
         .route("/auth/link/{provider}", get(link_redirect).delete(unlink_provider))
         .route("/auth/link/{provider}/callback", get(link_callback))
@@ -1024,6 +1030,47 @@ pub(crate) async fn list_links(
         .collect();
 
     Ok(Json(response))
+}
+
+/// GET /auth/me/emails — verified email addresses from linked OAuth accounts.
+///
+/// Accepts authentication via session cookie or `Authorization: Bearer <token>`.
+#[utoipa::path(
+    get,
+    path = "/auth/me/emails",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Verified email addresses", body = EmailsResponse),
+        (status = 401, description = "Not authenticated", body = ErrorBody),
+    )
+)]
+pub(crate) async fn auth_me_emails(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> Result<Json<EmailsResponse>, Error> {
+    // Try cookie auth first, fall back to Bearer token
+    let claims = extract_user(&state, &jar).or_else(|_| -> Result<jwt::Claims, Error> {
+        let token = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .ok_or(Error::Unauthenticated)?;
+        let data = state.keys.verify_session_token(&state.config.jwt, token)?;
+        Ok(data.claims)
+    })?;
+
+    let links = db::find_oauth_links_by_user(&state.db, claims.sub_uuid()?).await?;
+
+    let mut seen = std::collections::HashSet::new();
+    let emails: Vec<String> = links
+        .into_iter()
+        .filter(|l| l.email_verified)
+        .filter_map(|l| l.provider_email)
+        .filter(|e| seen.insert(e.to_lowercase()))
+        .collect();
+
+    Ok(Json(EmailsResponse { emails }))
 }
 
 // --- Provider Linking ---

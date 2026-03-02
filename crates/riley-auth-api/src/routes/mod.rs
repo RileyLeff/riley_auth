@@ -198,6 +198,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         auth::update_username,
         auth::delete_account,
         auth::list_links,
+        auth::auth_me_emails,
         auth::link_redirect,
         auth::link_callback,
         auth::unlink_provider,
@@ -234,6 +235,7 @@ async fn openid_configuration(axum::extract::State(state): axum::extract::State<
         auth::UpdateDisplayNameRequest,
         auth::UpdateUsernameRequest,
         auth::SessionResponse,
+        auth::EmailsResponse,
         // Admin types
         admin::UserSummaryResponse,
         admin::UserDetailResponse,
